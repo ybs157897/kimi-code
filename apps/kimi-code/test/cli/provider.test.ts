@@ -11,6 +11,7 @@ import type { KimiConfig } from '@moonshot-ai/kimi-code-sdk';
 import {
   handleCatalogAdd,
   handleCatalogList,
+  handleEndpointAdd,
   handleProviderAdd,
   handleProviderList,
   handleProviderRemove,
@@ -400,6 +401,95 @@ describe('kimi provider add', () => {
   });
 });
 
+describe('kimi provider endpoint add', () => {
+  it('configures a Chat Completions endpoint and selects its model by default', async () => {
+    const { harness, current, setConfigCalls } = makeHarness({
+      providers: {},
+    } as KimiConfig);
+    const { deps, stdout, exitCodes } = makeDeps(harness);
+
+    await tryRun(() =>
+      handleEndpointAdd(deps, 'local', {
+        apiKey: 'sk-local',
+        baseUrl: 'https://gateway.example.test/v1/',
+        protocol: 'chat',
+        modelId: 'model-wire-id',
+        modelName: 'Model Display Name',
+        contextSize: '128000',
+      }),
+    );
+
+    expect(exitCodes).toEqual([]);
+    expect(current().providers['local']).toEqual({
+      type: 'openai',
+      baseUrl: 'https://gateway.example.test/v1',
+      apiKey: 'sk-local',
+    });
+    expect(current().models?.['local/model-wire-id']).toMatchObject({
+      provider: 'local',
+      model: 'model-wire-id',
+      displayName: 'Model Display Name',
+      maxContextSize: 128000,
+      capabilities: ['tool_use'],
+    });
+    expect(current().defaultModel).toBe('local/model-wire-id');
+    expect(setConfigCalls[0]?.defaultModel).toBe('local/model-wire-id');
+    expect(stdout.join('')).toContain('Configured local with model local/model-wire-id');
+  });
+
+  it('maps Responses and Anthropic protocols to their runtime provider types', async () => {
+    const { harness, current } = makeHarness({ providers: {} } as KimiConfig);
+    const { deps, exitCodes } = makeDeps(harness, {
+      env: { KIMI_PROVIDER_API_KEY: 'sk-env' },
+    });
+
+    await tryRun(() =>
+      handleEndpointAdd(deps, 'responses', {
+        baseUrl: 'https://responses.example.test/v1',
+        protocol: 'responses',
+        modelId: 'gpt-x',
+        contextSize: '200000',
+      }),
+    );
+    await tryRun(() =>
+      handleEndpointAdd(deps, 'anthropic-gateway', {
+        baseUrl: 'https://anthropic.example.test/v1/',
+        protocol: 'anthropic',
+        modelId: 'claude-x',
+        modelName: 'Claude X',
+        contextSize: '200000',
+      }),
+    );
+
+    expect(exitCodes).toEqual([]);
+    expect(current().providers['responses']?.type).toBe('openai_responses');
+    expect(current().providers['anthropic-gateway']).toMatchObject({
+      type: 'anthropic',
+      baseUrl: 'https://anthropic.example.test',
+      apiKey: 'sk-env',
+    });
+  });
+
+  it('rejects invalid protocols and context sizes without persisting the provider', async () => {
+    const { harness, current } = makeHarness({ providers: {} } as KimiConfig);
+    const { deps, stderr, exitCodes } = makeDeps(harness);
+
+    await tryRun(() =>
+      handleEndpointAdd(deps, 'local', {
+        apiKey: 'sk-local',
+        baseUrl: 'https://gateway.example.test/v1',
+        protocol: 'invalid' as 'chat',
+        modelId: 'model-id',
+        contextSize: '0',
+      }),
+    );
+
+    expect(exitCodes).toEqual([1]);
+    expect(stderr.join('')).toContain('Protocol must be one of');
+    expect(current().providers['local']).toBeUndefined();
+  });
+});
+
 describe('kimi provider remove', () => {
   it('removes a provider and reports success', async () => {
     const initial: KimiConfig = {
@@ -545,6 +635,41 @@ describe('registerProviderCommand', () => {
     );
     expect(Object.keys(current().providers).toSorted()).toEqual(['kohub', 'kohub-responses']);
     expect(stdout.join('')).toContain('Imported 2 providers');
+  });
+
+  it('routes custom endpoint options through commander', async () => {
+    const { harness, current } = makeHarness({ providers: {} } as KimiConfig);
+    const { deps, exitCodes } = makeDeps(harness, {
+      env: { KIMI_PROVIDER_API_KEY: 'sk-env' },
+    });
+    const program = new Command('kimi');
+    registerProviderCommand(program, deps);
+
+    await tryRun(() =>
+      program.parseAsync(
+        [
+          'node',
+          'kimi',
+          'provider',
+          'endpoint',
+          'add',
+          'local',
+          '--base-url',
+          'https://gateway.example.test/v1',
+          '--protocol',
+          'chat',
+          '--model-id',
+          'model-id',
+          '--model-name',
+          'Model Name',
+        ],
+        { from: 'node' },
+      ),
+    );
+
+    expect(exitCodes).toEqual([]);
+    expect(current().defaultModel).toBe('local/model-id');
+    expect(current().models?.['local/model-id']?.displayName).toBe('Model Name');
   });
 
   it('reports write failures on stderr and exits 1 instead of crashing', async () => {

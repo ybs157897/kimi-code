@@ -2,8 +2,8 @@
  * `kimi provider` sub-command — non-interactive provider management.
  *
  * Mirrors the TUI `/provider` flow (apps/kimi-code/src/tui/commands/provider.ts)
- * for the custom-registry path so users can import an api.json document, drop
- * a provider, or inspect what is configured without launching the TUI.
+ * so users can configure a direct API endpoint, import an api.json document,
+ * drop a provider, or inspect what is configured without launching the TUI.
  *
  * `add` writes the same `source = { kind: 'apiJson', url, apiKey }` blob the
  * TUI does; the next launch's `refreshAllProviderModels`
@@ -35,6 +35,11 @@ import {
 import type { Command } from 'commander';
 
 import { createKimiCodeHostIdentity, createKimiCodeUserAgent } from '#/cli/version';
+import {
+  applyCustomEndpointProvider,
+  DEFAULT_CUSTOM_ENDPOINT_CONTEXT_SIZE,
+  type CustomEndpointProtocol,
+} from '#/utils/custom-endpoint-provider';
 
 interface WritableLike {
   write(chunk: string): boolean;
@@ -67,6 +72,15 @@ interface CatalogAddOptions {
   readonly defaultModel?: string;
   readonly url?: string;
   readonly baseUrl?: string;
+}
+
+interface EndpointAddOptions {
+  readonly apiKey?: string;
+  readonly baseUrl: string;
+  readonly protocol: CustomEndpointProtocol;
+  readonly modelId: string;
+  readonly modelName?: string;
+  readonly contextSize: string;
 }
 
 export async function handleProviderAdd(
@@ -160,6 +174,48 @@ export async function handleProviderRemove(
   }
   await harness.removeProvider(providerId);
   deps.stdout.write(`Removed provider "${providerId}".\n`);
+}
+
+export async function handleEndpointAdd(
+  deps: ProviderDeps,
+  providerId: string,
+  opts: EndpointAddOptions,
+): Promise<void> {
+  const apiKey = resolveEndpointApiKey(opts.apiKey, deps.env);
+  if (apiKey === undefined) {
+    deps.stderr.write(
+      'Missing API key. Pass --api-key <key> or set KIMI_PROVIDER_API_KEY.\n',
+    );
+    deps.exit(1);
+  }
+
+  const harness = deps.getHarness();
+  await harness.ensureConfigFile();
+  const config = await harness.getConfig();
+  let applied: ReturnType<typeof applyCustomEndpointProvider>;
+  try {
+    applied = applyCustomEndpointProvider(config, {
+      providerId,
+      baseUrl: opts.baseUrl,
+      apiKey,
+      protocol: opts.protocol,
+      modelId: opts.modelId,
+      modelName: opts.modelName ?? opts.modelId,
+      maxContextSize: Number(opts.contextSize),
+    });
+  } catch (error) {
+    deps.stderr.write(`Invalid endpoint configuration: ${errorMessage(error)}\n`);
+    deps.exit(1);
+  }
+
+  await harness.setConfig({
+    providers: config.providers,
+    models: config.models,
+    defaultModel: config.defaultModel,
+  });
+  deps.stdout.write(
+    `Configured ${applied.providerId} with model ${applied.alias} and set it as default.\n`,
+  );
 }
 
 export async function handleProviderList(
@@ -486,6 +542,49 @@ export function registerProviderCommand(parent: Command, deps?: Partial<Provider
       await runAction(resolved, () => handleProviderList(resolved, { json: options.json === true }));
     });
 
+  const endpoint = provider
+    .command('endpoint')
+    .description('Configure a custom Chat Completions, Responses, or Anthropic endpoint.');
+
+  endpoint
+    .command('add <providerId>')
+    .description('Add one model from a custom API endpoint and set it as the default.')
+    .requiredOption('--base-url <url>', 'Provider API base URL.')
+    .requiredOption('--protocol <protocol>', 'One of: chat, responses, anthropic.')
+    .requiredOption('--model-id <id>', 'Wire-facing model id sent to the provider.')
+    .option('--model-name <name>', 'Display name. Defaults to --model-id.')
+    .option('--api-key <key>', 'Provider API key. Falls back to KIMI_PROVIDER_API_KEY.')
+    .option(
+      '--context-size <tokens>',
+      'Maximum context window.',
+      String(DEFAULT_CUSTOM_ENDPOINT_CONTEXT_SIZE),
+    )
+    .action(
+      async (
+        providerId: string,
+        options: {
+          apiKey?: string;
+          baseUrl: string;
+          protocol: CustomEndpointProtocol;
+          modelId: string;
+          modelName?: string;
+          contextSize: string;
+        },
+      ) => {
+        const resolved = resolveDeps(deps);
+        await runAction(resolved, () =>
+          handleEndpointAdd(resolved, providerId, {
+            apiKey: options.apiKey,
+            baseUrl: options.baseUrl,
+            protocol: options.protocol,
+            modelId: options.modelId,
+            modelName: options.modelName,
+            contextSize: options.contextSize,
+          }),
+        );
+      },
+    );
+
   const catalog = provider
     .command('catalog')
     .description('Discover and import providers from the public models.dev catalog.');
@@ -560,6 +659,16 @@ function resolveDeps(overrides: Partial<ProviderDeps> = {}): ProviderDeps {
 function resolveApiKey(flag: string | undefined, env: NodeJS.ProcessEnv): string | undefined {
   if (typeof flag === 'string' && flag.length > 0) return flag;
   const fromEnv = env['KIMI_REGISTRY_API_KEY'];
+  if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
+  return undefined;
+}
+
+function resolveEndpointApiKey(
+  flag: string | undefined,
+  env: NodeJS.ProcessEnv,
+): string | undefined {
+  if (typeof flag === 'string' && flag.length > 0) return flag;
+  const fromEnv = env['KIMI_PROVIDER_API_KEY'];
   if (typeof fromEnv === 'string' && fromEnv.length > 0) return fromEnv;
   return undefined;
 }
