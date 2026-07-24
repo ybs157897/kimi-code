@@ -16,7 +16,16 @@ import {
 } from '@moonshot-ai/kimi-code-sdk';
 
 import { createKimiCodeUserAgent } from '#/cli/version';
+import {
+  applyCustomEndpointProvider,
+  type CustomEndpointInput,
+  type CustomEndpointProtocol,
+} from '#/utils/custom-endpoint-provider';
 import { ChoicePickerComponent } from '../components/dialogs/choice-picker';
+import {
+  CustomEndpointImportDialogComponent,
+  type CustomEndpointImportResult,
+} from '../components/dialogs/custom-endpoint-import';
 import {
   CustomRegistryImportDialogComponent,
   type CustomRegistryImportResult,
@@ -117,6 +126,14 @@ async function handleProviderAdd(host: SlashCommandHost): Promise<void> {
     await handleCatalogProviderAdd(host);
     return;
   }
+  if (source === 'endpoint') {
+    const handled = await handleCustomEndpointAddViaDialog(host);
+    reopenProviderManager(host);
+    if (handled) {
+      host.showStatus('Custom API endpoint added.', 'success');
+    }
+    return;
+  }
   const handled = await handleCustomRegistryAddViaDialog(host);
   if (!handled) {
     reopenProviderManager(host);
@@ -131,17 +148,24 @@ function reopenProviderManager(host: SlashCommandHost): void {
 
 function promptProviderAddSource(
   host: SlashCommandHost,
-): Promise<'known' | 'custom' | undefined> {
+): Promise<'known' | 'endpoint' | 'custom' | undefined> {
   return new Promise((resolve) => {
     const picker = new ChoicePickerComponent({
       title: 'Add provider',
       options: [
         { value: 'known', label: 'Known third-party provider' },
+        {
+          value: 'endpoint',
+          label: 'Custom API endpoint',
+          description: 'Configure a Chat Completions, Responses, or Anthropic endpoint',
+        },
         { value: 'custom', label: 'Custom registry (api.json)' },
       ],
       onSelect: (value) => {
         host.restoreEditor();
-        resolve(value === 'known' || value === 'custom' ? value : undefined);
+        resolve(
+          value === 'known' || value === 'endpoint' || value === 'custom' ? value : undefined,
+        );
       },
       onCancel: () => {
         host.restoreEditor();
@@ -149,6 +173,86 @@ function promptProviderAddSource(
       },
     });
     host.mountEditorReplacement(picker);
+  });
+}
+
+async function handleCustomEndpointAddViaDialog(host: SlashCommandHost): Promise<boolean> {
+  const protocol = await promptCustomEndpointProtocol(host);
+  if (protocol === undefined) return false;
+  const value = await promptCustomEndpointImport(host, protocol);
+  if (value === undefined) return false;
+
+  try {
+    const config = await host.harness.getConfig();
+    const applied = applyCustomEndpointProvider(config, value);
+    await host.harness.setConfig({
+      providers: config.providers,
+      models: config.models,
+      defaultModel: config.defaultModel,
+    });
+    await host.authFlow.refreshConfigAfterLogin();
+    host.track('connect', { provider: applied.providerId, method: 'endpoint' });
+    host.showStatus(`Default model set to ${applied.alias}.`);
+    return true;
+  } catch (error) {
+    host.showError(`Failed to add custom endpoint: ${formatErrorMessage(error)}`);
+    return false;
+  }
+}
+
+function promptCustomEndpointProtocol(
+  host: SlashCommandHost,
+): Promise<CustomEndpointProtocol | undefined> {
+  return new Promise((resolve) => {
+    const picker = new ChoicePickerComponent({
+      title: 'Select endpoint protocol',
+      options: [
+        {
+          value: 'chat',
+          label: 'OpenAI Chat Completions',
+          description: 'Uses the /chat/completions API',
+        },
+        {
+          value: 'responses',
+          label: 'OpenAI Responses',
+          description: 'Uses the /responses API',
+        },
+        {
+          value: 'anthropic',
+          label: 'Anthropic Messages',
+          description: 'Uses the /v1/messages API',
+        },
+      ],
+      onSelect: (value) => {
+        host.restoreEditor();
+        resolve(
+          value === 'chat' || value === 'responses' || value === 'anthropic'
+            ? value
+            : undefined,
+        );
+      },
+      onCancel: () => {
+        host.restoreEditor();
+        resolve(undefined);
+      },
+    });
+    host.mountEditorReplacement(picker);
+  });
+}
+
+function promptCustomEndpointImport(
+  host: SlashCommandHost,
+  protocol: CustomEndpointProtocol,
+): Promise<CustomEndpointInput | undefined> {
+  return new Promise((resolve) => {
+    const dialog = new CustomEndpointImportDialogComponent(
+      protocol,
+      (result: CustomEndpointImportResult) => {
+        host.restoreEditor();
+        resolve(result.kind === 'ok' ? result.value : undefined);
+      },
+    );
+    host.mountEditorReplacement(dialog);
   });
 }
 
