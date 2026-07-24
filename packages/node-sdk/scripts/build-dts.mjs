@@ -9,7 +9,7 @@ const packageRoot = path.resolve(import.meta.dirname, '..');
 const tempDir = path.join(packageRoot, '.tmp-api-extractor');
 const dtsRoot = path.join(tempDir, 'dts');
 const providerClientShimPath = path.join(dtsRoot, 'provider-clients.d.ts');
-const tscBinPath = packageBinPath('typescript', 'bin/tsc');
+const tscBinPath = packageBinPath('typescript', 'bin/tsc6');
 const apiExtractorBinPath = packageBinPath('@microsoft/api-extractor', 'bin/api-extractor');
 
 const packageDirs = new Set(['agent-core', 'kaos', 'kosong', 'node-sdk', 'oauth']);
