@@ -107,6 +107,16 @@ describe('events / display re-exports', () => {
     ).toBe(false);
   });
 
+  it('validates notice events', () => {
+    expect(
+      agentEventSchema.safeParse({
+        type: 'notice',
+        message: '会话结束',
+        code: 'extension.notify',
+      }).success,
+    ).toBe(true);
+  });
+
   it('validates session-scoped daemon events with agentId and sessionId', () => {
     const parsed = eventSchema.parse({
       type: 'turn.started',

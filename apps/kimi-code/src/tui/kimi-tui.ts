@@ -1395,20 +1395,25 @@ export class KimiTUI {
    * Activate a code-based extension slash command. The extension resolves the
    * command (prompt-style returns text sent to the model; action-style runs
    * its handler server-side and returns undefined).
+   *
+   * Do not call {@link beginSessionRequest} before resolve: that would leave
+   * `streamingPhase` as `waiting`, so {@link sendMessage} enqueues the prompt
+   * instead of sending it and the UI sticks on loading forever.
    */
   activateExtensionCommand(session: Session, commandName: string, args: string): void {
-    this.beginSessionRequest();
     void session
       .activateExtensionCommand(commandName, args)
       .then((result) => {
-        // Prompt-style command: feed the resolved prompt to the model.
+        // Prompt-style: sendMessage → sendMessageInternal begins the request.
         if (result?.prompt !== undefined && result.prompt.length > 0) {
           this.sendMessage(session, result.prompt);
+          return;
         }
+        // Action-style / unknown command: nothing to send to the model.
       })
       .catch((error: unknown) => {
         const message = formatErrorMessage(error);
-        this.failSessionRequest(`Extension command "${commandName}" failed: ${message}`);
+        this.showError(`Extension command "${commandName}" failed: ${message}`);
       });
   }
 

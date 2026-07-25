@@ -27,6 +27,11 @@ export default (api: ExtensionAPI) => {
     console.log(`[${event.toolName}] ${event.isError ? 'failed' : 'ok'}`);
   });
 
+  // Non-blocking TUI status line when a turn ends (does not start a new turn)
+  api.on('turn_end', (_event, ctx) => {
+    ctx.notify('Turn ended');
+  });
+
   // 2. Register a tool the model can call
   api.registerTool({
     name: 'echo',
@@ -146,6 +151,7 @@ The `ctx` passed to event handlers exposes:
 | `ctx.cwd` | the session's working directory |
 | `ctx.sessionId` | the current session id |
 | `ctx.sendUserMessage(content)` | send a user message to the agent (triggers a turn) |
+| `ctx.notify(message)` | show a non-blocking TUI status line; does not start a turn or enter model context. Prefer this for tips — not `sendUserMessage` or `console.log` (invisible under the fullscreen TUI) |
 | `ctx.setModel(modelAlias)` | set the session's model |
 | `ctx.setActiveTools(toolNames)` | restrict the session's enabled tool set |
 | `ctx.getActiveTools()` | currently enabled tool names |

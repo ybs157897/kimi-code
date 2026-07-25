@@ -381,6 +381,9 @@ export class Session {
         const parts: readonly ContentPart[] = [{ type: 'text', text: content }];
         void agent.turn.prompt(parts);
       },
+      notify: (message) => {
+        agent.emitEvent({ type: 'notice', message, code: 'extension.notify' });
+      },
       setModel: async (modelAlias) => {
         agent.config.update({ modelAlias });
         return true;
@@ -389,6 +392,20 @@ export class Session {
         agent.tools.setActiveTools(toolNames);
       },
       getActiveTools: () => agent.tools.data().filter((t) => t.active).map((t) => t.name),
+    });
+    // Surface handler failures as warnings — otherwise tips like ctx.notify on an
+    // old host fail silently and look like "no reaction" in the TUI.
+    runner.onError((error) => {
+      this.log.warn('extension handler failed', {
+        path: error.extensionPath,
+        event: error.event,
+        error: error.error,
+      });
+      agent.emitEvent({
+        type: 'warning',
+        code: 'extension.handler_error',
+        message: `Extension failed on ${error.event}: ${error.error}`,
+      });
     });
     agent.extensionRunner = runner;
     this.extensionRunner = runner;

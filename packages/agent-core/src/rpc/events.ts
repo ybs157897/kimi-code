@@ -19,6 +19,7 @@ export type {
   McpOAuthAuthorizationUrlUpdateData,
   McpServerStatusEvent,
   McpServerStatusPayload,
+  NoticeEvent,
   PluginCommandActivatedEvent,
   SessionCreatedEvent,
   SessionMetaUpdatedEvent,

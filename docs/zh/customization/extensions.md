@@ -23,6 +23,11 @@ export default (api: ExtensionAPI) => {
     console.log(`[${event.toolName}] ${event.isError ? '失败' : '完成'}`);
   });
 
+  // 每轮结束时在 TUI 状态行提示（不触发新一轮对话）
+  api.on('turn_end', (_event, ctx) => {
+    ctx.notify('会话结束');
+  });
+
   // 2. 注册一个模型可调用的工具
   api.registerTool({
     name: 'echo',
@@ -136,6 +141,7 @@ api.registerCommand('my-cmd', {
 | `ctx.cwd` | 当前会话的工作目录 |
 | `ctx.sessionId` | 当前会话 id |
 | `ctx.sendUserMessage(content)` | 向 agent 发送用户消息并触发一轮对话 |
+| `ctx.notify(message)` | 在 TUI 显示一行状态提示；不触发新一轮对话，也不进入模型上下文。提示类信息请用它，不要用 `sendUserMessage` 或 `console.log`（全屏 TUI 下看不见） |
 | `ctx.setModel(modelAlias)` | 设置当前会话的模型 |
 | `ctx.setActiveTools(toolNames)` | 限制当前会话启用的工具集 |
 | `ctx.getActiveTools()` | 当前启用的工具名列表 |

@@ -29,6 +29,7 @@ import type {
   TurnStepInterruptedEvent,
   TurnStepStartedEvent,
   WarningEvent,
+  NoticeEvent,
 } from '@moonshot-ai/kimi-code-sdk';
 
 import { MoonLoader } from '../components/chrome/moon-loader';
@@ -262,6 +263,7 @@ export class SessionEventHandler {
       case 'plugin_command.activated': this.handlePluginCommandActivated(event); break;
       case 'error': this.handleSessionError(event); break;
       case 'warning': this.handleSessionWarning(event); break;
+      case 'notice': this.handleSessionNotice(event); break;
       case 'compaction.started': this.handleCompactionBegin(event); break;
       case 'compaction.completed': this.handleCompactionEnd(event, sendQueued); break;
       case 'compaction.blocked': break;
@@ -869,6 +871,11 @@ export class SessionEventHandler {
 
   private handleSessionWarning(event: WarningEvent): void {
     this.host.showStatus(`Warning: ${event.message}`, 'warning');
+  }
+
+  /** Extension / host notice — status line only; never touches streaming phase. */
+  private handleSessionNotice(event: NoticeEvent): void {
+    this.host.showStatus(event.message);
   }
 
   private renderMcpServerStatus(server: McpServerStatusSnapshot): void {

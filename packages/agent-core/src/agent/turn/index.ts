@@ -719,9 +719,11 @@ export class TurnFlow {
     this.stepFailureByTurn.delete(turnId);
     this.activeRequestTrace = undefined;
     this.latestTraceId = undefined;
-    // Fire the code-based extension `turn_end` event (best-effort).
+    // Fire the code-based extension `turn_end` event. Awaited so notify/errors
+    // land on the event bus in a deterministic order after turn.ended was queued,
+    // and so handler failures are not dropped by an orphaned void promise.
     if (this.agent.extensionRunner?.hasHandlers('turn_end') === true) {
-      void this.agent.extensionRunner.emit({ type: 'turn_end' }).catch(() => undefined);
+      await this.agent.extensionRunner.emit({ type: 'turn_end' }).catch(() => undefined);
     }
     return { event: ended, stopReason: completedStopReason, blockedByUserPromptHook };
   }

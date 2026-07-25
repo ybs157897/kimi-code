@@ -633,6 +633,7 @@ function runPromptTurn(
         case 'tool.list.updated':
         case 'turn.step.completed':
         case 'warning':
+        case 'notice':
           return;
       }
     });

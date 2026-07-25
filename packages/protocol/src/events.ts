@@ -599,6 +599,16 @@ export interface WarningEvent {
   readonly code?: string;
 }
 
+/**
+ * Non-blocking informational notice for clients (e.g. extension `ctx.notify`).
+ * Must not start a turn or change streaming/work state.
+ */
+export interface NoticeEvent {
+  readonly type: 'notice';
+  readonly message: string;
+  readonly code?: string;
+}
+
 export interface TurnStartedEvent {
   readonly type: 'turn.started';
   readonly turnId: number;
@@ -904,6 +914,7 @@ export interface McpServerStatusPayload {
 export type AgentEvent =
   | ErrorEvent
   | WarningEvent
+  | NoticeEvent
   | AgentStatusUpdatedEvent
   | SessionMetaUpdatedEvent
   | SessionCreatedEvent
@@ -1485,6 +1496,12 @@ export const warningEventSchema = z.object({
   code: z.string().optional(),
 }) satisfies z.ZodType<WarningEvent>;
 
+export const noticeEventSchema = z.object({
+  type: z.literal('notice'),
+  message: z.string(),
+  code: z.string().optional(),
+}) satisfies z.ZodType<NoticeEvent>;
+
 export const turnStartedEventSchema = z.object({
   type: z.literal('turn.started'),
   turnId: z.number(),
@@ -1763,6 +1780,7 @@ export const mcpServerStatusEventSchema = z.object({
 export const agentEventSchema = z.discriminatedUnion('type', [
   errorEventSchema,
   warningEventSchema,
+  noticeEventSchema,
   agentStatusUpdatedEventSchema,
   sessionMetaUpdatedEventSchema,
   sessionCreatedEventSchema,

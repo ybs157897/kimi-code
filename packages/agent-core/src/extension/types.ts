@@ -175,6 +175,12 @@ export interface ExtensionContext {
    * extension runtime is stale (after reload/session replacement).
    */
   sendUserMessage(content: string): void;
+  /**
+   * Show a non-blocking status line in the TUI. Does not start a turn, change
+   * streaming state, or enter model context. Prefer this over `console.log`
+   * (invisible under the fullscreen TUI) and over `sendUserMessage` for tips.
+   */
+  notify(message: string): void;
   /** Set the active model alias for the current session. */
   setModel(modelAlias: string): Promise<boolean>;
   /** Restrict the set of enabled tool names for the current session. */
@@ -198,8 +204,8 @@ export type ExtensionHandler<E extends ExtensionEvent, R = void> = (
  *
  * Registration methods (`on`/`registerTool`/`registerCommand`) write into the
  * extension's own collections during load. Action methods (`sendUserMessage`/
- * `setModel`/...) delegate to the shared runtime and only become callable once
- * the runner is bound to a live session.
+ * `notify`/`setModel`/...) delegate to the shared runtime and only become
+ * callable once the runner is bound to a live session.
  */
 export interface ExtensionAPI {
   /** Subscribe to an extension event. */

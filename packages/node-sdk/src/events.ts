@@ -19,6 +19,7 @@ export type {
   PluginCommandActivatedEvent,
   ErrorEvent,
   WarningEvent,
+  NoticeEvent,
   UsageStatus,
 } from '@moonshot-ai/agent-core';
 

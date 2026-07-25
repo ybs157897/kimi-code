@@ -17,6 +17,7 @@ export interface ExtensionRuntimeActions {
   readonly cwd: string;
   readonly sessionId: string;
   sendUserMessage(content: string): void;
+  notify(message: string): void;
   setModel(modelAlias: string): Promise<boolean>;
   setActiveTools(toolNames: readonly string[]): void;
   getActiveTools(): readonly string[];
@@ -98,6 +99,10 @@ export class ExtensionRunner {
       sendUserMessage(content) {
         assertActive();
         actions.sendUserMessage(content);
+      },
+      notify(message) {
+        assertActive();
+        actions.notify(message);
       },
       setModel(modelAlias) {
         assertActive();

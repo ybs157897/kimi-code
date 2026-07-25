@@ -536,3 +536,26 @@ describe('SessionEventHandler goal queue promotion', () => {
     expect(host.sendQueuedMessage).not.toHaveBeenCalled();
   });
 });
+
+describe('SessionEventHandler notice', () => {
+  it('shows a status line without changing streamingPhase', () => {
+    const { host } = makeHost();
+    host.state.appState.streamingPhase = 'idle';
+    const handler = new SessionEventHandler(host);
+
+    handler.handleEvent(
+      {
+        type: 'notice',
+        sessionId: 's1',
+        agentId: 'main',
+        message: '会话结束',
+        code: 'extension.notify',
+      },
+      vi.fn(),
+    );
+
+    expect(host.showStatus).toHaveBeenCalledExactlyOnceWith('会话结束');
+    expect(host.setAppState).not.toHaveBeenCalled();
+    expect(host.state.appState.streamingPhase).toBe('idle');
+  });
+});

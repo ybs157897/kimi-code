@@ -24,6 +24,8 @@ After editing an extension, run `/reload` in the TUI to pick up the changes.
 - [`log-tool-calls.ts`](./log-tool-calls.ts) — subscribes to the `tool_call` /
   `tool_result` events.
 - [`hello-command.ts`](./hello-command.ts) — registers a `/hello` slash command.
+- [`turn-end-notify.ts`](./turn-end-notify.ts) — shows a non-blocking TUI status
+  line on `turn_end` via `ctx.notify`.
 
 ## What you can import
 
