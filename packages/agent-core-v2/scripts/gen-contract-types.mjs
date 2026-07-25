@@ -44,7 +44,7 @@ const defaultOut = join(repoRoot, '..', 'kimi-code-mini-bench', 'types', 'agent-
 const OUT = process.argv[2] ? join(process.cwd(), process.argv[2]) : defaultOut;
 
 const require = createRequire(import.meta.url);
-const tscBin = require.resolve('typescript/bin/tsc');
+const tscBin = require.resolve('typescript/bin/tsc6');
 
 function log(msg) {
   console.log(`[gen-contract-types] ${msg}`);
