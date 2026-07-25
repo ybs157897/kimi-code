@@ -34,6 +34,7 @@ import type {
   SessionUsage,
   SkillSummary,
   PluginCommandDef,
+  ExtensionCommandDef,
   ThinkingEffort,
   Unsubscribe,
 } from '#/types';
@@ -332,6 +333,37 @@ export class Session {
   async listPluginCommands(): Promise<readonly PluginCommandDef[]> {
     this.ensureOpen();
     return this.rpc.listPluginCommands({ sessionId: this.id });
+  }
+
+  /** Slash commands contributed by code-based extensions (`.kimi-code/extensions`). */
+  async listExtensionCommands(): Promise<readonly ExtensionCommandDef[]> {
+    this.ensureOpen();
+    return this.rpc.listExtensionCommands({ sessionId: this.id });
+  }
+
+  /**
+   * Activate an extension-contributed slash command by its namespaced name
+   * (`<extensionId>:<commandName>`). Prompt-style commands return their
+   * resolved prompt text; action-style commands return undefined.
+   */
+  async activateExtensionCommand(
+    name: string,
+    args?: string | undefined,
+  ): Promise<{ prompt?: string } | undefined> {
+    this.ensureOpen();
+    const trimmed = name.trim();
+    if (trimmed.length === 0) {
+      throw new KimiError(
+        ErrorCodes.REQUEST_INVALID,
+        'Extension command name cannot be empty',
+      );
+    }
+    const commandArgs = normalizeOptionalString(args);
+    return this.rpc.activateExtensionCommand({
+      sessionId: this.id,
+      name: trimmed,
+      ...(commandArgs !== undefined ? { args: commandArgs } : {}),
+    });
   }
 
   /**

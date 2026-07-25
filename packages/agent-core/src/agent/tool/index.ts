@@ -265,6 +265,69 @@ export class ToolManager {
     this.enabledTools.delete(name);
   }
 
+  /**
+   * Register a code-based extension tool that executes in-process.
+   *
+   * Unlike {@link registerUserTool}, which bounces tool calls back through the
+   * SDK host's RPC, this builds an `ExecutableTool` whose `execute` runs the
+   * extension-provided callback directly inside the core process. Used by
+   * `ExtensionAPI.registerTool`.
+   */
+  registerExtensionTool(tool: {
+    readonly name: string;
+    readonly description: string;
+    readonly parameters: Record<string, unknown>;
+    readonly disclosure?: 'inline' | 'deferred';
+    readonly execute: (ctx: {
+      readonly args: Record<string, unknown>;
+      readonly signal: AbortSignal;
+      readonly turnId: string;
+      readonly toolCallId: string;
+    }) => Promise<{ readonly output: string; readonly isError?: boolean; readonly message?: string }> | { readonly output: string; readonly isError?: boolean; readonly message?: string };
+  }): void {
+    const { name, description, parameters, disclosure, execute } = tool;
+    this.agent.records.logRecord({
+      type: 'tools.register_user_tool',
+      name,
+      description,
+      parameters,
+    });
+    const executable: ExecutableTool = {
+      name,
+      description,
+      parameters,
+      resolveExecution: (args) => {
+        return {
+          approvalRule: name,
+          execute: async (context) => {
+            const result = await execute({
+              args: (args ?? {}) as Record<string, unknown>,
+              signal: context.signal,
+              turnId: context.turnId,
+              toolCallId: context.toolCallId,
+            });
+            // Normalize to ExecutableToolResult: isError selects the variant.
+            return result.isError === true
+              ? { output: result.output, isError: true, message: result.message }
+              : { output: result.output, isError: false, message: result.message };
+          },
+        };
+      },
+    };
+    this.userTools.set(name, executable);
+    if (disclosure === 'deferred') {
+      this.deferredUserTools.add(name);
+    } else {
+      this.deferredUserTools.delete(name);
+    }
+    this.enabledTools.add(name);
+  }
+
+  /** Remove a previously registered extension tool. */
+  unregisterExtensionTool(name: string): void {
+    this.unregisterUserTool(name);
+  }
+
   inheritUserTools(parent: ToolManager): void {
     for (const tool of parent.userTools.values()) {
       if (!parent.enabledTools.has(tool.name)) continue;

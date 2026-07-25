@@ -2,6 +2,8 @@ import { ErrorCodes, KimiError } from '#/errors';
 import type { SessionWarning } from '@moonshot-ai/protocol';
 import type {
   ActivateSkillPayload,
+  ActivateExtensionCommandPayload,
+  ActivateExtensionCommandResult,
   ActivatePluginCommandPayload,
   AddAdditionalDirPayload,
   AddAdditionalDirResult,
@@ -37,6 +39,7 @@ import type {
   UnregisterToolPayload,
   UpdateSessionMetadataPayload,
 } from '#/rpc';
+import type { ExtensionCommandDef } from '#/extension';
 import type { PromisableMethods } from '#/utils/types';
 
 import type { Session, SessionMeta } from '.';
@@ -85,6 +88,16 @@ export class SessionAPIImpl implements PromisableMethods<SessionAPI> {
 
   listPluginCommands(_payload: EmptyPayload): readonly PluginCommandDef[] {
     return this.session.listPluginCommands();
+  }
+
+  listExtensionCommands(_payload: EmptyPayload): readonly ExtensionCommandDef[] {
+    return this.session.listExtensionCommands();
+  }
+
+  activateExtensionCommand(
+    payload: ActivateExtensionCommandPayload,
+  ): Promise<ActivateExtensionCommandResult | undefined> {
+    return this.session.activateExtensionCommand(payload.name, payload.args ?? '');
   }
 
   listMcpServers(_payload: EmptyPayload): readonly McpServerInfo[] {

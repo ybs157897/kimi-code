@@ -32,6 +32,11 @@ export type SlashCommandIntent =
       readonly pluginId: string;
       readonly args: string;
     }
+  | {
+      readonly kind: 'extension-command';
+      readonly commandName: string;
+      readonly args: string;
+    }
   | { readonly kind: 'message'; readonly input: string }
   | {
       readonly kind: 'blocked';
@@ -48,6 +53,8 @@ export interface ResolveSlashCommandInput {
   readonly input: string;
   readonly skillCommandMap: ReadonlyMap<string, string>;
   readonly pluginCommandMap: ReadonlyMap<string, string>;
+  /** Namespaced names of code-based extension commands (`<ext>:<cmd>`). */
+  readonly extensionCommandNames: ReadonlySet<string>;
   readonly isStreaming: boolean;
   readonly isCompacting: boolean;
 }
@@ -115,6 +122,22 @@ export function resolveSlashCommandInput(options: ResolveSlashCommandInput): Sla
       kind: 'plugin-command',
       commandName,
       pluginId,
+      args: parsed.args.trim(),
+    };
+  }
+
+  if (options.extensionCommandNames.has(parsed.name)) {
+    const busyReason = slashCommandBusyReason(options);
+    if (busyReason !== undefined) {
+      return {
+        kind: 'blocked',
+        commandName: parsed.name,
+        reason: busyReason,
+      };
+    }
+    return {
+      kind: 'extension-command',
+      commandName: parsed.name,
       args: parsed.args.trim(),
     };
   }

@@ -36,6 +36,7 @@ import { BannerProvider } from './banner/banner-provider';
 import { readBannerDisplayState, writeBannerDisplayState } from './banner/state';
 import {
   BUILTIN_SLASH_COMMANDS,
+  buildExtensionSlashCommands,
   buildPluginSlashCommands,
   buildSkillSlashCommands,
   isExperimentalFlagEnabled,
@@ -304,6 +305,8 @@ export class KimiTUI {
   readonly skillCommandMap = new Map<string, string>();
   private pluginCommands: readonly KimiSlashCommand[] = [];
   readonly pluginCommandMap = new Map<string, string>();
+  private extensionCommands: readonly KimiSlashCommand[] = [];
+  readonly extensionCommandNames = new Set<string>();
   private readonly imageStore = new ImageAttachmentStore();
   private fdPath: string | null = detectFdPath();
   private fdDownloadStarted = false;
@@ -431,7 +434,7 @@ export class KimiTUI {
     const builtins = sortSlashCommands(BUILTIN_SLASH_COMMANDS).filter((command) =>
       isExperimentalFlagEnabled(command.experimentalFlag),
     );
-    return [...builtins, ...this.skillCommands, ...this.pluginCommands];
+    return [...builtins, ...this.skillCommands, ...this.pluginCommands, ...this.extensionCommands];
   }
 
   private setupAutocomplete(): void {
@@ -513,6 +516,30 @@ export class KimiTUI {
     this.pluginCommandMap.clear();
     for (const [commandName, body] of pluginSlashCommands.commandMap) {
       this.pluginCommandMap.set(commandName, body);
+    }
+    this.setupAutocomplete();
+  }
+
+  /** Refresh code-based extension slash commands from the session. */
+  async refreshExtensionCommands(session?: Session): Promise<void> {
+    if (session === undefined) {
+      this.extensionCommands = [];
+      this.extensionCommandNames.clear();
+      this.setupAutocomplete();
+      return;
+    }
+
+    let defs;
+    try {
+      defs = await session.listExtensionCommands();
+    } catch {
+      return;
+    }
+    const extensionSlashCommands = buildExtensionSlashCommands(defs);
+    this.extensionCommands = extensionSlashCommands.commands;
+    this.extensionCommandNames.clear();
+    for (const name of extensionSlashCommands.commandNames) {
+      this.extensionCommandNames.add(name);
     }
     this.setupAutocomplete();
   }
@@ -707,6 +734,7 @@ export class KimiTUI {
     }
     void this.refreshSkillCommands(this.session);
     void this.refreshPluginCommands(this.session);
+    void this.refreshExtensionCommands(this.session);
   }
 
   private async showSessionWarnings(session: Session): Promise<void> {
@@ -1363,6 +1391,27 @@ export class KimiTUI {
       });
   }
 
+  /**
+   * Activate a code-based extension slash command. The extension resolves the
+   * command (prompt-style returns text sent to the model; action-style runs
+   * its handler server-side and returns undefined).
+   */
+  activateExtensionCommand(session: Session, commandName: string, args: string): void {
+    this.beginSessionRequest();
+    void session
+      .activateExtensionCommand(commandName, args)
+      .then((result) => {
+        // Prompt-style command: feed the resolved prompt to the model.
+        if (result?.prompt !== undefined && result.prompt.length > 0) {
+          this.sendMessage(session, result.prompt);
+        }
+      })
+      .catch((error: unknown) => {
+        const message = formatErrorMessage(error);
+        this.failSessionRequest(`Extension command "${commandName}" failed: ${message}`);
+      });
+  }
+
   private sendMessage(session: Session, input: string, options?: SendMessageOptions): void {
     if (
       this.deferUserMessages ||
@@ -1741,6 +1790,7 @@ export class KimiTUI {
     try {
       await this.refreshSkillCommands(this.session);
       await this.refreshPluginCommands(this.session);
+      await this.refreshExtensionCommands(this.session);
     } catch {
       /* keep the switched session usable even if dynamic skills fail */
     }
@@ -1779,6 +1829,7 @@ export class KimiTUI {
     try {
       await this.refreshSkillCommands(session);
       await this.refreshPluginCommands(session);
+      await this.refreshExtensionCommands(session);
     } catch {
       /* keep the reloaded session usable even if dynamic skills fail */
     }
@@ -1821,6 +1872,7 @@ export class KimiTUI {
     try {
       await this.refreshSkillCommands(this.session);
       await this.refreshPluginCommands(this.session);
+      await this.refreshExtensionCommands(this.session);
     } catch {
       /* keep the new session usable even if dynamic skills fail */
     }

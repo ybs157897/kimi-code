@@ -18,6 +18,26 @@ export class PreToolCallHookPermissionPolicy implements PermissionPolicy {
       },
     });
     context.signal.throwIfAborted();
+
+    // Code-based extension `tool_call` event: runs alongside the declarative
+    // PreToolUse hook. A handler returning { block: true } denies the call.
+    const runner = this.agent.extensionRunner;
+    if (runner?.hasHandlers('tool_call') === true) {
+      const extResult = await runner.emit({
+        type: 'tool_call',
+        toolName: context.toolCall.name,
+        toolInput: isPlainRecord(context.args) ? context.args : {},
+        toolCallId: context.toolCall.id,
+      });
+      context.signal.throwIfAborted();
+      if (extResult?.block === true) {
+        return {
+          kind: 'deny',
+          message: extResult.reason ?? `Blocked by extension.`,
+        };
+      }
+    }
+
     if (hookResult === undefined) return;
     return {
       kind: 'deny',

@@ -1,6 +1,7 @@
 import { homedir } from 'node:os';
 import { join } from 'pathe';
 import type { Kaos } from '@moonshot-ai/kaos';
+import type { ContentPart } from '@moonshot-ai/kosong';
 import type { SessionWarning } from '@moonshot-ai/protocol';
 
 import { ErrorCodes, KimiError } from '#/errors';
@@ -35,6 +36,11 @@ import {
   type SessionMcpConfig,
 } from '../mcp';
 import type { EnabledPluginSessionStart, PluginCommandDef } from '../plugin';
+import {
+  type ExtensionCommandDef,
+  type ExtensionManager,
+  type ExtensionRunner,
+} from '#/extension';
 import {
   DEFAULT_AGENT_PROFILES,
   DEFAULT_INIT_PROMPT,
@@ -78,6 +84,13 @@ export interface SessionOptions {
   readonly telemetry?: TelemetryClient | undefined;
   readonly pluginSessionStarts?: readonly EnabledPluginSessionStart[];
   readonly pluginCommands?: readonly PluginCommandDef[];
+  /**
+   * Code-based extension manager (App-scoped). When provided, the session
+   * builds a per-session runner over the currently loaded extensions and binds
+   * it to the main agent so events fire from the turn/permission hook points
+   * and contributed tools register in-process.
+   */
+  readonly extensionManager?: ExtensionManager;
   readonly appVersion?: string;
   readonly experimentalFlags?: ExperimentalFlagResolver;
   /** Owner-scoped [image] limits, threaded from the owning core into every agent. */
@@ -186,6 +199,8 @@ export class Session {
   private additionalDirs: readonly string[];
   private sessionAdditionalDirs: readonly string[] = [];
   private readonly pluginCommands: readonly PluginCommandDef[];
+  /** Per-session extension runner (bound to the main agent), or undefined. */
+  private extensionRunner: ExtensionRunner | undefined;
   private agentIdCounter = 0;
   private readonly skillsReady: Promise<void>;
   metadata: SessionMeta = {
@@ -344,8 +359,51 @@ export class Session {
     if (this.options.drainAgentTasksOnStop) {
       agent.printDrainAgentTasksOnStop = true;
     }
+    this.bindExtensionRunner(agent);
     await this.triggerSessionStart('startup');
     return agent;
+  }
+
+  /**
+   * Build (if an extension manager is configured) the per-session extension
+   * runner, bind it to the main agent, and register every contributed tool
+   * in-process. Safe to call when there are no extensions (no-op).
+   */
+  private bindExtensionRunner(agent: Agent): void {
+    const manager = this.options.extensionManager;
+    if (manager === undefined) return;
+    const runner = manager.createRunner();
+    if (runner.size === 0) return;
+    runner.bind({
+      cwd: agent.config.cwd,
+      sessionId: this.options.id ?? '',
+      sendUserMessage: (content) => {
+        const parts: readonly ContentPart[] = [{ type: 'text', text: content }];
+        void agent.turn.prompt(parts);
+      },
+      setModel: async (modelAlias) => {
+        agent.config.update({ modelAlias });
+        return true;
+      },
+      setActiveTools: (toolNames) => {
+        agent.tools.setActiveTools(toolNames);
+      },
+      getActiveTools: () => agent.tools.data().filter((t) => t.active).map((t) => t.name),
+    });
+    agent.extensionRunner = runner;
+    this.extensionRunner = runner;
+    // Register contributed tools in-process (no RPC bounce).
+    for (const ext of manager.list()) {
+      for (const tool of ext.tools.values()) {
+        agent.tools.registerExtensionTool({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
+          disclosure: tool.disclosure,
+          execute: tool.execute,
+        });
+      }
+    }
   }
 
   async resume(): Promise<{ warning?: string }> {
@@ -373,6 +431,9 @@ export class Session {
     const profile = DEFAULT_AGENT_PROFILES['agent'];
     if (main !== undefined && profile !== undefined && main.config.systemPrompt === '') {
       await this.bootstrapAgentProfile(main, profile);
+    }
+    if (main !== undefined) {
+      this.bindExtensionRunner(main);
     }
     await this.triggerSessionStart('resume');
     return { warning };
@@ -402,6 +463,9 @@ export class Session {
         Array.from(this.readyAgents(), async (agent) => agent.cron?.stop()),
       );
       await this.flushMetadata();
+      // Invalidate the per-session extension runner so handlers captured by
+      // the old session cannot fire after the session is rebuilt.
+      this.extensionRunner?.invalidate('Extension runtime is stale after reload.');
     } finally {
       try {
         await this.mcp.shutdown();
@@ -843,6 +907,37 @@ export class Session {
     return this.pluginCommands;
   }
 
+  /** Slash commands contributed by code-based extensions, for the TUI. */
+  listExtensionCommands(): readonly ExtensionCommandDef[] {
+    return this.options.extensionManager?.enabledCommands() ?? [];
+  }
+
+  /**
+   * Activate an extension-contributed slash command by its namespaced name
+   * (`<extensionId>:<commandName>`). If the command is prompt-style, its
+   * resolved prompt text is returned for the caller to send to the model;
+   * action-style commands run their handler here and return undefined.
+   */
+  async activateExtensionCommand(
+    namespacedName: string,
+    args: string,
+  ): Promise<{ prompt?: string } | undefined> {
+    const resolved = this.options.extensionManager?.resolveCommand(namespacedName);
+    if (resolved === undefined) return undefined;
+    const command = resolved.extension.commands.get(resolved.commandName);
+    if (command === undefined) return undefined;
+    if (command.prompt !== undefined) {
+      const prompt = await command.prompt(args);
+      return { prompt };
+    }
+    return undefined;
+  }
+
+  /** Access the per-session extension runner (used by closeForReload to invalidate). */
+  getExtensionRunner(): ExtensionRunner | undefined {
+    return this.extensionRunner;
+  }
+
   private async loadSkills(): Promise<void> {
     const roots = await resolveSkillRoots({
       paths: {
@@ -1100,6 +1195,9 @@ export class Session {
       matcherValue: source,
       inputData: { source },
     });
+    if (this.extensionRunner?.hasHandlers('session_start') === true) {
+      await this.extensionRunner.emit({ type: 'session_start' });
+    }
   }
 
   private async triggerSessionEnd(reason: 'exit'): Promise<void> {
@@ -1107,6 +1205,9 @@ export class Session {
       matcherValue: reason,
       inputData: { reason },
     });
+    if (this.extensionRunner?.hasHandlers('session_shutdown') === true) {
+      await this.extensionRunner.emit({ type: 'session_shutdown' });
+    }
   }
 }
 

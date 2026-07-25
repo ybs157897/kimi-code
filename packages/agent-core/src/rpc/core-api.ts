@@ -24,10 +24,13 @@ import type { ContentPart } from '@moonshot-ai/kosong';
 import type { SessionWarning } from '@moonshot-ai/protocol';
 
 import type { PluginCommandDef, PluginInfo, PluginSummary, ReloadSummary } from '#/plugin';
+import type { ExtensionCommandDef } from '#/extension';
 import type { UsageStatus } from './events';
 import type { WithAgentId, WithSessionId } from './types';
 
 export type { PluginCommandDef } from '#/plugin';
+// ExtensionCommandDef is re-exported via the extension domain (src/index.ts),
+// not here, to avoid a duplicate-export conflict in the root barrel.
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
@@ -318,6 +321,17 @@ export interface ActivatePluginCommandPayload {
   readonly args?: string | undefined;
 }
 
+export interface ActivateExtensionCommandPayload {
+  /** Namespaced command name `<extensionId>:<commandName>`. */
+  readonly name: string;
+  readonly args?: string | undefined;
+}
+
+export interface ActivateExtensionCommandResult {
+  /** Prompt text for prompt-style commands; undefined for action-style commands. */
+  readonly prompt?: string | undefined;
+}
+
 export interface McpServerInfo {
   readonly name: string;
   readonly transport: 'stdio' | 'http' | 'sse';
@@ -508,6 +522,10 @@ export interface SessionAPI extends AgentAPIWithId {
   getSessionMetadata: (payload: EmptyPayload) => SessionMeta;
   listSkills: (payload: EmptyPayload) => readonly SkillSummary[];
   listPluginCommands: (payload: EmptyPayload) => readonly PluginCommandDef[];
+  listExtensionCommands: (payload: EmptyPayload) => readonly ExtensionCommandDef[];
+  activateExtensionCommand: (
+    payload: ActivateExtensionCommandPayload,
+  ) => Promise<ActivateExtensionCommandResult | undefined>;
   listMcpServers: (payload: EmptyPayload) => readonly McpServerInfo[];
   getMcpStartupMetrics: (payload: EmptyPayload) => McpStartupMetrics;
   reconnectMcpServer: (payload: ReconnectMcpServerPayload) => void;

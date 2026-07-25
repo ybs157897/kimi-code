@@ -10,6 +10,7 @@ import { generate, type ChatProvider } from '@moonshot-ai/kosong';
 
 import type { EnabledPluginSessionStart, PluginCommandDef } from '#/plugin';
 import { expandCommandArguments } from '../plugin/commands';
+import type { ExtensionRunner } from '#/extension';
 import type { PluginCommandOrigin } from './context';
 
 import type { McpConnectionManager } from '../mcp';
@@ -130,6 +131,13 @@ export class Agent {
   readonly subagentHost?: SessionSubagentHost;
   readonly mcp?: McpConnectionManager;
   readonly hooks?: HookEngine;
+  /**
+   * Code-based extension runner for this agent's session. Bound by the session
+   * after the main agent is created; `undefined` for agents in sessions that
+   * have no extensions (or for subagents, which inherit via their parent).
+   * Turn/permission hook points read this to dispatch extension events.
+   */
+  extensionRunner?: ExtensionRunner;
   readonly log: Logger;
   readonly telemetry: TelemetryClient;
   readonly experimentalFlags: ExperimentalFlagResolver;

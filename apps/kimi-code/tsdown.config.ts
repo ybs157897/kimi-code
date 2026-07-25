@@ -24,6 +24,11 @@ export default defineConfig({
     ].join('\n'),
   },
   plugins: [rawTextPlugin()],
+  // jiti loads extensions at runtime and internally requires its own
+  // `dist/babel.cjs` via a path relative to its own location. Bundling jiti
+  // inlines it and breaks that relative resolution (babel.cjs is not bundled
+  // alongside), so keep jiti external and let it resolve from node_modules.
+  external: ['jiti'],
   alias: {
     '@': resolve(appRoot, 'src'),
   },

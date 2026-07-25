@@ -15,6 +15,7 @@ function resolve(
     input,
     skillCommandMap: new Map<string, string>(),
     pluginCommandMap: new Map<string, string>(),
+    extensionCommandNames: new Set<string>(),
     isStreaming: false,
     isCompacting: false,
     ...overrides,

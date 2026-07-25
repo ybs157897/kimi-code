@@ -155,8 +155,11 @@ export interface SlashCommandHost {
     commandName: string,
     args: string,
   ): void;
+  activateExtensionCommand(session: Session, commandName: string, args: string): void;
   readonly skillCommandMap: Map<string, string>;
   readonly pluginCommandMap: Map<string, string>;
+  /** Namespaced names of code-based extension commands (`<ext>:<cmd>`). */
+  readonly extensionCommandNames: Set<string>;
 
   // Controller refs
   readonly streamingUI: StreamingUIController;
@@ -183,6 +186,7 @@ async function executeSlashCommand(host: SlashCommandHost, input: string): Promi
     input,
     skillCommandMap: host.skillCommandMap,
     pluginCommandMap: host.pluginCommandMap,
+    extensionCommandNames: host.extensionCommandNames,
     isStreaming: host.state.appState.streamingPhase !== 'idle',
     isCompacting: host.state.appState.isCompacting,
   });
@@ -226,6 +230,16 @@ async function executeSlashCommand(host: SlashCommandHost, input: string): Promi
       }
       host.track('input_command', { command: `${intent.pluginId}:${intent.commandName}` });
       host.activatePluginCommand(session, intent.pluginId, intent.commandName, intent.args);
+      return;
+    }
+    case 'extension-command': {
+      const session = host.session;
+      if (session === undefined) {
+        host.showError('No active session.');
+        return;
+      }
+      host.track('input_command', { command: intent.commandName });
+      host.activateExtensionCommand(session, intent.commandName, intent.args);
       return;
     }
     case 'message':

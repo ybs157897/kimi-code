@@ -3,6 +3,7 @@ import { homedir } from 'node:os';
 
 import { ErrorCodes, KimiError } from '#/errors';
 import { getRootLogger, log } from '#/logging/logger';
+import { ExtensionManager, type ExtensionCommandDef, type ExtensionReloadSummary } from '#/extension';
 import { PluginManager } from '#/plugin';
 import { LocalFetchURLProvider } from '#/tools/providers/local-fetch-url';
 import { MoonshotFetchURLProvider } from '#/tools/providers/moonshot-fetch-url';
@@ -74,6 +75,8 @@ import {
 import type { CoreRPCClient } from './client';
 import type {
   ActivateSkillPayload,
+  ActivateExtensionCommandPayload,
+  ActivateExtensionCommandResult,
   ActivatePluginCommandPayload,
   AddAdditionalDirPayload,
   AddAdditionalDirResult,
@@ -220,6 +223,9 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
   readonly plugins: PluginManager;
   private pluginsReady: Promise<void>;
   private pluginsLoadError: Error | undefined;
+  readonly extensions: ExtensionManager;
+  private extensionsCwd: string | undefined;
+  private extensionsLoadError: Error | undefined;
   private readonly appVersion: string | undefined;
   private readonly experimentalFlags: FlagResolver;
   /** `true` when the host runs `kimi -p` (v1 print mode); see `withPrintModeDefaults`. */
@@ -281,6 +287,10 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     this.pluginsReady = this.plugins.load().catch((error: unknown) => {
       this.pluginsLoadError = error instanceof Error ? error : new Error(String(error));
     });
+    // Code-based extensions are discovered lazily per working directory (they
+    // read <cwd>/.kimi-code/extensions), so the initial load happens when the
+    // first session is created. Here we only construct the manager.
+    this.extensions = new ExtensionManager({ homeDir: this.homeDir });
     log.info('experimental flags enabled', { flags: this.experimentalFlags.enabledIds() });
 
     this.sdk = rpcClient(this);
@@ -360,6 +370,10 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     const pluginSessionStarts = this.plugins.enabledSessionStarts();
     const pluginCommands = await this.plugins.enabledCommands();
     const mcpConfig = this.mergePluginMcpConfig(withCallerMcp);
+    // Discover + load code-based extensions for this working directory. Errors
+    // are captured (not thrown) so a broken extension file cannot block session
+    // creation; they are surfaced via listExtensionCommands / diagnostics.
+    await this.ensureExtensionsLoaded(workDir);
 
     // Session ctor attaches its own log sink. If anything in the setup-after-
     // ctor block throws, `session.close()` releases the sink (and mcp).
@@ -384,6 +398,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       telemetry: sessionTelemetry,
       pluginSessionStarts,
       pluginCommands,
+      extensionManager: this.extensions,
       appVersion: this.appVersion,
       additionalDirs,
       drainAgentTasksOnStop: options.drainAgentTasksOnStop,
@@ -536,6 +551,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       initializeMainAgent: false,
       pluginSessionStarts,
       pluginCommands,
+      extensionManager: this.extensions,
       appVersion: this.appVersion,
       additionalDirs,
     });
@@ -580,6 +596,18 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     this.reloadProviderManager();
     this.clearRuntimeCache();
     await this.reloadPlugins({});
+    // Reload code-based extensions for the session's working directory so
+    // edited extension files take effect. Falls back to the current process
+    // cwd when the session has no recorded working directory.
+    const reloadCwd =
+      active?.options.kaos.getcwd() ?? this.extensionsCwd ?? process.cwd();
+    try {
+      await this.reloadExtensions(reloadCwd);
+    } catch (error) {
+      // Reload errors are non-fatal: a broken extension file should not abort
+      // the whole session reload. The error is captured for diagnostics.
+      log.warn('extension reload failed during /reload', { error: (error as Error).message });
+    }
 
     if (active !== undefined) {
       await active.closeForReload();
@@ -1167,6 +1195,68 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
         `Fix the file at ${this.homeDir}/plugins/installed.json and run /plugins reload.`,
       { cause: this.pluginsLoadError, details: { kimiHomeDir: this.homeDir } },
     );
+  }
+
+  // --------------------------------------------------------------------------
+  // Code-based extensions
+  // --------------------------------------------------------------------------
+
+  /**
+   * Ensure extensions have been discovered for `cwd`. No-op on repeat calls
+   * for the same cwd; reloads when the cwd changes. Captures load errors
+   * instead of throwing so session creation is never blocked by a broken
+   * extension file.
+   */
+  private async ensureExtensionsLoaded(cwd: string): Promise<void> {
+    if (this.extensionsCwd === cwd) return;
+    try {
+      await this.extensions.load(cwd);
+      this.extensionsCwd = cwd;
+      this.extensionsLoadError = undefined;
+      const errors = this.extensions.errors();
+      if (errors.length > 0) {
+        log.warn('extension load errors', {
+          cwd,
+          errors: errors.map((e) => ({ path: e.path, error: e.error })),
+        });
+      }
+    } catch (error) {
+      this.extensionsLoadError = error instanceof Error ? error : new Error(String(error));
+      log.warn('extension load failed', { cwd, error: this.extensionsLoadError.message });
+    }
+  }
+
+  /** Reload extensions (re-discover + re-load) for the given cwd. */
+  async reloadExtensions(cwd: string): Promise<ExtensionReloadSummary> {
+    try {
+      const summary = await this.extensions.reload(cwd);
+      this.extensionsCwd = cwd;
+      this.extensionsLoadError = undefined;
+      return summary;
+    } catch (error) {
+      this.extensionsLoadError = error instanceof Error ? error : new Error(String(error));
+      throw new KimiError(
+        ErrorCodes.PLUGIN_LOAD_FAILED,
+        `Failed to reload extensions: ${this.extensionsLoadError.message}`,
+        { cause: error, details: { cwd } },
+      );
+    }
+  }
+
+  /** Session-scoped RPC: list slash commands contributed by code-based extensions. */
+  listExtensionCommands({
+    sessionId,
+    ...payload
+  }: SessionScopedPayload<EmptyPayload>): readonly ExtensionCommandDef[] {
+    return this.sessionApi(sessionId).listExtensionCommands(payload);
+  }
+
+  /** Session-scoped RPC: resolve + run an extension slash command. */
+  activateExtensionCommand({
+    sessionId,
+    ...payload
+  }: SessionScopedPayload<ActivateExtensionCommandPayload>): Promise<ActivateExtensionCommandResult | undefined> {
+    return this.sessionApi(sessionId).activateExtensionCommand(payload);
   }
 
   private async resolveRuntime(config: KimiConfig): Promise<ToolServices> {

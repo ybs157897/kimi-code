@@ -58,6 +58,7 @@ import type {
   SessionSummary,
   SkillSummary,
   PluginCommandDef,
+  ExtensionCommandDef,
   Unsubscribe,
 } from '#/types';
 
@@ -124,6 +125,11 @@ export interface ActivateSkillRpcInput extends SessionIdRpcInput {
 export interface ActivatePluginCommandRpcInput extends SessionIdRpcInput {
   readonly pluginId: string;
   readonly commandName: string;
+  readonly args?: string | undefined;
+}
+
+export interface ActivateExtensionCommandRpcInput extends SessionIdRpcInput {
+  readonly name: string;
   readonly args?: string | undefined;
 }
 
@@ -610,6 +616,11 @@ export abstract class SDKRpcClientBase {
     return rpc.listPluginCommands({ sessionId: input.sessionId });
   }
 
+  async listExtensionCommands(input: SessionIdRpcInput): Promise<readonly ExtensionCommandDef[]> {
+    const rpc = await this.getRpc();
+    return rpc.listExtensionCommands({ sessionId: input.sessionId });
+  }
+
   async listBackgroundTasks(
     input: SessionIdRpcInput & { activeOnly?: boolean; limit?: number },
   ): Promise<readonly BackgroundTaskInfo[]> {
@@ -783,6 +794,17 @@ export abstract class SDKRpcClientBase {
       pluginId: input.pluginId,
       commandName: input.commandName,
       args: input.args,
+    });
+  }
+
+  async activateExtensionCommand(
+    input: ActivateExtensionCommandRpcInput,
+  ): Promise<{ prompt?: string } | undefined> {
+    const rpc = await this.getRpc();
+    return rpc.activateExtensionCommand({
+      sessionId: input.sessionId,
+      name: input.name,
+      ...(input.args !== undefined ? { args: input.args } : {}),
     });
   }
 

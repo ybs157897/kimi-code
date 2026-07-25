@@ -546,6 +546,13 @@ export class TurnFlow {
     this.agent.usage.beginTurn();
     this.agent.emitEvent({ type: 'turn.started', turnId, origin });
 
+    // Fire the code-based extension `turn_start` event (best-effort).
+    if (this.agent.extensionRunner?.hasHandlers('turn_start') === true) {
+      void this.agent.extensionRunner
+        .emit({ type: 'turn_start', prompt: contentPartsToText(input) })
+        .catch(() => undefined);
+    }
+
     const startedAt = Date.now();
     let ended: TurnEndedEvent;
     let blockedByUserPromptHook = false;
@@ -712,6 +719,10 @@ export class TurnFlow {
     this.stepFailureByTurn.delete(turnId);
     this.activeRequestTrace = undefined;
     this.latestTraceId = undefined;
+    // Fire the code-based extension `turn_end` event (best-effort).
+    if (this.agent.extensionRunner?.hasHandlers('turn_end') === true) {
+      void this.agent.extensionRunner.emit({ type: 'turn_end' }).catch(() => undefined);
+    }
     return { event: ended, stopReason: completedStopReason, blockedByUserPromptHook };
   }
 
@@ -971,6 +982,20 @@ export class TurnFlow {
               });
               if (isTerminalUpdateGoalResult(ctx.toolCall.name, ctx.args, finalResult)) {
                 goalOutcomeToolResultPending = true;
+              }
+              // Fire the code-based extension `tool_result` event alongside
+              // the declarative PostToolUse hook. Best-effort: errors are
+              // reported through the runner's error listeners, never thrown.
+              if (this.agent.extensionRunner?.hasHandlers('tool_result') === true) {
+                void this.agent.extensionRunner
+                  .emit({
+                    type: 'tool_result',
+                    toolName: ctx.toolCall.name,
+                    toolCallId: ctx.toolCall.id,
+                    isError: isError === true,
+                    output: toolOutputText(output).slice(0, 2000),
+                  })
+                  .catch(() => undefined);
               }
               return modelResult;
             },
@@ -1583,4 +1608,15 @@ function abandonedToolResultOutput(ended: TurnEndedEvent): string {
         ? `the turn failed${ended.error !== undefined ? ` (${ended.error.message})` : ''}`
         : 'the turn ended';
   return `Tool call did not complete: ${cause} before its result was recorded. Do not assume the tool completed successfully.`;
+}
+
+/** Join the text parts of a ContentPart[] into a single string (for extension events). */
+function contentPartsToText(parts: readonly ContentPart[]): string {
+  let out = '';
+  for (const part of parts) {
+    if (part.type === 'text' && typeof part.text === 'string') {
+      out += part.text;
+    }
+  }
+  return out;
 }

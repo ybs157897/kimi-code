@@ -29,6 +29,7 @@ export type {
   ExperimentalFlagMap,
   ExperimentalFlagSource,
   ExportSessionManifest,
+  ExtensionCommandDef,
   GoalBudgetLimits,
   GoalBudgetReport,
   GoalChange,
