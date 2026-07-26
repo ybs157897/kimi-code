@@ -1,6 +1,8 @@
 import type {
   GoalChange,
   GoalSnapshot,
+  ExpertTeamMemberState,
+  ExpertTeamSnapshot,
   ModelAlias,
   PermissionMode,
   ProviderConfig,
@@ -34,6 +36,10 @@ export interface AppState {
   /** 'bash' when the editor is in `!` shell-command mode. */
   inputMode: 'prompt' | 'bash';
   swarmMode: boolean;
+  /** Active plugin-defined expert team mode, when selected. */
+  expertTeam?: ExpertTeamSnapshot | null;
+  /** Declared team roster and each member's current lifecycle phase. */
+  expertTeamMembers?: readonly ExpertTeamMemberState[];
   /** Live thinking effort of the active session (e.g. 'off', 'on', 'high');
    * mirrors the runtime. The single source of truth for the thinking state in
    * the TUI. */

@@ -884,11 +884,16 @@ export class ToolManager {
           new b.AgentTool(
             this.agent.subagentHost,
             background,
-            DEFAULT_AGENT_PROFILES['agent']?.subagents,
+            this.agent.getActiveProfile()?.subagents ??
+              DEFAULT_AGENT_PROFILES['agent']?.subagents,
             {
               allowBackground,
               log: this.agent.log,
               subagentTimeoutMs: resolveSubagentTimeoutMs(this.agent.kimiConfig?.subagent?.timeoutMs),
+              // Team dispatch semantics apply to the lead only; members never
+              // have the Agent tool enabled, and normal sessions have no team.
+              team:
+                this.agent.teamSelfName === 'team-lead' ? this.agent.team : undefined,
             },
           ),
         this.agent.subagentHost &&
@@ -896,6 +901,11 @@ export class ToolManager {
             this.agent.subagentHost,
             this.agent.swarmMode,
             resolveSubagentTimeoutMs(this.agent.kimiConfig?.subagent?.timeoutMs),
+          ),
+        this.agent.team &&
+          new b.SendMessageTool(
+            this.agent.team,
+            this.agent.teamSelfName ?? 'team-lead',
           ),
         toolServices?.webSearcher && new b.WebSearchTool(toolServices.webSearcher),
         toolServices?.urlFetcher && new b.FetchURLTool(toolServices.urlFetcher),

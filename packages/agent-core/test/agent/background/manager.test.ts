@@ -235,6 +235,23 @@ describe('BackgroundManager', () => {
     });
   });
 
+  it('waits without a deadline for a task to become terminal', async () => {
+    const { manager } = createBackgroundManager();
+    let resolveCompletion: (value: { result: string }) => void = () => {};
+    const completion = new Promise<{ result: string }>((resolve) => {
+      resolveCompletion = resolve;
+    });
+    const taskId = manager.registerTask(agentTask(completion, 'long-running teammate'));
+    const terminal = manager.waitUntilTerminal(taskId);
+
+    resolveCompletion({ result: 'done' });
+
+    await expect(terminal).resolves.toMatchObject({
+      taskId,
+      status: 'completed',
+    });
+  });
+
   it('tracks foreground tasks and releases their waiter when detached', async () => {
     const { manager } = createBackgroundManager();
     const taskId = manager.registerTask(

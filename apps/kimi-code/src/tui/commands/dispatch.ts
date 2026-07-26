@@ -37,6 +37,7 @@ import {
   showSettingsSelector,
 } from './config';
 import { handleGoalCommand } from './goal';
+import { handleExpertsCommand } from './experts';
 import { handleFeedbackCommand, showMcpServers, showStatusReport, showUsage } from './info';
 import { handleAddDirCommand } from './add-dir';
 import { parseSlashInput } from './parse';
@@ -83,6 +84,7 @@ export { handleFeedbackCommand, showMcpServers, showStatusReport, showUsage } fr
 export { handlePluginsCommand } from './plugins';
 export { handleReloadCommand, handleReloadTuiCommand } from './reload';
 export { handleGoalCommand } from './goal';
+export { handleExpertsCommand } from './experts';
 export {
   handleExportDebugZipCommand,
   handleExportMdCommand,
@@ -355,6 +357,9 @@ async function handleBuiltInSlashCommand(
       return;
     case 'swarm':
       await handleSwarmCommand(host, args);
+      return;
+    case 'experts':
+      await handleExpertsCommand(host, args);
       return;
     case 'compact':
       await handleCompactCommand(host, args);

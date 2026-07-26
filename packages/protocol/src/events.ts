@@ -500,6 +500,28 @@ export interface SessionMetaUpdatedEvent {
   readonly patch?: Record<string, unknown>;
 }
 
+export type ExpertTeamMemberPhase = 'not_started' | 'idle' | 'running';
+
+export interface ExpertTeamMemberState {
+  readonly name: string;
+  readonly agentId?: string;
+  readonly status: ExpertTeamMemberPhase;
+}
+
+export interface ExpertTeamStatusSnapshot {
+  readonly pluginId: string;
+  readonly pluginVersion?: string;
+  readonly displayName: string;
+  readonly leadAgentName: string;
+  readonly activatedAt: string;
+  readonly members: readonly ExpertTeamMemberState[];
+}
+
+export interface ExpertTeamUpdatedEvent {
+  readonly type: 'expert_team.updated';
+  readonly status: ExpertTeamStatusSnapshot | null;
+}
+
 export interface SessionCreatedEvent {
   readonly type: 'event.session.created';
   readonly session: Session;
@@ -917,6 +939,7 @@ export type AgentEvent =
   | NoticeEvent
   | AgentStatusUpdatedEvent
   | SessionMetaUpdatedEvent
+  | ExpertTeamUpdatedEvent
   | SessionCreatedEvent
   | WorkspaceCreatedEvent
   | WorkspaceUpdatedEvent
@@ -1411,6 +1434,26 @@ export const sessionMetaUpdatedEventSchema = z.object({
   patch: z.record(z.string(), z.unknown()).optional(),
 }) satisfies z.ZodType<SessionMetaUpdatedEvent>;
 
+export const expertTeamMemberStateSchema = z.object({
+  name: z.string().min(1),
+  agentId: z.string().min(1).optional(),
+  status: z.enum(['not_started', 'idle', 'running']),
+}) satisfies z.ZodType<ExpertTeamMemberState>;
+
+export const expertTeamStatusSnapshotSchema = z.object({
+  pluginId: z.string().min(1),
+  pluginVersion: z.string().min(1).optional(),
+  displayName: z.string().min(1),
+  leadAgentName: z.string().min(1),
+  activatedAt: z.string().min(1),
+  members: z.array(expertTeamMemberStateSchema),
+}) satisfies z.ZodType<ExpertTeamStatusSnapshot>;
+
+export const expertTeamUpdatedEventSchema = z.object({
+  type: z.literal('expert_team.updated'),
+  status: expertTeamStatusSnapshotSchema.nullable(),
+}) satisfies z.ZodType<ExpertTeamUpdatedEvent>;
+
 export const sessionCreatedEventSchema = z.object({
   type: z.literal('event.session.created'),
   session: sessionSchema,
@@ -1783,6 +1826,7 @@ export const agentEventSchema = z.discriminatedUnion('type', [
   noticeEventSchema,
   agentStatusUpdatedEventSchema,
   sessionMetaUpdatedEventSchema,
+  expertTeamUpdatedEventSchema,
   sessionCreatedEventSchema,
   workspaceCreatedEventSchema,
   workspaceUpdatedEventSchema,

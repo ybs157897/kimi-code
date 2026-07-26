@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { ChoicePickerComponent, type ChoiceOption } from '#/tui/components/dialogs/choice-picker';
 import { EditorSelectorComponent } from '#/tui/components/dialogs/editor-selector';
+import { ExpertTeamSelectorComponent } from '#/tui/components/dialogs/expert-team-selector';
 import { PermissionSelectorComponent } from '#/tui/components/dialogs/permission-selector';
 import { SettingsSelectorComponent } from '#/tui/components/dialogs/settings-selector';
 import { ThemeSelectorComponent } from '#/tui/components/dialogs/theme-selector';
@@ -114,6 +115,34 @@ describe('ChoicePickerComponent', () => {
     const upgradePreferenceOutput = upgradePreference.render(120).map(strip);
     expect(upgradePreferenceOutput).toContain('  ❯ On ← current');
     expect(upgradePreferenceOutput).toContain('    Install new versions in the background.');
+
+    const expertTeam = new ExpertTeamSelectorComponent({
+      current: {
+        pluginId: 'software-company',
+        displayName: 'Software Company',
+        leadAgentName: 'software-team-lead',
+        activatedAt: '2026-07-26T00:00:00.000Z',
+      },
+      teams: [
+        {
+          pluginId: 'software-company',
+          displayName: 'Software Company',
+          leadAgentName: 'software-team-lead',
+          memberAgentNames: ['software-engineer'],
+          members: [],
+          tags: [],
+          quickPrompts: [],
+          description: 'Software delivery team',
+        },
+      ],
+      onSelect,
+      onCancel,
+    });
+    const expertTeamOutput = expertTeam.render(120).map(strip);
+    expect(expertTeamOutput).toContain('  ❯ Software Company ← current');
+    expect(expertTeamOutput).toContain(
+      '    1 specialist · software-company · Software delivery team',
+    );
   });
 
   it('routes Space into the query for searchable lists instead of selecting', () => {

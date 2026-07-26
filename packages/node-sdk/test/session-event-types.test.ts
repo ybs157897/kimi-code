@@ -53,6 +53,12 @@ describe('Event public types', () => {
     expectTypeOf<EventByType<'cron.fired'>['origin']['kind']>().toEqualTypeOf<'cron_job'>();
   });
 
+  it('narrows expert-team roster updates by type', () => {
+    expectTypeOf<
+      NonNullable<EventByType<'expert_team.updated'>['status']>['members'][number]['status']
+    >().toEqualTypeOf<'not_started' | 'idle' | 'running'>();
+  });
+
   it('exposes approval and question reverse-RPC requests', () => {
     expectTypeOf<ApprovalRequest['turnId']>().toEqualTypeOf<number | undefined>();
     expectTypeOf<ApprovalRequest['toolName']>().toEqualTypeOf<string>();
@@ -68,6 +74,7 @@ describe('Event public types', () => {
       switch (event.type) {
         case 'agent.status.updated':
         case 'session.meta.updated':
+        case 'expert_team.updated':
         case 'event.session.created':
         case 'event.session.status_changed':
         case 'event.session.work_changed':
@@ -81,6 +88,7 @@ describe('Event public types', () => {
         case 'plugin_command.activated':
         case 'error':
         case 'warning':
+        case 'notice':
         case 'turn.started':
         case 'turn.ended':
         case 'turn.step.started':

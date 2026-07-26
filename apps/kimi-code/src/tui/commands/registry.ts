@@ -26,6 +26,11 @@ const SWARM_ARG_COMPLETIONS: readonly ArgCompletionSpec[] = [
   { value: 'off', description: 'Turn swarm mode off' },
 ];
 
+const EXPERTS_ARG_COMPLETIONS: readonly ArgCompletionSpec[] = [
+  { value: 'status', description: 'Show the active expert team roster' },
+  { value: 'off', description: 'Return to the standard Kimi agent' },
+];
+
 const ADD_DIR_ARG_COMPLETIONS: readonly ArgCompletionSpec[] = [
   { value: 'list', description: 'Show configured additional workspace directories' },
 ];
@@ -47,6 +52,10 @@ export function goalArgumentCompletions(argumentPrefix: string): AutocompleteIte
 /** Argument autocompletion for the `/swarm` command (subcommands). */
 export function swarmArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
   return completeLeadingArg(SWARM_ARG_COMPLETIONS, argumentPrefix);
+}
+
+export function expertsArgumentCompletions(argumentPrefix: string): AutocompleteItem[] | null {
+  return completeLeadingArg(EXPERTS_ARG_COMPLETIONS, argumentPrefix);
 }
 
 /** Argument autocompletion for the `/add-dir` command. */
@@ -176,6 +185,16 @@ export const BUILTIN_SLASH_COMMANDS = [
     argumentHint: '[on|off] | <task>',
     completeArgs: swarmArgumentCompletions,
     availability: 'idle-only',
+  },
+  {
+    name: 'experts',
+    aliases: ['expert-team'],
+    description: 'Select an installed expert team mode',
+    priority: 100,
+    argumentHint: '[status|off|<plugin-id>]',
+    completeArgs: expertsArgumentCompletions,
+    availability: 'idle-only',
+    experimentalFlag: 'expert-teams',
   },
   {
     name: 'model',

@@ -5,6 +5,7 @@ import type {
   ActivateExtensionCommandPayload,
   ActivateExtensionCommandResult,
   ActivatePluginCommandPayload,
+  ActivateExpertTeamPayload,
   AddAdditionalDirPayload,
   AddAdditionalDirResult,
   AgentAPI,
@@ -40,6 +41,8 @@ import type {
   UpdateSessionMetadataPayload,
 } from '#/rpc';
 import type { ExtensionCommandDef } from '#/extension';
+import type { ExpertTeamDefinition, ExpertTeamSnapshot } from '../expert-team';
+import type { ExpertTeamStatusSnapshot } from '#/rpc/events';
 import type { PromisableMethods } from '#/utils/types';
 
 import type { Session, SessionMeta } from '.';
@@ -88,6 +91,26 @@ export class SessionAPIImpl implements PromisableMethods<SessionAPI> {
 
   listPluginCommands(_payload: EmptyPayload): readonly PluginCommandDef[] {
     return this.session.listPluginCommands();
+  }
+
+  listExpertTeams(_payload: EmptyPayload): readonly ExpertTeamDefinition[] {
+    return this.session.listExpertTeams();
+  }
+
+  getExpertTeam(_payload: EmptyPayload): ExpertTeamSnapshot | null {
+    return this.session.getExpertTeam();
+  }
+
+  getExpertTeamStatus(_payload: EmptyPayload): ExpertTeamStatusSnapshot | null {
+    return this.session.getExpertTeamStatus();
+  }
+
+  activateExpertTeam(payload: ActivateExpertTeamPayload): Promise<ExpertTeamSnapshot> {
+    return this.session.activateExpertTeam(payload.pluginId);
+  }
+
+  deactivateExpertTeam(_payload: EmptyPayload): Promise<void> {
+    return this.session.deactivateExpertTeam();
   }
 
   listExtensionCommands(_payload: EmptyPayload): readonly ExtensionCommandDef[] {

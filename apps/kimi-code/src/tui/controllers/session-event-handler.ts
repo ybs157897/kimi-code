@@ -11,6 +11,7 @@ import type {
   CronFiredEvent,
   ErrorEvent,
   Event,
+  ExpertTeamUpdatedEvent,
   GoalChange,
   GoalUpdatedEvent,
   HookResultEvent,
@@ -258,6 +259,7 @@ export class SessionEventHandler {
       case 'tool.result': this.handleToolResult(event); break;
       case 'agent.status.updated': this.handleStatusUpdate(event); break;
       case 'session.meta.updated': this.handleSessionMetaChanged(event); break;
+      case 'expert_team.updated': this.handleExpertTeamUpdated(event); break;
       case 'goal.updated': this.handleGoalUpdated(event); break;
       case 'skill.activated': this.handleSkillActivated(event); break;
       case 'plugin_command.activated': this.handlePluginCommandActivated(event); break;
@@ -852,6 +854,13 @@ export class SessionEventHandler {
       this.host.setAppState({ sessionTitle: title });
       this.host.updateTerminalTitle();
     }
+  }
+
+  private handleExpertTeamUpdated(event: ExpertTeamUpdatedEvent): void {
+    this.host.setAppState({
+      expertTeam: event.status,
+      expertTeamMembers: event.status?.members ?? [],
+    });
   }
 
   private handleSessionError(event: ErrorEvent): void {

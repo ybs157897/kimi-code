@@ -2,7 +2,11 @@ import { homedir } from 'node:os';
 import { join } from 'pathe';
 import type { Kaos } from '@moonshot-ai/kaos';
 import type { ContentPart } from '@moonshot-ai/kosong';
-import type { SessionWarning } from '@moonshot-ai/protocol';
+import type {
+  ExpertTeamMemberState,
+  ExpertTeamStatusSnapshot,
+  SessionWarning,
+} from '@moonshot-ai/protocol';
 
 import { ErrorCodes, KimiError } from '#/errors';
 import { getRootLogger, log } from '#/logging/logger';
@@ -36,6 +40,14 @@ import {
   type SessionMcpConfig,
 } from '../mcp';
 import type { EnabledPluginSessionStart, PluginCommandDef } from '../plugin';
+import { EXPERT_TEAMS_FLAG_ID } from '../plugin';
+import type {
+  ExpertTeamDefinition,
+  ExpertTeamRuntime,
+  ExpertTeamSnapshot,
+  ExpertTeamRuntimeState,
+} from '../expert-team';
+import { TeamRuntime } from '../expert-team';
 import {
   type ExtensionCommandDef,
   type ExtensionManager,
@@ -84,6 +96,7 @@ export interface SessionOptions {
   readonly telemetry?: TelemetryClient | undefined;
   readonly pluginSessionStarts?: readonly EnabledPluginSessionStart[];
   readonly pluginCommands?: readonly PluginCommandDef[];
+  readonly expertTeams?: readonly ExpertTeamRuntime[];
   /**
    * Code-based extension manager (App-scoped). When provided, the session
    * builds a per-session runner over the currently loaded extensions and binds
@@ -151,6 +164,10 @@ export interface SessionMeta {
    *  these follow the session across close/resume without affecting any other
    *  session opened in the same workspace. */
   additionalDirs?: string[];
+  expertTeam?: ExpertTeamSnapshot;
+  /** WorkBuddy-style mailbox runtime state (roster, journal, pending
+   *  shutdowns) for the active expert team. Present iff `expertTeam` is. */
+  expertTeamRuntime?: ExpertTeamRuntimeState;
   agents: Record<string, AgentMeta>;
   custom: Record<string, any>;
 }
@@ -215,6 +232,9 @@ export class Session {
   private agentsMdWarning: string | undefined;
   private printSteerDeadline: number | undefined;
   private printSteerTurns = 0;
+  private activeExpertTeam: ExpertTeamRuntime | undefined;
+  private previousExpertProfile: ResolvedAgentProfile | undefined;
+  private expertTeamRuntime: TeamRuntime | undefined;
 
   constructor(public readonly options: SessionOptions) {
     // Attach the per-session log sink up front so the constructor's
@@ -450,6 +470,7 @@ export class Session {
       await this.bootstrapAgentProfile(main, profile);
     }
     if (main !== undefined) {
+      await this.restoreExpertTeamMode(main);
       this.bindExtensionRunner(main);
     }
     await this.triggerSessionStart('resume');
@@ -457,6 +478,9 @@ export class Session {
   }
 
   async close(): Promise<void> {
+    const runtime = this.expertTeamRuntime;
+    this.expertTeamRuntime = undefined;
+    runtime?.dispose();
     try {
       await Promise.allSettled(
         Array.from(this.readyAgents(), async (agent) => agent.cron?.stop()),
@@ -475,6 +499,9 @@ export class Session {
   }
 
   async closeForReload(): Promise<void> {
+    const runtime = this.expertTeamRuntime;
+    this.expertTeamRuntime = undefined;
+    runtime?.dispose();
     try {
       await Promise.allSettled(
         Array.from(this.readyAgents(), async (agent) => agent.cron?.stop()),
@@ -924,6 +951,292 @@ export class Session {
     return this.pluginCommands;
   }
 
+  listExpertTeams(): readonly ExpertTeamDefinition[] {
+    if (!this.experimentalFlags.enabled(EXPERT_TEAMS_FLAG_ID)) return [];
+    return (this.options.expertTeams ?? []).map((team) => ({
+      pluginId: team.pluginId,
+      pluginVersion: team.pluginVersion,
+      displayName: team.displayName,
+      description: team.description,
+      profession: team.profession,
+      tags: team.tags,
+      leadAgentName: team.leadAgentName,
+      memberAgentNames: team.memberAgentNames,
+      members: team.members,
+      quickPrompts: team.quickPrompts,
+      defaultInitPrompt: team.defaultInitPrompt,
+      categoryId: team.categoryId,
+    }));
+  }
+
+  getExpertTeam(): ExpertTeamSnapshot | null {
+    return this.metadata.expertTeam ?? null;
+  }
+
+  getExpertTeamStatus(): ExpertTeamStatusSnapshot | null {
+    const snapshot = this.metadata.expertTeam;
+    if (snapshot === undefined) return null;
+
+    const definition =
+      this.activeExpertTeam ??
+      (this.options.expertTeams ?? []).find((team) => team.pluginId === snapshot.pluginId);
+    const persistedMembers: readonly ExpertTeamMemberState[] =
+      this.metadata.expertTeamRuntime?.members.map((member) => ({
+        ...member,
+        status: 'idle',
+      })) ?? [];
+    const activeMembers = this.expertTeamRuntime?.memberStates() ?? persistedMembers;
+    const activeByName = new Map(activeMembers.map((member) => [member.name, member]));
+    const memberNames =
+      definition?.memberAgentNames ??
+      activeMembers.map((member) => member.name);
+
+    return {
+      pluginId: snapshot.pluginId,
+      pluginVersion: snapshot.pluginVersion,
+      displayName: snapshot.displayName,
+      leadAgentName: snapshot.leadAgentName,
+      activatedAt: snapshot.activatedAt,
+      members: memberNames.map(
+        (name): ExpertTeamMemberState =>
+          activeByName.get(name) ?? {
+            name,
+            agentId: undefined,
+            status: 'not_started',
+          },
+      ),
+    };
+  }
+
+  async activateExpertTeam(pluginId: string): Promise<ExpertTeamSnapshot> {
+    if (!this.experimentalFlags.enabled(EXPERT_TEAMS_FLAG_ID)) {
+      throw new KimiError(
+        ErrorCodes.REQUEST_INVALID,
+        `Experimental feature "${EXPERT_TEAMS_FLAG_ID}" is disabled`,
+      );
+    }
+    if (this.hasActiveTurn) {
+      throw new KimiError(ErrorCodes.TURN_AGENT_BUSY, 'Cannot change expert team during a turn');
+    }
+    const normalizedPluginId = pluginId.trim().toLowerCase();
+    if (normalizedPluginId.length === 0) {
+      throw new KimiError(ErrorCodes.REQUEST_INVALID, 'Expert team plugin id cannot be empty');
+    }
+    const team = (this.options.expertTeams ?? []).find(
+      (candidate) => candidate.pluginId.toLowerCase() === normalizedPluginId,
+    );
+    if (team === undefined) {
+      throw new KimiError(
+        ErrorCodes.PLUGIN_NOT_FOUND,
+        `Expert team plugin "${pluginId}" was not found`,
+      );
+    }
+    const current = this.metadata.expertTeam;
+    if (current?.pluginId === team.pluginId) return current;
+
+    // Switching to a different team must not strand a working roster.
+    if (
+      current !== undefined &&
+      (this.expertTeamRuntime?.hasActiveMembers() === true ||
+        this.expertTeamRuntime?.hasPendingShutdowns() === true)
+    ) {
+      throw new KimiError(
+        ErrorCodes.SESSION_STATE_INVALID,
+        'The active expert team still has working members. Ask the lead to shut them down first (SendMessage shutdown_request), or stop their tasks.',
+      );
+    }
+
+    const main = this.requireMainAgent();
+    const previousProfile =
+      this.previousExpertProfile ??
+      (current === undefined
+        ? main.getActiveProfile()
+        : DEFAULT_AGENT_PROFILES[current.previousProfileName ?? 'agent']) ??
+      DEFAULT_AGENT_PROFILES['agent'];
+    if (previousProfile === undefined) {
+      throw new KimiError(ErrorCodes.SESSION_STATE_INVALID, 'Default agent profile was not found');
+    }
+    const rollbackProfile = this.activeExpertTeam?.leadProfile ?? previousProfile;
+    const rollbackTeam = this.activeExpertTeam;
+    const rollbackPreviousProfile = this.previousExpertProfile;
+    const rollbackRuntime = this.expertTeamRuntime;
+    const snapshot: ExpertTeamSnapshot = {
+      pluginId: team.pluginId,
+      pluginVersion: team.pluginVersion,
+      displayName: team.displayName,
+      leadAgentName: team.leadAgentName,
+      previousProfileName: current?.previousProfileName ?? previousProfile.name,
+      activatedAt: new Date().toISOString(),
+    };
+    const previousMetadata = this.metadata;
+    main.swarmMode.exit();
+    const runtime = this.buildExpertTeamRuntime(team);
+    this.attachTeamRuntime(main, runtime);
+    try {
+      await this.bootstrapAgentProfile(main, team.leadProfile);
+      this.previousExpertProfile = previousProfile;
+      this.activeExpertTeam = team;
+      const { expertTeamRuntime: _prevRuntime, ...rest } = this.metadata;
+      void _prevRuntime;
+      this.metadata = { ...rest, expertTeam: snapshot, expertTeamRuntime: runtime.snapshot() };
+      await this.writeMetadata();
+      rollbackRuntime?.dispose();
+      await this.emitExpertTeamStatus();
+      return snapshot;
+    } catch (error) {
+      this.metadata = previousMetadata;
+      this.activeExpertTeam = rollbackTeam;
+      this.previousExpertProfile = rollbackPreviousProfile;
+      runtime.dispose();
+      this.expertTeamRuntime = rollbackRuntime;
+      if (rollbackRuntime === undefined) {
+        main.team = undefined;
+        main.teamSelfName = undefined;
+      } else {
+        main.team = rollbackRuntime;
+        main.teamSelfName = 'team-lead';
+      }
+      await this.bootstrapAgentProfile(main, rollbackProfile).catch(() => {});
+      throw error;
+    }
+  }
+
+  async deactivateExpertTeam(): Promise<void> {
+    const snapshot = this.metadata.expertTeam;
+    if (snapshot === undefined) return;
+    if (this.hasActiveTurn) {
+      throw new KimiError(ErrorCodes.TURN_AGENT_BUSY, 'Cannot change expert team during a turn');
+    }
+    if (
+      this.expertTeamRuntime?.hasActiveMembers() === true ||
+      this.expertTeamRuntime?.hasPendingShutdowns() === true
+    ) {
+      throw new KimiError(
+        ErrorCodes.SESSION_STATE_INVALID,
+        'Expert team has active members. Ask the lead to shut them down first (SendMessage shutdown_request), or stop their tasks.',
+      );
+    }
+    const main = this.requireMainAgent();
+    const previousProfile =
+      this.previousExpertProfile ??
+      DEFAULT_AGENT_PROFILES[snapshot.previousProfileName ?? 'agent'] ??
+      DEFAULT_AGENT_PROFILES['agent'];
+    if (previousProfile === undefined) {
+      throw new KimiError(ErrorCodes.SESSION_STATE_INVALID, 'Default agent profile was not found');
+    }
+    const previousMetadata = this.metadata;
+    const rollbackTeam = this.activeExpertTeam;
+    const rollbackPreviousProfile = this.previousExpertProfile;
+    const rollbackRuntime = this.expertTeamRuntime;
+    // Clear the handles before the profile rebuilds tools; dispose only after
+    // the whole deactivation has succeeded so a rollback re-attaches a live
+    // runtime (dispose is irreversible).
+    this.expertTeamRuntime = undefined;
+    main.team = undefined;
+    main.teamSelfName = undefined;
+    try {
+      await this.bootstrapAgentProfile(main, previousProfile);
+      this.activeExpertTeam = undefined;
+      this.previousExpertProfile = undefined;
+      const { expertTeam: _expertTeam, expertTeamRuntime: _runtime, ...metadata } = this.metadata;
+      void _expertTeam;
+      void _runtime;
+      this.metadata = metadata;
+      await this.writeMetadata();
+      rollbackRuntime?.dispose();
+      await this.emitExpertTeamStatus();
+    } catch (error) {
+      this.metadata = previousMetadata;
+      this.activeExpertTeam = rollbackTeam;
+      this.previousExpertProfile = rollbackPreviousProfile;
+      if (rollbackRuntime !== undefined) {
+        this.attachTeamRuntime(main, rollbackRuntime);
+      }
+      if (rollbackTeam !== undefined) {
+        await this.bootstrapAgentProfile(main, rollbackTeam.leadProfile).catch(() => {});
+      }
+      throw error;
+    }
+  }
+
+  resolveSubagentProfile(
+    parent: Agent,
+    profileName: string,
+  ): ResolvedAgentProfile | undefined {
+    const expertProfile =
+      parent.type === 'main' ? this.activeExpertTeam?.memberProfiles[profileName] : undefined;
+    return (
+      expertProfile ??
+      DEFAULT_AGENT_PROFILES[parent.config.profileName ?? 'agent']?.subagents?.[profileName] ??
+      DEFAULT_AGENT_PROFILES['agent']?.subagents?.[profileName]
+    );
+  }
+
+  /** Access the mailbox runtime backing the active expert team (or undefined). */
+  getExpertTeamRuntime(): TeamRuntime | undefined {
+    return this.expertTeamRuntime;
+  }
+
+  /**
+   * Inject the team mailbox handle onto a freshly configured subagent that is
+   * an expert-team member, so its SendMessage tool is built when the profile's
+   * tools initialize. No-op outside expert-team mode. Called by the subagent
+   * host before it applies the member profile.
+   */
+  prepareSubagentTeamHandle(
+    child: Agent,
+    profileName: string,
+    agentId: string,
+  ): boolean {
+    const runtime = this.expertTeamRuntime;
+    if (runtime === undefined) return false;
+    if (this.activeExpertTeam?.memberProfiles[profileName] === undefined) return false;
+    if (!runtime.canAttachMember(profileName, agentId)) return false;
+    child.team = runtime;
+    child.teamSelfName = profileName;
+    return true;
+  }
+
+  private buildExpertTeamRuntime(team: ExpertTeamRuntime): TeamRuntime {
+    let runtime!: TeamRuntime;
+    runtime = new TeamRuntime(
+      {
+        getReadyAgent: (id) => this.getReadyAgent(id),
+        ensureAgentResumed: (id) => this.ensureAgentResumed(id),
+      },
+      'main',
+      team.memberAgentNames,
+      async (state) => {
+        if (this.expertTeamRuntime !== runtime) return;
+        this.metadata = { ...this.metadata, expertTeamRuntime: state };
+        await this.writeMetadata();
+      },
+      () => {
+        if (this.expertTeamRuntime !== runtime) return;
+        void this.emitExpertTeamStatus();
+      },
+    );
+    return runtime;
+  }
+
+  private attachTeamRuntime(main: Agent, runtime: TeamRuntime): void {
+    this.expertTeamRuntime = runtime;
+    main.team = runtime;
+    main.teamSelfName = 'team-lead';
+  }
+
+  private async emitExpertTeamStatus(): Promise<void> {
+    try {
+      await this.rpc.emitEvent({
+        type: 'expert_team.updated',
+        agentId: 'main',
+        status: this.getExpertTeamStatus(),
+      });
+    } catch (error) {
+      this.log.debug('failed to emit expert-team status update', { error });
+    }
+  }
+
   /** Slash commands contributed by code-based extensions, for the TUI. */
   listExtensionCommands(): readonly ExtensionCommandDef[] {
     return this.options.extensionManager?.enabledCommands() ?? [];
@@ -1150,7 +1463,7 @@ export class Session {
         parentAgentId,
       );
       const result = await agent.resume();
-      this.restoreAgentProfileHandle(agent, meta, parent?.agent);
+      this.restoreAgentProfileHandle(id, agent, meta, parent?.agent);
       this.agents.set(id, agent);
       return { agent, warning: parent?.warning ?? result.warning };
     } catch (error) {
@@ -1163,14 +1476,29 @@ export class Session {
   }
 
   private restoreAgentProfileHandle(
+    agentId: string,
     agent: Agent,
     meta: AgentMeta,
     parentAgent: Agent | undefined,
   ): void {
     if (agent.config.systemPrompt === '') return;
+    const profileName = agent.config.profileName;
+    let teamAttached = false;
+    if (meta.type === 'sub' && profileName !== undefined) {
+      teamAttached = this.prepareSubagentTeamHandle(agent, profileName, agentId);
+    }
     const profile = this.resolvePersistedProfile(agent, meta, parentAgent);
-    if (profile === undefined) return;
-    agent.setActiveProfile(profile, this.options.kimiHomeDir);
+    if (profile !== undefined) {
+      agent.setActiveProfile(profile, this.options.kimiHomeDir);
+      // Expert-team membership is defined by the currently installed plugin,
+      // not by the member's historical wire. Refresh the enabled tools after
+      // the member attaches so plugin upgrades (and older wires that predate
+      // SendMessage) restore a usable mailbox. Ordinary subagents keep their
+      // durable tool selection because they never enter this branch.
+      if (teamAttached) {
+        agent.tools.setActiveTools(profile.tools);
+      }
+    }
   }
 
   private resolvePersistedProfile(
@@ -1181,13 +1509,113 @@ export class Session {
     const profileName = agent.config.profileName;
     if (profileName === undefined) return undefined;
     if (meta.type === 'sub') {
-      const parentProfileName = parentAgent?.config.profileName;
-      return (
-        DEFAULT_AGENT_PROFILES[parentProfileName ?? 'agent']?.subagents?.[profileName] ??
-        DEFAULT_AGENT_PROFILES['agent']?.subagents?.[profileName]
-      );
+      return parentAgent === undefined
+        ? undefined
+        : this.resolveSubagentProfile(parentAgent, profileName);
     }
-    return DEFAULT_AGENT_PROFILES[profileName];
+    return this.activeExpertTeam?.leadProfile.name === profileName
+      ? this.activeExpertTeam.leadProfile
+      : DEFAULT_AGENT_PROFILES[profileName];
+  }
+
+  private async restoreExpertTeamMode(main: Agent): Promise<void> {
+    const snapshot = this.metadata.expertTeam;
+    if (snapshot === undefined) return;
+    const team = (this.options.expertTeams ?? []).find(
+      (candidate) => candidate.pluginId === snapshot.pluginId,
+    );
+    if (!this.experimentalFlags.enabled(EXPERT_TEAMS_FLAG_ID) || team === undefined) {
+      if (team === undefined) {
+        this.log.warn('active expert team plugin is unavailable', {
+          pluginId: snapshot.pluginId,
+        });
+      }
+      const previousProfile =
+        DEFAULT_AGENT_PROFILES[snapshot.previousProfileName ?? 'agent'] ??
+        DEFAULT_AGENT_PROFILES['agent'];
+      if (previousProfile !== undefined) {
+        await this.bootstrapAgentProfile(main, previousProfile);
+      }
+      const { expertTeam: _expertTeam, expertTeamRuntime: _runtime, ...metadata } = this.metadata;
+      void _expertTeam;
+      void _runtime;
+      this.metadata = metadata;
+      await this.writeMetadata();
+      return;
+    }
+    this.previousExpertProfile =
+      DEFAULT_AGENT_PROFILES[snapshot.previousProfileName ?? 'agent'] ??
+      DEFAULT_AGENT_PROFILES['agent'];
+    this.activeExpertTeam = team;
+    main.swarmMode.exit();
+    const runtime = this.buildExpertTeamRuntime(team);
+    const persistedState = this.metadata.expertTeamRuntime;
+    if (persistedState !== undefined) {
+      runtime.restoreState(persistedState);
+      // A plugin upgrade or corrupted metadata must not leave an unreachable
+      // roster entry behind the strict deactivation gate.
+      const restoredAgentIds = new Set<string>();
+      runtime.dropMissingMembers((name, agentId) => {
+        const meta = this.metadata.agents[agentId];
+        if (team.memberProfiles[name] === undefined) return false;
+        if (meta?.type !== 'sub' || meta.parentAgentId !== 'main') return false;
+        if (restoredAgentIds.has(agentId)) return false;
+        restoredAgentIds.add(agentId);
+        return true;
+      });
+    }
+    this.attachTeamRuntime(main, runtime);
+    await this.bootstrapAgentProfile(main, team.leadProfile);
+    if (persistedState !== undefined) {
+      // A roster commit can win a crash race against configureChild. Resume
+      // each retained member once and verify its durable wire actually carries
+      // the declared profile before allowing the roster entry to gate the team.
+      const validMembers = new Map<string, string>();
+      for (const member of runtime.snapshot().members) {
+        try {
+          const child = await this.ensureAgentResumed(member.agentId);
+          if (
+            child.config.profileName === member.name &&
+            child.config.systemPrompt !== '' &&
+            child.team === runtime &&
+            child.teamSelfName === member.name &&
+            child.getActiveProfile()?.tools.includes('SendMessage') === true &&
+            (!child.config.hasProvider ||
+              child.tools.data().some(
+                (tool) => tool.name === 'SendMessage' && tool.active,
+              ))
+          ) {
+            validMembers.set(member.agentId, member.name);
+          } else {
+            this.log.warn('dropping unusable restored expert-team member', {
+              member: member.name,
+              agentId: member.agentId,
+              profileName: child.config.profileName,
+            });
+          }
+        } catch (error) {
+          this.log.warn('failed to restore expert-team member', {
+            member: member.name,
+            agentId: member.agentId,
+            error,
+          });
+        }
+      }
+      runtime.dropMissingMembers(
+        (name, agentId) => validMembers.get(agentId) === name,
+      );
+      // Pending shutdowns cannot complete a handshake across a restart:
+      // resolve them by the force-stop timeout semantics.
+      const staleShutdownMembers = persistedState.pendingShutdowns.map((p) => p.member);
+      if (staleShutdownMembers.length > 0) {
+        await runtime.resolveRestoredShutdownsByTimeout(staleShutdownMembers);
+      }
+      // Replay undelivered mail by appending to history (do not auto-launch a
+      // turn on restore); the next user/event turn reads it naturally.
+      await runtime.replayJournal({ append: true });
+    }
+    this.metadata = { ...this.metadata, expertTeamRuntime: runtime.snapshot() };
+    await this.writeMetadata();
   }
 
   private nextGeneratedAgentId(): string {

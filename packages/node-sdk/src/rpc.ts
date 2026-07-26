@@ -59,6 +59,9 @@ import type {
   SkillSummary,
   PluginCommandDef,
   ExtensionCommandDef,
+  ExpertTeamDefinition,
+  ExpertTeamStatusSnapshot,
+  ExpertTeamSnapshot,
   Unsubscribe,
 } from '#/types';
 
@@ -126,6 +129,10 @@ export interface ActivatePluginCommandRpcInput extends SessionIdRpcInput {
   readonly pluginId: string;
   readonly commandName: string;
   readonly args?: string | undefined;
+}
+
+export interface ActivateExpertTeamRpcInput extends SessionIdRpcInput {
+  readonly pluginId: string;
 }
 
 export interface ActivateExtensionCommandRpcInput extends SessionIdRpcInput {
@@ -580,6 +587,12 @@ export abstract class SDKRpcClientBase {
       sessionId: input.sessionId,
       agentId,
     });
+    const expertTeam = await rpc.getExpertTeam({
+      sessionId: input.sessionId,
+    });
+    const expertTeamStatus = await rpc.getExpertTeamStatus({
+      sessionId: input.sessionId,
+    });
     const usage = await rpc.getUsage({
       sessionId: input.sessionId,
       agentId,
@@ -599,6 +612,8 @@ export abstract class SDKRpcClientBase {
       permission: permission.mode,
       planMode: plan !== null,
       swarmMode,
+      expertTeam,
+      expertTeamStatus,
       contextTokens,
       maxContextTokens,
       contextUsage,
@@ -614,6 +629,34 @@ export abstract class SDKRpcClientBase {
   async listPluginCommands(input: SessionIdRpcInput): Promise<readonly PluginCommandDef[]> {
     const rpc = await this.getRpc();
     return rpc.listPluginCommands({ sessionId: input.sessionId });
+  }
+
+  async listExpertTeams(input: SessionIdRpcInput): Promise<readonly ExpertTeamDefinition[]> {
+    const rpc = await this.getRpc();
+    return rpc.listExpertTeams({ sessionId: input.sessionId });
+  }
+
+  async getExpertTeam(input: SessionIdRpcInput): Promise<ExpertTeamSnapshot | null> {
+    const rpc = await this.getRpc();
+    return rpc.getExpertTeam({ sessionId: input.sessionId });
+  }
+
+  async getExpertTeamStatus(input: SessionIdRpcInput): Promise<ExpertTeamStatusSnapshot | null> {
+    const rpc = await this.getRpc();
+    return rpc.getExpertTeamStatus({ sessionId: input.sessionId });
+  }
+
+  async activateExpertTeam(input: ActivateExpertTeamRpcInput): Promise<ExpertTeamSnapshot> {
+    const rpc = await this.getRpc();
+    return rpc.activateExpertTeam({
+      sessionId: input.sessionId,
+      pluginId: input.pluginId,
+    });
+  }
+
+  async deactivateExpertTeam(input: SessionIdRpcInput): Promise<void> {
+    const rpc = await this.getRpc();
+    return rpc.deactivateExpertTeam({ sessionId: input.sessionId });
   }
 
   async listExtensionCommands(input: SessionIdRpcInput): Promise<readonly ExtensionCommandDef[]> {

@@ -271,6 +271,27 @@ describe('Agent tools', () => {
     expect(ctx.agent.tools.loopTools.some((tool) => tool.name === 'AgentSwarm')).toBe(true);
   });
 
+  it('exposes SendMessage only when an expert-team handle is injected', () => {
+    const ctx = testAgent();
+    ctx.configure({ tools: ['SendMessage'] });
+    // No team handle: the tool is not even constructed.
+    expect(ctx.agent.tools.loopTools.some((tool) => tool.name === 'SendMessage')).toBe(false);
+
+    ctx.agent.team = {
+      send: async () => ({ ok: true, message: 'sent' }),
+      memberNames: () => [],
+      declaredMemberNames: () => [],
+      isDeclaredMember: () => false,
+      memberByName: () => undefined,
+      tryReserveMember: () => true,
+      releaseMemberReservation: () => {},
+      dispatchMember: async () => {},
+    };
+    ctx.agent.teamSelfName = 'team-lead';
+    ctx.agent.tools.initializeBuiltinTools();
+    expect(ctx.agent.tools.loopTools.some((tool) => tool.name === 'SendMessage')).toBe(true);
+  });
+
   it('self-heals the builtin tool table when the provider becomes resolvable after construction', () => {
     // The ProviderManager reads this live config; it starts with no model or
     // provider, so hasProvider is false at Agent construction and

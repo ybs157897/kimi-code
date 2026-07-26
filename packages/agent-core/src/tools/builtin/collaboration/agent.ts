@@ -23,6 +23,8 @@ import { ToolAccesses } from '../../../loop/tool-access';
 import { isAbortError } from '../../../loop/errors';
 import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '../../../loop/types';
 import type { ResolvedAgentProfile } from '../../../profile';
+import type { TeamCollaboration } from '../../../expert-team/runtime';
+import { renderTeammateMessage, TEAM_LEAD_ID } from '../../../expert-team/runtime';
 import {
   DEFAULT_SUBAGENT_TIMEOUT_MS,
   formatSubagentTimeoutDescription,
@@ -116,6 +118,13 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
       log?: Logger;
       allowBackground?: boolean | undefined;
       subagentTimeoutMs?: number | undefined;
+      /**
+       * Expert-team dispatch handle, present only on the team lead. When set,
+       * Agent calls become WorkBuddy-style dispatch receipts: the member runs
+       * in the background and reports over SendMessage. Undefined in normal
+       * sessions — behavior there is byte-for-byte unchanged.
+       */
+      team?: TeamCollaboration | undefined;
     },
   ) {
     const log = options?.log;
@@ -123,6 +132,7 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
     // `0` is preserved (not normalized): `0 ?? DEFAULT_SUBAGENT_TIMEOUT_MS`
     // stays `0`, and the BackgroundManager arms no timer for it.
     this.subagentTimeoutMs = options?.subagentTimeoutMs;
+    this.team = options?.team;
     const typeLines = buildSubagentDescriptions(subagents);
     const baseDescription = `${AGENT_DESCRIPTION_BASE}\n\n${
       this.allowBackground ? AGENT_BACKGROUND_DESCRIPTION : AGENT_BACKGROUND_DISABLED_DESCRIPTION
@@ -136,6 +146,7 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
   private readonly log?: Logger;
   private readonly allowBackground: boolean;
   private readonly subagentTimeoutMs?: number;
+  private readonly team?: TeamCollaboration;
 
   async resolveExecution(args: AgentToolInput): Promise<ToolExecution> {
     let profileName = args.subagent_type?.length ? args.subagent_type : 'coder';
@@ -168,6 +179,9 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
   ): Promise<ExecutableToolResult> {
     try {
       signal.throwIfAborted();
+      if (this.team !== undefined) {
+        return await this.teamExecution(this.team, args, toolCallId, signal);
+      }
       const runInBackground = args.run_in_background === true;
       const requestedProfileName = args.subagent_type?.length ? args.subagent_type : undefined;
       const resumeAgentId = args.resume?.trim();
@@ -279,6 +293,95 @@ export class AgentTool implements BuiltinTool<AgentToolInput> {
       return await this.formatForegroundResult(taskId, handle);
     } catch (error) {
       return { output: `subagent error: ${launchErrorMessage(error, signal)}`, isError: true };
+    }
+  }
+
+  /**
+   * Expert-team dispatch: spawn the member in the background with the initial
+   * prompt wrapped as a `<teammate-message>`, hand the running turn to the
+   * team runtime (roster, task registration, completion wiring), and return a
+   * dispatch receipt immediately. Results arrive via SendMessage, never here.
+   */
+  private async teamExecution(
+    team: TeamCollaboration,
+    args: AgentToolInput,
+    toolCallId: string,
+    signal: AbortSignal,
+  ): Promise<ExecutableToolResult> {
+    const resumeAgentId = args.resume?.trim();
+    if (resumeAgentId !== undefined && resumeAgentId.length > 0) {
+      return {
+        output:
+          'Use SendMessage to continue a teammate; Agent(resume=...) is disabled in expert-team mode.',
+        isError: true,
+      };
+    }
+    const name = args.subagent_type?.length ? args.subagent_type : undefined;
+    if (name === undefined || !team.isDeclaredMember(name)) {
+      return {
+        output: `"${name ?? '(none)'}" is not a declared member of this expert team. Declared members: ${team
+          .declaredMemberNames()
+          .join(', ')}.`,
+        isError: true,
+      };
+    }
+    if (!team.tryReserveMember(name)) {
+      return {
+        output: `Teammate "${name}" is already on the team. Use SendMessage(type="message", recipient="${name}") to follow up instead of dispatching again.`,
+        isError: true,
+      };
+    }
+
+    const controller = new AbortController();
+    const abortDuringDispatch = (): void => {
+      controller.abort(signal.reason);
+    };
+    signal.addEventListener('abort', abortDuringDispatch, { once: true });
+    const initialMessage = renderTeammateMessage({
+      id: toolCallId,
+      type: 'message',
+      from: TEAM_LEAD_ID,
+      to: name,
+      summary: `Initial task assignment for ${name}`,
+      text: args.prompt,
+      sentAt: new Date().toISOString(),
+    });
+    try {
+      signal.throwIfAborted();
+      const handle: SubagentHandle = await this.subagentHost.spawn({
+        profileName: name,
+        parentToolCallId: toolCallId,
+        prompt: initialMessage,
+        description: args.description,
+        runInBackground: true,
+        signal: controller.signal,
+        skipSummaryContinuation: true,
+      });
+      await team.dispatchMember(name, handle, controller, args.description);
+      return {
+        output: [
+          `teammate: ${name}`,
+          'status: working',
+          '',
+          `description: ${args.description}`,
+          '',
+          'Result will arrive via <teammate-message>. Do not wait or poll; continue with other work or report progress to the user. To follow up, use SendMessage(type="message", recipient="' +
+            name +
+            '").',
+        ].join('\n'),
+      };
+    } catch (error) {
+      controller.abort(error);
+      signal.throwIfAborted();
+      this.log?.warn('expert-team member dispatch failed', {
+        toolCallId,
+        subagentType: name,
+        error,
+      });
+      throw error;
+    } finally {
+      signal.removeEventListener('abort', abortDuringDispatch);
+      team.releaseMemberReservation(name);
     }
   }
 

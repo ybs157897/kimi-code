@@ -572,6 +572,17 @@ export class BackgroundManager {
     return this.toInfo(entry);
   }
 
+  /** Wait without a deadline until a live task reaches a terminal state. */
+  async waitUntilTerminal(taskId: string): Promise<BackgroundTaskInfo | undefined> {
+    const entry = this.tasks.get(taskId);
+    if (entry === undefined) return this.ghosts.get(taskId);
+    if (!TERMINAL_STATUSES.has(entry.status)) {
+      await entry.terminal;
+    }
+    await entry.persistWriteQueue;
+    return this.toInfo(entry);
+  }
+
   /**
    * Wait until no active (non-terminal) task matching `predicate` remains.
    *

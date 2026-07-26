@@ -8,6 +8,7 @@ export * from './telemetry';
 export * from './errors';
 export * from './plugin';
 export * from './extension';
+export * from './expert-team';
 export { buildReplay } from './agent/replay/build';
 export { isAgentReplayUserTurnRecord, limitAgentReplayByTurns } from './agent/replay/turns';
 export {

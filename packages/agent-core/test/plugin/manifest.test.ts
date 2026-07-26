@@ -4,6 +4,7 @@ import path from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { loadExpertTeams } from '../../src/expert-team';
 import { parseManifest } from '../../src/plugin/manifest';
 
 async function makePlugin(
@@ -69,6 +70,87 @@ describe('parseManifest', () => {
     expect(result.manifest?.interface?.displayName).toBe('Demo');
     expect(result.manifest?.sessionStart).toEqual({ skill: 'using-demo' });
     expect(result.manifest?.skillInstructions).toBe('Use Kimi tools.');
+  });
+
+  it('loads a CodeBuddy-compatible expert team and adapts its roles for the v1 runtime', async () => {
+    const root = await makePlugin({
+      '.codebuddy-plugin/plugin.json': JSON.stringify({
+        name: 'software-company',
+        version: '1.1.0',
+        description: 'Software delivery team',
+        expertType: 'team',
+        agentName: 'software-team-lead',
+        teamInfo: {
+          leadAgent: 'software-team-lead',
+          memberAgents: ['software-engineer'],
+        },
+        members: [
+          { id: 'software-team-lead', name: { en: 'Lead', zh: '负责人' }, role: 'lead' },
+          {
+            id: 'software-engineer',
+            profession: { en: 'Engineer', zh: '工程师' },
+            role: 'member',
+          },
+        ],
+      }),
+      'agents/software-team-lead.md': [
+        '---',
+        'name: software-team-lead',
+        'description: Coordinates delivery',
+        '---',
+        'Call TeamCreate, then use Agent to delegate.',
+      ].join('\n'),
+      'agents/software-engineer.md': [
+        '---',
+        'name: software-engineer',
+        'description: Implements software',
+        '---',
+        'SendMessage your implementation result to the lead.',
+      ].join('\n'),
+    });
+
+    const result = await parseManifest(root);
+    expect(result.manifestKind).toBe('codebuddy-plugin-dir');
+    expect(result.diagnostics).toEqual([]);
+    expect(result.manifest?.expert).toEqual(
+      expect.objectContaining({
+        type: 'team',
+        agentName: 'software-team-lead',
+        teamInfo: {
+          leadAgent: 'software-team-lead',
+          memberAgents: ['software-engineer'],
+        },
+      }),
+    );
+
+    const expert = result.manifest?.expert;
+    expect(expert).toBeDefined();
+    const [team] = await loadExpertTeams([
+      {
+        ...expert!,
+        pluginId: 'software-company',
+        pluginRoot: root,
+        pluginVersion: '1.1.0',
+        displayName: 'Software Company',
+        description: 'Software delivery team',
+      },
+    ]);
+    expect(team?.leadProfile.tools).toContain('Agent');
+    expect(team?.leadProfile.tools).not.toContain('AgentSwarm');
+    expect(team?.leadProfile.subagents).toHaveProperty('software-engineer');
+    expect(team?.memberProfiles['software-engineer']?.tools).not.toContain('Agent');
+    expect(
+      team?.leadProfile.systemPrompt({
+        osEnv: {
+          osKind: 'Linux',
+          osArch: 'x64',
+          osVersion: '0',
+          shellName: 'bash',
+          shellPath: '/bin/bash',
+        },
+        cwd: '/tmp',
+      }),
+    ).toContain('This expert team is already active');
   });
 
   it('does NOT fall back to .kimi-plugin/plugin.json when kimi.plugin.json is invalid JSON', async () => {

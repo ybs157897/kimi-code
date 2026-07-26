@@ -5,6 +5,7 @@ import { ErrorCodes, KimiError } from '#/errors';
 import { getRootLogger, log } from '#/logging/logger';
 import { ExtensionManager, type ExtensionCommandDef, type ExtensionReloadSummary } from '#/extension';
 import { PluginManager } from '#/plugin';
+import { loadExpertTeams } from '../expert-team';
 import { LocalFetchURLProvider } from '#/tools/providers/local-fetch-url';
 import { MoonshotFetchURLProvider } from '#/tools/providers/moonshot-fetch-url';
 import { MoonshotWebSearchProvider } from '#/tools/providers/moonshot-web-search';
@@ -78,6 +79,7 @@ import type {
   ActivateExtensionCommandPayload,
   ActivateExtensionCommandResult,
   ActivatePluginCommandPayload,
+  ActivateExpertTeamPayload,
   AddAdditionalDirPayload,
   AddAdditionalDirResult,
   ArchiveSessionPayload,
@@ -369,6 +371,14 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     await this.pluginsReady;
     const pluginSessionStarts = this.plugins.enabledSessionStarts();
     const pluginCommands = await this.plugins.enabledCommands();
+    const expertTeams = await loadExpertTeams(this.plugins.enabledExperts(), {
+      onError: (expert, error) => {
+        log.warn('expert team load failed', {
+          pluginId: expert.pluginId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
     const mcpConfig = this.mergePluginMcpConfig(withCallerMcp);
     // Discover + load code-based extensions for this working directory. Errors
     // are captured (not thrown) so a broken extension file cannot block session
@@ -398,6 +408,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       telemetry: sessionTelemetry,
       pluginSessionStarts,
       pluginCommands,
+      expertTeams,
       extensionManager: this.extensions,
       appVersion: this.appVersion,
       additionalDirs,
@@ -526,6 +537,14 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     await this.pluginsReady;
     const pluginSessionStarts = this.plugins.enabledSessionStarts();
     const pluginCommands = await this.plugins.enabledCommands();
+    const expertTeams = await loadExpertTeams(this.plugins.enabledExperts(), {
+      onError: (expert, error) => {
+        log.warn('expert team load failed', {
+          pluginId: expert.pluginId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      },
+    });
     const mcpConfig = this.mergePluginMcpConfig(withCallerMcp);
     const runtime = await this.resolveRuntime(config);
     const parentKaos = parentKaosForRead;
@@ -551,6 +570,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       initializeMainAgent: false,
       pluginSessionStarts,
       pluginCommands,
+      expertTeams,
       extensionManager: this.extensions,
       appVersion: this.appVersion,
       additionalDirs,
@@ -1034,6 +1054,29 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     ...payload
   }: SessionScopedPayload<EmptyPayload>): readonly PluginCommandDef[] {
     return this.sessionApi(sessionId).listPluginCommands(payload);
+  }
+
+  listExpertTeams({ sessionId, ...payload }: SessionScopedPayload<EmptyPayload>) {
+    return this.sessionApi(sessionId).listExpertTeams(payload);
+  }
+
+  getExpertTeam({ sessionId, ...payload }: SessionScopedPayload<EmptyPayload>) {
+    return this.sessionApi(sessionId).getExpertTeam(payload);
+  }
+
+  getExpertTeamStatus({ sessionId, ...payload }: SessionScopedPayload<EmptyPayload>) {
+    return this.sessionApi(sessionId).getExpertTeamStatus(payload);
+  }
+
+  activateExpertTeam({
+    sessionId,
+    ...payload
+  }: SessionScopedPayload<ActivateExpertTeamPayload>) {
+    return this.sessionApi(sessionId).activateExpertTeam(payload);
+  }
+
+  deactivateExpertTeam({ sessionId, ...payload }: SessionScopedPayload<EmptyPayload>) {
+    return this.sessionApi(sessionId).deactivateExpertTeam(payload);
   }
 
   listMcpServers({

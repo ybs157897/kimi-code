@@ -4,6 +4,7 @@ import {
   parseSlashInput,
   resolveSlashCommandAvailability,
   addDirArgumentCompletions,
+  expertsArgumentCompletions,
   sortSlashCommands,
   swarmArgumentCompletions,
   type KimiSlashCommand,
@@ -72,6 +73,16 @@ describe('built-in slash command registry', () => {
     expect(values('on')).toBeNull();
     expect(values('off')).toBeNull();
     expect(values('Ship feature X')).toBeNull();
+  });
+
+  it('offers expert-team status argument completion', () => {
+    expect(expertsArgumentCompletions('st')).toEqual([
+      {
+        value: 'status',
+        label: 'status',
+        description: 'Show the active expert team roster',
+      },
+    ]);
   });
 
   it('offers add-dir list and directory argument completions', () => {

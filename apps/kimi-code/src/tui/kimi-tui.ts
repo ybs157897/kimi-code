@@ -217,6 +217,8 @@ function createInitialAppState(input: KimiTUIStartupInput): AppState {
     planMode: input.cliOptions.plan,
     inputMode: 'prompt',
     swarmMode: false,
+    expertTeam: null,
+    expertTeamMembers: [],
     thinkingEffort: 'off',
     contextUsage: 0,
     contextTokens: 0,
@@ -1613,6 +1615,8 @@ export class KimiTUI {
       permissionMode: status.permission,
       planMode: status.planMode,
       swarmMode: status.swarmMode ?? false,
+      expertTeam: status.expertTeam ?? null,
+      expertTeamMembers: status.expertTeamStatus?.members ?? [],
       contextTokens: status.contextTokens,
       maxContextTokens: status.maxContextTokens,
       contextUsage: status.contextUsage,
@@ -1680,7 +1684,7 @@ export class KimiTUI {
     this.session = undefined;
     this.state.swarmModeEntry = undefined;
     this.harness.setTelemetryContext({ sessionId: null });
-    this.setAppState({ goal: null });
+    this.setAppState({ goal: null, expertTeam: null, expertTeamMembers: [] });
     return previous;
   }
 

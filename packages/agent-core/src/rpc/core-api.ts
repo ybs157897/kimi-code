@@ -25,7 +25,8 @@ import type { SessionWarning } from '@moonshot-ai/protocol';
 
 import type { PluginCommandDef, PluginInfo, PluginSummary, ReloadSummary } from '#/plugin';
 import type { ExtensionCommandDef } from '#/extension';
-import type { UsageStatus } from './events';
+import type { ExpertTeamDefinition, ExpertTeamSnapshot } from '../expert-team';
+import type { ExpertTeamStatusSnapshot, UsageStatus } from './events';
 import type { WithAgentId, WithSessionId } from './types';
 
 export type { PluginCommandDef } from '#/plugin';
@@ -321,6 +322,10 @@ export interface ActivatePluginCommandPayload {
   readonly args?: string | undefined;
 }
 
+export interface ActivateExpertTeamPayload {
+  readonly pluginId: string;
+}
+
 export interface ActivateExtensionCommandPayload {
   /** Namespaced command name `<extensionId>:<commandName>`. */
   readonly name: string;
@@ -522,6 +527,11 @@ export interface SessionAPI extends AgentAPIWithId {
   getSessionMetadata: (payload: EmptyPayload) => SessionMeta;
   listSkills: (payload: EmptyPayload) => readonly SkillSummary[];
   listPluginCommands: (payload: EmptyPayload) => readonly PluginCommandDef[];
+  listExpertTeams: (payload: EmptyPayload) => readonly ExpertTeamDefinition[];
+  getExpertTeam: (payload: EmptyPayload) => ExpertTeamSnapshot | null;
+  getExpertTeamStatus: (payload: EmptyPayload) => ExpertTeamStatusSnapshot | null;
+  activateExpertTeam: (payload: ActivateExpertTeamPayload) => ExpertTeamSnapshot;
+  deactivateExpertTeam: (payload: EmptyPayload) => void;
   listExtensionCommands: (payload: EmptyPayload) => readonly ExtensionCommandDef[];
   activateExtensionCommand: (
     payload: ActivateExtensionCommandPayload,

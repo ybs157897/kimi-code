@@ -117,6 +117,32 @@ describe('events / display re-exports', () => {
     ).toBe(true);
   });
 
+  it('validates live expert-team roster updates', () => {
+    expect(
+      agentEventSchema.parse({
+        type: 'expert_team.updated',
+        status: {
+          pluginId: 'example-team',
+          displayName: 'Example Team',
+          leadAgentName: 'team-lead',
+          activatedAt: '2026-07-26T00:00:00.000Z',
+          members: [
+            { name: 'architect', status: 'running', agentId: 'agent-1' },
+            { name: 'reviewer', status: 'not_started' },
+          ],
+        },
+      }),
+    ).toMatchObject({
+      type: 'expert_team.updated',
+      status: {
+        members: [
+          { name: 'architect', status: 'running' },
+          { name: 'reviewer', status: 'not_started' },
+        ],
+      },
+    });
+  });
+
   it('validates session-scoped daemon events with agentId and sessionId', () => {
     const parsed = eventSchema.parse({
       type: 'turn.started',

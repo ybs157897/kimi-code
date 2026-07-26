@@ -94,6 +94,11 @@ const config = withMermaid(defineConfig({
                 { text: '内置工具', link: '/zh/reference/tools' },
                 { text: '斜杠命令', link: '/zh/reference/slash-commands' },
                 { text: '键盘快捷键', link: '/zh/reference/keyboard' },
+                { text: 'WorkBuddy 专家与专家团实现', link: '/zh/reference/workbuddy-experts' },
+                {
+                  text: 'WorkBuddy Agent Teams 实现',
+                  link: '/zh/reference/workbuddy-agent-teams',
+                },
               ],
             },
           ],
@@ -172,6 +177,11 @@ const config = withMermaid(defineConfig({
                 { text: 'Built-in Tools', link: '/en/reference/tools' },
                 { text: 'Slash Commands', link: '/en/reference/slash-commands' },
                 { text: 'Keyboard Shortcuts', link: '/en/reference/keyboard' },
+                { text: 'WorkBuddy Experts and Expert Teams', link: '/en/reference/workbuddy-experts' },
+                {
+                  text: 'WorkBuddy Agent Teams Implementation',
+                  link: '/en/reference/workbuddy-agent-teams',
+                },
               ],
             },
           ],

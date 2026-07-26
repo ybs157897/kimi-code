@@ -143,6 +143,24 @@ describe('FooterComponent', () => {
     expect(rendered).toContain('thinking');
     expect(rendered).not.toContain('thinking:high');
   });
+
+  it('shows running and declared expert-team member counts', () => {
+    const footer = new FooterComponent({
+      ...appState,
+      expertTeam: {
+        pluginId: 'software-company',
+        displayName: 'Software Company',
+        leadAgentName: 'software-team-lead',
+        activatedAt: '2026-07-26T00:00:00.000Z',
+      },
+      expertTeamMembers: [
+        { name: 'software-engineer', agentId: 'agent-1', status: 'running' },
+        { name: 'reviewer', status: 'not_started' },
+      ],
+    });
+
+    expect(footer.render(120).join('\n')).toContain('expert:Software Company 1/2');
+  });
 });
 
 describe('FooterComponent overrides', () => {

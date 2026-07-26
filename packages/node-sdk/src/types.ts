@@ -1,5 +1,7 @@
 import type {
   ExportSessionManifest,
+  ExpertTeamStatusSnapshot,
+  ExpertTeamSnapshot,
   ResumeSessionResult,
   ShellEnvironment,
   TelemetryClient,
@@ -28,6 +30,11 @@ export type {
   ExperimentalFeatureState,
   ExperimentalFlagMap,
   ExperimentalFlagSource,
+  ExpertTeamDefinition,
+  ExpertTeamMemberPhase,
+  ExpertTeamMemberState,
+  ExpertTeamStatusSnapshot,
+  ExpertTeamSnapshot,
   ExportSessionManifest,
   ExtensionCommandDef,
   GoalBudgetLimits,
@@ -242,6 +249,8 @@ export interface SessionStatus {
   readonly permission: PermissionMode;
   readonly planMode: boolean;
   readonly swarmMode?: boolean | undefined;
+  readonly expertTeam?: ExpertTeamSnapshot | null;
+  readonly expertTeamStatus?: ExpertTeamStatusSnapshot | null;
   readonly contextTokens: number;
   readonly maxContextTokens: number;
   readonly contextUsage: number;

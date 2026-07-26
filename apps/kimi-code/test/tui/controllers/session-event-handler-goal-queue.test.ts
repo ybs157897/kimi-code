@@ -559,3 +559,49 @@ describe('SessionEventHandler notice', () => {
     expect(host.state.appState.streamingPhase).toBe('idle');
   });
 });
+
+describe('SessionEventHandler expert team status', () => {
+  it('updates the active team and declared roster from a live event', () => {
+    const { host } = makeHost();
+    const handler = new SessionEventHandler(host);
+    const status = {
+      pluginId: 'software-company',
+      displayName: 'Software Company',
+      leadAgentName: 'software-team-lead',
+      activatedAt: '2026-07-26T00:00:00.000Z',
+      members: [
+        { name: 'software-engineer', agentId: 'agent-1', status: 'idle' as const },
+        { name: 'reviewer', status: 'not_started' as const },
+      ],
+    };
+
+    handler.handleEvent(
+      {
+        type: 'expert_team.updated',
+        sessionId: 's1',
+        agentId: 'main',
+        status,
+      },
+      vi.fn(),
+    );
+
+    expect(host.setAppState).toHaveBeenCalledWith({
+      expertTeam: status,
+      expertTeamMembers: status.members,
+    });
+
+    handler.handleEvent(
+      {
+        type: 'expert_team.updated',
+        sessionId: 's1',
+        agentId: 'main',
+        status: null,
+      },
+      vi.fn(),
+    );
+    expect(host.setAppState).toHaveBeenLastCalledWith({
+      expertTeam: null,
+      expertTeamMembers: [],
+    });
+  });
+});

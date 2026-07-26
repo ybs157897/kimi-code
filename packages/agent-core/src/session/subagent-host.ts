@@ -116,6 +116,12 @@ export interface RunSubagentOptions {
   readonly signal: AbortSignal;
   readonly onReady?: () => void;
   readonly suppressRateLimitFailureEvent?: boolean;
+  /**
+   * Expert-team wake/spawn path: a member's authoritative deliverable travels
+   * over SendMessage, so the short-summary follow-up prompt is pointless noise.
+   * When true, `waitForChildCompletion` accepts the terse summary as-is.
+   */
+  readonly skipSummaryContinuation?: boolean;
 }
 
 export interface SpawnSubagentOptions extends RunSubagentOptions {
@@ -161,7 +167,7 @@ export class SessionSubagentHost {
     const completion = this.runWithActiveChild(id, options, async (runOptions) => {
       this.emitSubagentSpawned(parent, id, profile.name, runOptions);
       try {
-        await this.configureChild(parent, agent, profile);
+        await this.configureChild(parent, id, agent, profile);
         return await this.runPromptTurn(parent, id, agent, profile.name, runOptions);
       } catch (error) {
         this.emitSubagentFailed(parent, id, runOptions, error);
@@ -308,7 +314,16 @@ export class SessionSubagentHost {
   }
 
   private resolveProfile(parent: Agent, profileName: string): ResolvedAgentProfile {
+    const resolveSessionProfile = (
+      this.session as Session & {
+        resolveSubagentProfile?: (
+          parent: Agent,
+          profileName: string,
+        ) => ResolvedAgentProfile | undefined;
+      }
+    ).resolveSubagentProfile;
     const profile =
+      resolveSessionProfile?.call(this.session, parent, profileName) ??
       DEFAULT_AGENT_PROFILES[parent.config.profileName ?? 'agent']?.subagents?.[profileName] ??
       DEFAULT_AGENT_PROFILES['agent']?.subagents?.[profileName];
     if (profile === undefined) {
@@ -376,7 +391,7 @@ export class SessionSubagentHost {
     // the handoff; if it is still short after that, accept it as-is rather
     // than retrying indefinitely.
     let result = lastAssistantText(child);
-    let remainingContinuations = SUMMARY_CONTINUATION_ATTEMPTS;
+    let remainingContinuations = options.skipSummaryContinuation === true ? 0 : SUMMARY_CONTINUATION_ATTEMPTS;
     while (remainingContinuations > 0 && result.length < SUMMARY_MIN_LENGTH) {
       remainingContinuations -= 1;
       options.signal.throwIfAborted();
@@ -398,6 +413,7 @@ export class SessionSubagentHost {
 
   private async configureChild(
     parent: Agent,
+    childId: string,
     child: Agent,
     profile: ResolvedAgentProfile,
   ): Promise<void> {
@@ -413,6 +429,9 @@ export class SessionSubagentHost {
       this.session.options.kimiHomeDir,
       { additionalDirs: child.getAdditionalDirs() },
     );
+    // Expert-team members get their mailbox handle before the profile applies,
+    // so the profile's SendMessage tool is constructable. No-op otherwise.
+    this.session.prepareSubagentTeamHandle?.(child, profile.name, childId);
     child.useProfile(profile, context, this.session.options.kimiHomeDir);
     child.tools.inheritUserTools(parent.tools);
   }

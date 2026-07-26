@@ -257,6 +257,14 @@ export class FooterComponent implements Component {
     if (state.permissionMode === 'yolo') modes.push(chalk.hex(colors.warning).bold('yolo'));
     if (state.planMode) modes.push(chalk.hex(colors.primary).bold('plan'));
     if (state.swarmMode) modes.push(chalk.hex(colors.accent).bold('swarm'));
+    if (state.expertTeam !== null && state.expertTeam !== undefined) {
+      const members = state.expertTeamMembers ?? [];
+      const running = members.filter((member) => member.status === 'running').length;
+      const roster = members.length > 0 ? ` ${running}/${members.length}` : '';
+      modes.push(
+        chalk.hex(colors.accent).bold(`expert:${state.expertTeam.displayName}${roster}`),
+      );
+    }
     if (modes.length > 0) left.push(modes.join(' '));
 
     const goalBadge = formatGoalBadge(state.goal, colors, this.goalWallClockMs(state.goal));

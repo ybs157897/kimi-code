@@ -15,6 +15,7 @@ import type { PluginCommandOrigin } from './context';
 
 import type { McpConnectionManager } from '../mcp';
 import { FlagResolver, type ExperimentalFlagResolver } from '../flags';
+import type { TeamCollaboration } from '../expert-team/runtime';
 import { ImageLimits } from '../tools/support/image-limits';
 import {
   prepareSystemPromptContext,
@@ -138,6 +139,16 @@ export class Agent {
    * Turn/permission hook points read this to dispatch extension events.
    */
   extensionRunner?: ExtensionRunner;
+  /**
+   * Expert-team mailbox handle. Injected by the session when this agent is the
+   * lead (`teamSelfName === 'team-lead'`) or a team member; `undefined` in a
+   * normal session. Gates the SendMessage tool. Typed as the minimal
+   * {@link TeamCollaboration} interface so a standalone Agent never depends on
+   * Session or expert-team internals.
+   */
+  team?: TeamCollaboration;
+  /** This agent's identity in the team ('team-lead' or a member name). */
+  teamSelfName?: string;
   readonly log: Logger;
   readonly telemetry: TelemetryClient;
   readonly experimentalFlags: ExperimentalFlagResolver;
@@ -452,6 +463,10 @@ export class Agent {
   setActiveProfile(profile: ResolvedAgentProfile, brandHome?: string): void {
     this.activeProfile = profile;
     this.brandHome = brandHome;
+  }
+
+  getActiveProfile(): ResolvedAgentProfile | undefined {
+    return this.activeProfile;
   }
 
   /**

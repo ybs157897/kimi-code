@@ -35,6 +35,9 @@ import type {
   SkillSummary,
   PluginCommandDef,
   ExtensionCommandDef,
+  ExpertTeamDefinition,
+  ExpertTeamStatusSnapshot,
+  ExpertTeamSnapshot,
   ThinkingEffort,
   Unsubscribe,
 } from '#/types';
@@ -333,6 +336,35 @@ export class Session {
   async listPluginCommands(): Promise<readonly PluginCommandDef[]> {
     this.ensureOpen();
     return this.rpc.listPluginCommands({ sessionId: this.id });
+  }
+
+  async listExpertTeams(): Promise<readonly ExpertTeamDefinition[]> {
+    this.ensureOpen();
+    return this.rpc.listExpertTeams({ sessionId: this.id });
+  }
+
+  async getExpertTeam(): Promise<ExpertTeamSnapshot | null> {
+    this.ensureOpen();
+    return this.rpc.getExpertTeam({ sessionId: this.id });
+  }
+
+  async getExpertTeamStatus(): Promise<ExpertTeamStatusSnapshot | null> {
+    this.ensureOpen();
+    return this.rpc.getExpertTeamStatus({ sessionId: this.id });
+  }
+
+  async activateExpertTeam(pluginId: string): Promise<ExpertTeamSnapshot> {
+    this.ensureOpen();
+    const trimmed = pluginId.trim();
+    if (trimmed.length === 0) {
+      throw new KimiError(ErrorCodes.REQUEST_INVALID, 'Expert team plugin id cannot be empty');
+    }
+    return this.rpc.activateExpertTeam({ sessionId: this.id, pluginId: trimmed });
+  }
+
+  async deactivateExpertTeam(): Promise<void> {
+    this.ensureOpen();
+    return this.rpc.deactivateExpertTeam({ sessionId: this.id });
   }
 
   /** Slash commands contributed by code-based extensions (`.kimi-code/extensions`). */

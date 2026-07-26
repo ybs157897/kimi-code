@@ -9,6 +9,7 @@ import {
   type SessionSubagentHost,
 } from '../../src/session/subagent-host';
 import { AgentTool, AgentToolInputSchema } from '../../src/tools/builtin/collaboration/agent';
+import type { TeamCollaboration } from '../../src/expert-team/runtime';
 import { userCancellationReason } from '../../src/utils/abort';
 import { agentTask, createBackgroundManager } from '../agent/background/helpers';
 import { executeTool } from './fixtures/execute-tool';
@@ -894,6 +895,202 @@ describe('AgentTool', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('AgentTool expert-team mode', () => {
+  function fakeTeam(overrides: Partial<TeamCollaboration> = {}): TeamCollaboration & {
+    readonly dispatched: Array<{ name: string; description: string }>;
+  } {
+    const dispatched: Array<{ name: string; description: string }> = [];
+    const reservations = new Set<string>();
+    return {
+      dispatched,
+      send: vi.fn(async () => ({ ok: true, message: 'sent' })),
+      memberNames: () => dispatched.map((d) => d.name),
+      declaredMemberNames: () => ['software-architect', 'reviewer'],
+      isDeclaredMember: (name: string) => ['software-architect', 'reviewer'].includes(name),
+      memberByName: (name: string) =>
+        dispatched.some((d) => d.name === name)
+          ? { name, agentId: 'agent-child', status: 'running' as const }
+          : undefined,
+      tryReserveMember: (name: string) => {
+        if (reservations.has(name) || dispatched.some((d) => d.name === name)) return false;
+        reservations.add(name);
+        return true;
+      },
+      releaseMemberReservation: (name: string) => {
+        reservations.delete(name);
+      },
+      dispatchMember: vi.fn(async (name: string, _handle, _controller, description: string) => {
+        dispatched.push({ name, description });
+      }),
+      ...overrides,
+    };
+  }
+
+  it('rejects Agent(resume=...) in team mode', async () => {
+    const host = mockSubagentHost({ spawn: vi.fn() });
+    const tool = agentTool(host, undefined, undefined, { team: fakeTeam() });
+
+    const result = await executeTool(
+      tool,
+      context({ prompt: 'continue', description: 'Follow up', resume: 'agent-child' }),
+    );
+
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain('Use SendMessage to continue a teammate');
+    expect(host.spawn).not.toHaveBeenCalled();
+  });
+
+  it('rejects subagent types that are not declared team members', async () => {
+    const host = mockSubagentHost({ spawn: vi.fn() });
+    const tool = agentTool(host, undefined, undefined, { team: fakeTeam() });
+
+    const result = await executeTool(
+      tool,
+      context({ prompt: 'do work', description: 'Task', subagent_type: 'coder' }),
+    );
+
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain('not a declared member');
+    expect(result.output).toContain('software-architect, reviewer');
+    expect(host.spawn).not.toHaveBeenCalled();
+  });
+
+  it('rejects dispatching the same member twice', async () => {
+    const team = fakeTeam();
+    team.dispatched.push({ name: 'software-architect', description: 'earlier' });
+    const host = mockSubagentHost({ spawn: vi.fn() });
+    const tool = agentTool(host, undefined, undefined, { team });
+
+    const result = await executeTool(
+      tool,
+      context({ prompt: 'more work', description: 'Task', subagent_type: 'software-architect' }),
+    );
+
+    expect(result).toMatchObject({ isError: true });
+    expect(result.output).toContain('already on the team');
+    expect(result.output).toContain('SendMessage');
+    expect(host.spawn).not.toHaveBeenCalled();
+  });
+
+  it('dispatches a declared member in the background with a wrapped prompt and returns a receipt', async () => {
+    const team = fakeTeam();
+    const spawn = vi.fn(async (options: Parameters<SessionSubagentHost['spawn']>[0]) => ({
+      agentId: 'agent-child',
+      profileName: options.profileName,
+      resumed: false,
+      completion: new Promise<never>(() => {}),
+    }));
+    const host = mockSubagentHost({ spawn });
+    const tool = agentTool(host, undefined, undefined, { team });
+
+    const result = await executeTool(
+      tool,
+      context({
+        prompt: 'Design the auth service',
+        description: 'Design auth',
+        subagent_type: 'software-architect',
+      }),
+    );
+
+    expect(spawn).toHaveBeenCalledTimes(1);
+    const spawnOptions = spawn.mock.calls[0]![0];
+    expect(spawnOptions).toMatchObject({
+      profileName: 'software-architect',
+      runInBackground: true,
+      skipSummaryContinuation: true,
+    });
+    expect(spawnOptions.prompt).toContain(
+      '<teammate-message teammate_id="team-lead" summary="Initial task assignment for software-architect">',
+    );
+    expect(spawnOptions.prompt).toContain('Design the auth service');
+    expect(team.dispatchMember).toHaveBeenCalledWith(
+      'software-architect',
+      expect.objectContaining({ agentId: 'agent-child' }),
+      expect.any(AbortController),
+      'Design auth',
+    );
+    expect(result.isError).not.toBe(true);
+    expect(result.output).toContain('teammate: software-architect');
+    expect(result.output).toContain('status: working');
+    expect(result.output).toContain('<teammate-message>');
+    expect(result.output).not.toContain('resume_hint');
+    expect(result.output).not.toContain('task_id');
+  });
+
+  it('allows only one concurrent dispatch for the same member', async () => {
+    const team = fakeTeam();
+    let releaseSpawn: (() => void) | undefined;
+    const spawn = vi.fn(async (options: Parameters<SessionSubagentHost['spawn']>[0]) => {
+      await new Promise<void>((resolve) => {
+        releaseSpawn = resolve;
+      });
+      return {
+        agentId: 'agent-child',
+        profileName: options.profileName,
+        resumed: false,
+        completion: new Promise<never>(() => {}),
+      };
+    });
+    const host = mockSubagentHost({ spawn });
+    const tool = agentTool(host, undefined, undefined, { team });
+    const args = {
+      prompt: 'Design the auth service',
+      description: 'Design auth',
+      subagent_type: 'software-architect',
+    };
+
+    const first = executeTool(tool, context(args, 'call-first'));
+    await vi.waitFor(() => {
+      expect(spawn).toHaveBeenCalledTimes(1);
+    });
+    const second = await executeTool(tool, context(args, 'call-second'));
+    releaseSpawn?.();
+    const firstResult = await first;
+
+    expect(second).toMatchObject({
+      isError: true,
+      output: expect.stringContaining('already on the team'),
+    });
+    expect(firstResult.isError).not.toBe(true);
+    expect(spawn).toHaveBeenCalledTimes(1);
+  });
+
+  it('aborts a spawned member when runtime dispatch fails', async () => {
+    let spawnedSignal: AbortSignal | undefined;
+    const team = fakeTeam({
+      dispatchMember: vi.fn(async () => {
+        throw new Error('registration failed');
+      }),
+    });
+    const spawn = vi.fn(async (options: Parameters<SessionSubagentHost['spawn']>[0]) => {
+      spawnedSignal = options.signal;
+      return {
+        agentId: 'agent-child',
+        profileName: options.profileName,
+        resumed: false,
+        completion: new Promise<never>(() => {}),
+      };
+    });
+    const host = mockSubagentHost({ spawn });
+    const tool = agentTool(host, undefined, undefined, { team });
+
+    const result = await executeTool(
+      tool,
+      context({
+        prompt: 'Design the auth service',
+        description: 'Design auth',
+        subagent_type: 'software-architect',
+      }),
+    );
+
+    expect(result).toMatchObject({
+      isError: true,
+      output: expect.stringContaining('registration failed'),
+    });
+    expect(spawnedSignal?.aborted).toBe(true);
   });
 });
 
