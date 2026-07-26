@@ -11,16 +11,30 @@ import {
   setMermaidWorker,
   clearMermaidWorker,
 } from 'markstream-vue';
-import type { MarkdownIt } from 'markstream-vue';
 import { useIsDark } from '../../composables/useIsDark';
 import type { FilePreviewRequest } from '../../types';
-import { collectFilePathAliases, findFilePathLinks } from '../../lib/filePathLinks';
+import {
+  collectFilePathAliases,
+  findFilePathLinks,
+  parseFilePathLinkCandidate,
+} from '../../lib/filePathLinks';
+import {
+  citationLabel,
+  configureCodexMarkdownIt,
+  findCodexCitations,
+  preprocessCodexMarkdown,
+  segmentCodexMarkdown,
+  type CodexSegment,
+  type GithubAlertType,
+} from '../../lib/codexMarkdown';
 import { markdownRenderPlan } from '../../lib/markdownPerformance';
 import { copyCodeBlockFallback, copyTextToClipboard } from '../../lib/clipboard';
 import * as katexWorkerModule from 'markstream-vue/workers/katexRenderer.worker?worker&type=module';
 import * as mermaidWorkerModule from 'markstream-vue/workers/mermaidParser.worker?worker&type=module';
 import Tooltip from '../ui/Tooltip.vue';
 import Icon from '../ui/Icon.vue';
+import Badge from '../ui/Badge.vue';
+import Card from '../ui/Card.vue';
 // px-based CSS build (our app is px, not rem). Imported here so the styles
 // load wherever Markdown is used; scoped overrides below re-skin it to
 // Terminal Pro. Importing the same file from multiple components is a no-op
@@ -64,16 +78,34 @@ clearMermaidWorker();
 setKaTeXWorker(new katexWorkerModule.default());
 setMermaidWorker(new mermaidWorkerModule.default());
 
-// Only `$$…$$` display math is rendered; single `$` inline math is disabled so
-// prices, env vars, and shell paths (`$5`, `$PATH`, `$HOME/bin`) stay literal
-// without any escaping or code-detection gymnastics. `math_block` (the $$ rule)
-// is left enabled.
-function disableInlineMath(md: MarkdownIt): MarkdownIt {
-  md.inline.ruler.disable('math');
-  return md;
-}
+// Codex-aligned markdown-it: soft breaks, block math, `\(...\)` inline only
+// (`$…$` stays disabled so `$PATH` / prices remain literal).
+const configureMd = configureCodexMarkdownIt;
 
 const { t } = useI18n();
+
+const ALERT_BADGE: Record<GithubAlertType, 'info' | 'success' | 'warning' | 'danger' | 'neutral'> = {
+  NOTE: 'info',
+  TIP: 'success',
+  IMPORTANT: 'warning',
+  WARNING: 'warning',
+  CAUTION: 'danger',
+};
+
+function alertLabel(type: GithubAlertType): string {
+  switch (type) {
+    case 'NOTE':
+      return t('markdown.alertNote');
+    case 'TIP':
+      return t('markdown.alertTip');
+    case 'IMPORTANT':
+      return t('markdown.alertImportant');
+    case 'WARNING':
+      return t('markdown.alertWarning');
+    case 'CAUTION':
+      return t('markdown.alertCaution');
+  }
+}
 
 const resolveImage = inject<(src: string) => Promise<string>>('resolveImage');
 const mdRef = ref<HTMLElement | null>(null);
@@ -203,6 +235,49 @@ watch(
   { immediate: true },
 );
 
+function openPath(path: string, line?: number, endLine?: number): void {
+  props.openFile?.({ path, line, endLine });
+}
+
+type TextSpan =
+  | { start: number; end: number; path: string; line?: number; endLine?: number; label: string };
+
+function collectTextSpans(data: string): TextSpan[] {
+  const spans: TextSpan[] = [];
+  for (const c of findCodexCitations(data)) {
+    spans.push({
+      start: c.start,
+      end: c.end,
+      path: c.path,
+      line: c.line,
+      endLine: c.endLine,
+      label: citationLabel(c.path, c.line, c.endLine),
+    });
+  }
+  for (const match of findFilePathLinks(data, { aliases: filePathAliases.value })) {
+    // Prefer citation literals when ranges overlap.
+    if (spans.some((s) => !(match.end <= s.start || match.start >= s.end))) continue;
+    spans.push({
+      start: match.start,
+      end: match.end,
+      path: match.path,
+      line: match.line,
+      endLine: match.endLine,
+      label: match.text,
+    });
+  }
+  spans.sort((a, b) => a.start - b.start || b.end - a.end);
+  // Drop overlaps (keep earlier / longer).
+  const out: TextSpan[] = [];
+  let cursor = 0;
+  for (const s of spans) {
+    if (s.start < cursor) continue;
+    out.push(s);
+    cursor = s.end;
+  }
+  return out;
+}
+
 function processFileLinks(): void {
   if (!mdRef.value || !props.openFile || props.streaming) return;
   const walker = document.createTreeWalker(mdRef.value, NodeFilter.SHOW_TEXT);
@@ -213,7 +288,7 @@ function processFileLinks(): void {
     const parent = text.parentElement;
     if (
       parent &&
-      !parent.closest('a, pre, .md-file-link, svg') &&
+      !parent.closest('a, pre, .md-file-link, .md-citation, svg') &&
       text.data.trim().length > 0
     ) {
       textNodes.push(text);
@@ -222,26 +297,32 @@ function processFileLinks(): void {
   }
 
   for (const text of textNodes) {
-    const matches = findFilePathLinks(text.data, { aliases: filePathAliases.value });
-    if (matches.length === 0 || !text.parentNode) continue;
+    const spans = collectTextSpans(text.data);
+    if (spans.length === 0 || !text.parentNode) continue;
     const frag = document.createDocumentFragment();
     let cursor = 0;
-    for (const match of matches) {
-      if (match.start > cursor) {
-        frag.append(document.createTextNode(text.data.slice(cursor, match.start)));
+    for (const span of spans) {
+      if (span.start > cursor) {
+        frag.append(document.createTextNode(text.data.slice(cursor, span.start)));
       }
       const button = document.createElement('button');
       button.type = 'button';
-      button.className = 'md-file-link';
-      button.textContent = match.text;
-      button.title = match.line ? `${match.path}:${match.line}` : match.path;
+      const isCitation = text.data.slice(span.start, span.end).startsWith('【');
+      button.className = isCitation ? 'md-citation' : 'md-file-link';
+      button.textContent = isCitation ? span.label : span.label;
+      button.title =
+        span.endLine && span.line
+          ? `${span.path}:${span.line}-${span.endLine}`
+          : span.line
+            ? `${span.path}:${span.line}`
+            : span.path;
       button.addEventListener('click', (event) => {
         event.preventDefault();
         event.stopPropagation();
-        props.openFile?.({ path: match.path, line: match.line });
+        openPath(span.path, span.line, span.endLine);
       });
       frag.append(button);
-      cursor = match.end;
+      cursor = span.end;
     }
     if (cursor < text.data.length) {
       frag.append(document.createTextNode(text.data.slice(cursor)));
@@ -256,6 +337,15 @@ function isLocalLink(href: string): boolean {
   return true;
 }
 
+/** Rich Codex-style schemes we cannot navigate — show a kind label instead. */
+const RICH_LINK_RE =
+  /^(agent|subagent|thread|plugin|chatgpt-conversation|mcp-resource|sites-project|app):\/\//i;
+
+function richLinkKind(href: string): string | null {
+  const m = RICH_LINK_RE.exec(href);
+  return m ? m[1]!.toLowerCase() : null;
+}
+
 /** Strip `?query` and `#fragment` from a link path so it can be opened as a
     workspace file. Pure `#anchor` links are skipped upstream by isLocalLink. */
 function stripFragmentAndQuery(href: string): string {
@@ -268,7 +358,7 @@ function stripFragmentAndQuery(href: string): string {
 }
 
 function processMarkdownLinks(): void {
-  if (!mdRef.value || !props.openFile || props.streaming) return;
+  if (!mdRef.value || props.streaming) return;
   const links = mdRef.value.querySelectorAll<HTMLAnchorElement>('a[href]');
   for (const link of links) {
     if (link.dataset.mdLinkHandled === 'true') continue;
@@ -276,12 +366,34 @@ function processMarkdownLinks(): void {
     // workspace file paths.
     if (link.closest('svg')) continue;
     const href = link.getAttribute('href') ?? '';
-    if (!isLocalLink(href)) continue;
+
+    const kind = richLinkKind(href);
+    if (kind) {
+      link.dataset.mdLinkHandled = 'true';
+      link.classList.add('md-rich-link');
+      link.setAttribute('title', href);
+      if (!link.textContent?.trim()) link.textContent = kind;
+      else if (!link.querySelector('.md-rich-kind')) {
+        const tag = document.createElement('span');
+        tag.className = 'md-rich-kind';
+        tag.textContent = kind;
+        link.prepend(tag, document.createTextNode(' '));
+      }
+      link.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      });
+      continue;
+    }
+
+    if (!props.openFile || !isLocalLink(href)) continue;
     link.dataset.mdLinkHandled = 'true';
+    const raw = href.startsWith('file:') ? href : stripFragmentAndQuery(href);
+    const parsed = parseFilePathLinkCandidate(raw) ?? { path: stripFragmentAndQuery(href) };
     link.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
-      props.openFile?.({ path: stripFragmentAndQuery(href) });
+      openPath(parsed.path, parsed.line, parsed.endLine);
     });
   }
 }
@@ -346,42 +458,13 @@ const codeBlockProps = {
 // skeleton path, and the content remains immediately readable.
 
 // ---------------------------------------------------------------------------
-// ```diff fences are handled locally, NOT by markstream.
-//
-// markstream's parser treats a ```diff fence as a unified diff to *apply*: it
-// strips the +/- markers and DROPS deletion lines, rendering only the post-apply
-// result. For a chat where we want to *read* the diff (red/green +/- lines),
-// that is content loss. So we split the text into diff fences vs. everything
-// else: diff fences render with the local renderer below (markers + colours
-// preserved), all other markdown goes through markstream.
+// Segment pipeline: Codex preprocess → directive/diff split → local UI +
+// markstream. ```diff fences stay local (markstream would strip deletions).
 // ---------------------------------------------------------------------------
 
-type Segment =
-  | { kind: 'md'; text: string }
-  | { kind: 'diff'; code: string };
-
-// Match a fenced ```diff block (``` or ~~~, optional info after `diff`). The
-// closing fence must use the same marker. Capture group 2 is the body.
-const DIFF_FENCE_RE = /(^|\n)(?:```|~~~)diff\b[^\n]*\n([\s\S]*?)(?:\n)?(?:```|~~~)(?=\n|$)/g;
-
-const segments = computed<Segment[]>(() => {
+const segments = computed<CodexSegment[]>(() => {
   const text = rewriteImageSrcs(props.text ?? '');
-  const out: Segment[] = [];
-  let lastIndex = 0;
-  DIFF_FENCE_RE.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = DIFF_FENCE_RE.exec(text)) !== null) {
-    // Text before this diff fence (keep the leading newline the regex consumed
-    // as a boundary out of the markdown segment).
-    const lead = m[1] ?? '';
-    const before = text.slice(lastIndex, m.index) + (lead ? lead : '');
-    if (before.trim()) out.push({ kind: 'md', text: before });
-    out.push({ kind: 'diff', code: m[2] ?? '' });
-    lastIndex = DIFF_FENCE_RE.lastIndex;
-  }
-  const tail = text.slice(lastIndex);
-  if (tail.trim() || out.length === 0) out.push({ kind: 'md', text: tail });
-  return out;
+  return segmentCodexMarkdown(preprocessCodexMarkdown(text));
 });
 
 // Lines of a diff block, split into a sign + the code text so the row can be
@@ -405,8 +488,9 @@ function diffLines(code: string): DiffRow[] {
   });
 }
 
-// Copy state for local diff blocks (keyed by segment index).
+// Copy state for local diff / automation chips (keyed by segment index).
 const copiedDiff = ref<number | null>(null);
+const copiedAutomation = ref<number | null>(null);
 function copyDiff(code: string, idx: number) {
   void copyTextToClipboard(code).then((ok) => {
     if (!ok) return;
@@ -416,16 +500,33 @@ function copyDiff(code: string, idx: number) {
     }, 1400);
   });
 }
+function copyAutomationId(id: string, idx: number) {
+  void copyTextToClipboard(id).then((ok) => {
+    if (!ok) return;
+    copiedAutomation.value = idx;
+    setTimeout(() => {
+      copiedAutomation.value = null;
+    }, 1400);
+  });
+}
+
+function citationChipLabel(seg: Extract<CodexSegment, { kind: 'citation' }>): string {
+  if (seg.label) return seg.label;
+  return citationLabel(seg.path, seg.line, seg.endLine);
+}
 </script>
 
 <template>
   <div ref="mdRef" class="md">
     <template v-for="(seg, i) in segments" :key="i">
-      <!-- Non-diff markdown → markstream (smooth streaming + shiki) -->
+      <!-- Hidden control directives render nothing -->
+      <template v-if="seg.kind === 'hidden'" />
+
+      <!-- Plain / residual markdown → markstream -->
       <MarkdownRender
-        v-if="seg.kind === 'md'"
+        v-else-if="seg.kind === 'md'"
         :content="seg.text"
-        :custom-markdown-it="disableInlineMath"
+        :custom-markdown-it="configureMd"
         mode="chat"
         :code-renderer="renderPlan.codeRenderer"
         :is-dark="isDark"
@@ -440,8 +541,134 @@ function copyDiff(code: string, idx: number) {
         @copy="copyCodeBlockFallback"
       />
 
+      <!-- Unknown directive → fail-soft raw -->
+      <pre v-else-if="seg.kind === 'raw'" class="md-raw">{{ seg.text }}</pre>
+
+      <!-- File citation chip -->
+      <button
+        v-else-if="seg.kind === 'citation' && seg.path"
+        type="button"
+        class="md-citation"
+        :title="seg.path"
+        @click="openPath(seg.path, seg.line, seg.endLine)"
+      >
+        {{ citationChipLabel(seg) }}
+      </button>
+
+      <!-- GitHub details -->
+      <details v-else-if="seg.kind === 'details'" class="md-details" :open="seg.open || undefined">
+        <summary class="md-details-summary">{{ seg.summary || 'Details' }}</summary>
+        <div class="md-details-body">
+          <MarkdownRender
+            :content="seg.body"
+            :custom-markdown-it="configureMd"
+            mode="chat"
+            :code-renderer="renderPlan.codeRenderer"
+            :is-dark="isDark"
+            :code-block-light-theme="CODE_LIGHT_THEME"
+            :code-block-dark-theme="CODE_DARK_THEME"
+            :themes="[CODE_LIGHT_THEME, CODE_DARK_THEME]"
+            :code-block-props="codeBlockProps"
+            :final="true"
+            :smooth-streaming="false"
+            :batch-rendering="true"
+            :defer-nodes-until-visible="false"
+            @copy="copyCodeBlockFallback"
+          />
+        </div>
+      </details>
+
+      <!-- GitHub alert -->
+      <div v-else-if="seg.kind === 'alert'" class="md-alert" :data-type="seg.type">
+        <div class="md-alert-head">
+          <Badge :variant="ALERT_BADGE[seg.type]" size="sm">{{ alertLabel(seg.type) }}</Badge>
+        </div>
+        <div class="md-alert-body">
+          <MarkdownRender
+            :content="seg.body"
+            :custom-markdown-it="configureMd"
+            mode="chat"
+            :code-renderer="renderPlan.codeRenderer"
+            :is-dark="isDark"
+            :code-block-light-theme="CODE_LIGHT_THEME"
+            :code-block-dark-theme="CODE_DARK_THEME"
+            :themes="[CODE_LIGHT_THEME, CODE_DARK_THEME]"
+            :code-block-props="codeBlockProps"
+            :final="true"
+            :smooth-streaming="false"
+            :batch-rendering="true"
+            :defer-nodes-until-visible="false"
+            @copy="copyCodeBlockFallback"
+          />
+        </div>
+      </div>
+
+      <!-- Suggested task (read-only) -->
+      <Card v-else-if="seg.kind === 'task-stub'" class="md-card">
+        <template #head>{{ t('markdown.suggestedTask') }}</template>
+        <div class="md-card-title">{{ seg.title }}</div>
+        <pre v-if="seg.body" class="md-card-pre">{{ seg.body }}</pre>
+      </Card>
+
+      <!-- Writing block (read-only) -->
+      <Card v-else-if="seg.kind === 'writing'" class="md-card">
+        <template #head>
+          {{ seg.title || t('markdown.writingBlock') }}
+          <Badge v-if="seg.variant" variant="neutral" size="sm">{{ seg.variant }}</Badge>
+        </template>
+        <div v-if="seg.subject || seg.recipient" class="md-writing-meta">
+          <div v-if="seg.subject"><span class="md-meta-k">Subject</span> {{ seg.subject }}</div>
+          <div v-if="seg.recipient"><span class="md-meta-k">To</span> {{ seg.recipient }}</div>
+          <div v-if="seg.cc"><span class="md-meta-k">Cc</span> {{ seg.cc }}</div>
+          <div v-if="seg.bcc"><span class="md-meta-k">Bcc</span> {{ seg.bcc }}</div>
+        </div>
+        <MarkdownRender
+          :content="seg.body"
+          :custom-markdown-it="configureMd"
+          mode="chat"
+          :code-renderer="renderPlan.codeRenderer"
+          :is-dark="isDark"
+          :code-block-light-theme="CODE_LIGHT_THEME"
+          :code-block-dark-theme="CODE_DARK_THEME"
+          :themes="[CODE_LIGHT_THEME, CODE_DARK_THEME]"
+          :code-block-props="codeBlockProps"
+          :final="true"
+          :smooth-streaming="false"
+          :batch-rendering="true"
+          :defer-nodes-until-visible="false"
+          @copy="copyCodeBlockFallback"
+        />
+      </Card>
+
+      <!-- Artifact template (read-only) -->
+      <Card v-else-if="seg.kind === 'artifact'" class="md-card">
+        <template #head>{{ t('markdown.artifact') }}</template>
+        <div class="md-card-title">{{ seg.displayName || seg.skillName || '—' }}</div>
+        <div v-if="seg.artifactKind" class="md-card-sub">{{ seg.artifactKind }}</div>
+      </Card>
+
+      <!-- Automation citation chip -->
+      <button
+        v-else-if="seg.kind === 'automation'"
+        type="button"
+        class="md-citation"
+        :title="t('markdown.copyId')"
+        @click="copyAutomationId(seg.automationId, i)"
+      >
+        {{ t('markdown.automation') }}
+        <span class="md-citation-id">{{ seg.automationId || '—' }}</span>
+        <Icon :name="copiedAutomation === i ? 'check' : 'copy'" size="sm" />
+      </button>
+
+      <!-- Inline vis placeholder -->
+      <Card v-else-if="seg.kind === 'inline-vis'" class="md-card">
+        <template #head>{{ seg.title || t('markdown.inlineVis') }}</template>
+        <div class="md-card-sub">{{ seg.file || t('markdown.inlineVisHint') }}</div>
+        <div class="md-card-hint">{{ t('markdown.inlineVisHint') }}</div>
+      </Card>
+
       <!-- ```diff fence → local renderer (preserves +/- markers + colours) -->
-      <div v-else class="diff-wrap">
+      <div v-else-if="seg.kind === 'diff'" class="diff-wrap">
         <div class="diff-bar">
           <span class="diff-lang">diff</span>
           <Tooltip :text="t('filePreview.copyCode')">
@@ -498,7 +725,10 @@ function copyDiff(code: string, idx: number) {
   --inline-code-fg: var(--color-fg);
   --inline-code-border: transparent;
 }
-.md :deep(.md-file-link) {
+.md :deep(.md-file-link),
+.md :deep(.md-citation),
+.md .md-file-link,
+.md .md-citation {
   appearance: none;
   display: inline;
   border: 0;
@@ -511,8 +741,138 @@ function copyDiff(code: string, idx: number) {
   text-underline-offset: 2px;
   cursor: pointer;
 }
-.md :deep(.md-file-link:hover) {
+.md :deep(.md-file-link:hover),
+.md :deep(.md-citation:hover),
+.md .md-file-link:hover,
+.md .md-citation:hover {
   color: var(--color-accent);
+}
+.md .md-citation {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
+  border-radius: var(--radius-sm);
+  background: var(--color-accent-soft);
+  border: 1px solid var(--color-accent-bd);
+  text-decoration: none;
+  font: var(--text-xs) / 1.4 var(--font-mono);
+  color: var(--color-accent-hover);
+}
+.md .md-citation:hover {
+  text-decoration: none;
+  background: color-mix(in srgb, var(--color-accent-soft) 70%, var(--color-surface));
+}
+.md .md-citation-id {
+  max-width: 14em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.md :deep(.md-rich-link) {
+  color: var(--color-text-muted);
+  text-decoration: none;
+  cursor: default;
+}
+.md :deep(.md-rich-kind) {
+  display: inline-block;
+  margin-right: 4px;
+  padding: 0 5px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-line);
+  font: var(--text-xs) var(--font-mono);
+  color: var(--color-text-muted);
+  text-transform: lowercase;
+}
+.md-raw {
+  margin: 0.6em 0;
+  padding: 10px 12px;
+  overflow-x: auto;
+  border: 1px dashed var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-sunken);
+  color: var(--color-text-muted);
+  font: var(--text-sm) / 1.5 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.md-details {
+  margin: 0.6em 0;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.md-details-summary {
+  cursor: pointer;
+  list-style: none;
+  padding: 8px 12px;
+  font: var(--weight-medium) var(--text-sm) / 1.4 var(--font-ui);
+  color: var(--color-text);
+  background: var(--color-surface);
+  border-bottom: 1px solid transparent;
+}
+.md-details[open] > .md-details-summary {
+  border-bottom-color: var(--color-line);
+}
+.md-details-summary::-webkit-details-marker { display: none; }
+.md-details-body { padding: 8px 12px 12px; }
+.md-alert {
+  margin: 0.6em 0;
+  border: 1px solid var(--color-line);
+  border-left-width: 3px;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  overflow: hidden;
+}
+.md-alert[data-type="NOTE"] { border-left-color: var(--color-accent); }
+.md-alert[data-type="TIP"] { border-left-color: var(--color-success); }
+.md-alert[data-type="IMPORTANT"] { border-left-color: var(--color-warning); }
+.md-alert[data-type="WARNING"] { border-left-color: var(--color-warning); }
+.md-alert[data-type="CAUTION"] { border-left-color: var(--color-danger); }
+.md-alert-head { padding: 8px 12px 0; }
+.md-alert-body { padding: 4px 12px 10px; }
+.md-card { margin: 0.6em 0; }
+.md-card-title {
+  font: var(--weight-medium) var(--text-sm) / 1.4 var(--font-ui);
+  color: var(--color-text);
+  margin-bottom: 6px;
+}
+.md-card-sub {
+  font: var(--text-xs) var(--font-mono);
+  color: var(--color-text-muted);
+}
+.md-card-hint {
+  margin-top: 6px;
+  font: var(--text-xs) var(--font-ui);
+  color: var(--color-text-muted);
+}
+.md-card-pre {
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-sunken);
+  border: 1px solid var(--color-line);
+  font: var(--text-sm) / 1.5 var(--font-mono);
+  color: var(--color-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.md-writing-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 8px;
+  font: var(--text-xs) / 1.4 var(--font-ui);
+  color: var(--color-text-muted);
+}
+.md-meta-k {
+  display: inline-block;
+  min-width: 4.5em;
+  margin-right: 6px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
 }
 /* Pin the prose text size explicitly. markstream sets no font-size of its own,
    so without this the rendered <p>/<li> can pick up a different base size. */
@@ -730,16 +1090,10 @@ function copyDiff(code: string, idx: number) {
   font-weight: var(--weight-medium);
 }
 
-/* Markdown tables — wide tables scroll horizontally INSIDE the table's own
-   wrapper instead of squeezing into (or overflowing) the reading column.
-   The wrapper is a fixed-width local scroll container: it stays pinned to the
-   message width (`width:100%`, `min-width:0` so it can shrink inside flex
-   tracks) and clips any overflow behind its own `overflow-x:auto` scrollbar —
-   the chat pane and the page never scroll sideways. The table itself grows to
-   its content width (`width:max-content`, `max-width:none`,
-   `table-layout:auto`), so many-column or long-cell tables keep their natural
-   layout and only the excess scrolls within the wrapper. `min-width:100%` keeps
-   narrow tables stretched to fill the wrapper exactly as before. `!important`
+/* Markdown tables stay within the reading column (same width as prose).
+   Overflow scrolls horizontally inside the wrapper — the chat pane never
+   scrolls sideways. The table grows to its content width (`width:max-content`)
+   with `min-width:100%` so narrow tables still fill the column. `!important`
    beats markstream's scoped `.table-node[data-v-…]` rules regardless of
    injection order. */
 .md :deep(.table-node-wrapper) {

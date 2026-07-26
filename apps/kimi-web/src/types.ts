@@ -186,6 +186,8 @@ export type TurnRole = 'user' | 'assistant' | 'compaction' | 'cron';
 export interface FilePreviewRequest {
   path: string;
   line?: number;
+  /** Inclusive end line for range citations; preview still jumps to `line`. */
+  endLine?: number;
 }
 
 /**

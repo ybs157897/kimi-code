@@ -1,8 +1,8 @@
 <!-- apps/kimi-web/src/components/ResizeHandle.vue -->
-<!-- A thin (~4px) vertical drag bar used to resize the panel to its LEFT. It -->
-<!-- owns the width via useResizable and reports changes through v-model:width so -->
-<!-- the parent can drive its grid/flex sizing. col-resize cursor, subtle blue -->
-<!-- hover highlight, no text-selection while dragging. -->
+<!-- A thin (~4px) drag bar. Axis x (default) resizes the panel to its LEFT
+     (col-resize). Axis y resizes a BOTTOM panel (row-resize, reverse grows
+     upward). Owns the size via useResizable and reports changes through
+     v-model:width so the parent can drive its grid/flex sizing. -->
 <script setup lang="ts">
 import { watch } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -15,14 +15,18 @@ const props = withDefaults(
     min: number;
     max: number;
     reverse?: boolean;
+    /** `x` = vertical bar / width (default); `y` = horizontal bar / height. */
+    axis?: 'x' | 'y';
     ariaLabel?: string;
   }>(),
-  {},
+  {
+    axis: 'x',
+  },
 );
 
 const emit = defineEmits<{
   'update:width': [width: number];
-  /** True while dragging — parents disable width transitions so the panel
+  /** True while dragging — parents disable size transitions so the panel
       tracks the pointer without animation lag. */
   'update:dragging': [dragging: boolean];
 }>();
@@ -37,9 +41,10 @@ const { width, dragging, onPointerDown } = useResizable({
   // after the handle mounts and the next drag will use the new limit.
   max: () => props.max,
   reverse: props.reverse,
+  axis: props.axis,
 });
 
-// Surface the restored width immediately, then keep the parent in sync on drag.
+// Surface the restored size immediately, then keep the parent in sync on drag.
 emit('update:width', width.value);
 watch(width, (w) => emit('update:width', w));
 watch(dragging, (d) => emit('update:dragging', d));
@@ -48,9 +53,9 @@ watch(dragging, (d) => emit('update:dragging', d));
 <template>
   <div
     class="rh"
-    :class="{ dragging }"
+    :class="{ dragging, 'rh--y': axis === 'y' }"
     role="separator"
-    aria-orientation="vertical"
+    :aria-orientation="axis === 'y' ? 'horizontal' : 'vertical'"
     :aria-label="ariaLabel ?? t('layout.resizeHandleAria')"
     @pointerdown="onPointerDown"
   >
@@ -72,6 +77,14 @@ watch(dragging, (d) => emit('update:dragging', d));
   /* above pane-level sticky chrome (chat dock, headers at --z-sticky): its 2px
      overhang into the neighbour pane must stay visible and grabbable */
   z-index: var(--z-dropdown);
+}
+.rh--y {
+  width: auto;
+  height: 4px;
+  cursor: row-resize;
+  align-self: auto;
+  justify-self: stretch;
+  margin: -2px 0;
 }
 .rh-bar {
   position: absolute;

@@ -1,0 +1,15 @@
+export default {
+  tab: '终端',
+  newTab: '新建终端',
+  closeTab: '关闭终端',
+  closePanel: '关闭面板',
+  maximize: '最大化终端',
+  restore: '还原终端',
+  starting: '正在启动终端…',
+  startFailed: '无法启动终端。',
+  exited: '已退出',
+  restart: '重新启动',
+  fit: '适应',
+  close: '关闭',
+  new: '新建',
+} as const;

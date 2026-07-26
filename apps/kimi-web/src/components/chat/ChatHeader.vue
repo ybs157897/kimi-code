@@ -32,6 +32,10 @@ const props = defineProps<{
   pr?: { number: number; state: string; url: string } | null;
   /** True for ~2s after a successful copy-all, to flip the icon to a check. */
   copied?: boolean;
+  /** Whether the bottom terminal dock is open (drives pressed state). */
+  terminalOpen?: boolean;
+  /** Whether the files explorer panel is open (drives pressed state). */
+  filesOpen?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -43,6 +47,8 @@ const emit = defineEmits<{
   forkSession: [id: string];
   archiveSession: [id: string];
   exportSession: [id: string];
+  toggleTerminal: [];
+  toggleFiles: [];
 }>();
 
 const ahead = computed(() => props.ahead ?? 0);
@@ -333,6 +339,32 @@ function startArchive(): void {
       <span>PR #{{ pr.number }} · {{ prStateLabel(pr.state) }}</span>
     </button>
 
+    <Tooltip v-if="sessionId" :text="t('header.toggleFiles')">
+      <IconButton
+        size="sm"
+        class="ch-files-btn"
+        :class="{ open: filesOpen }"
+        :label="t('header.toggleFiles')"
+        :aria-pressed="filesOpen ? 'true' : 'false'"
+        @click="emit('toggleFiles')"
+      >
+        <Icon name="folder" size="md" />
+      </IconButton>
+    </Tooltip>
+
+    <Tooltip v-if="sessionId" :text="t('header.toggleTerminalHint')">
+      <IconButton
+        size="sm"
+        class="ch-terminal-btn"
+        :class="{ open: terminalOpen }"
+        :label="t('header.toggleTerminal')"
+        :aria-pressed="terminalOpen ? 'true' : 'false'"
+        @click="emit('toggleTerminal')"
+      >
+        <Icon name="terminal" size="md" />
+      </IconButton>
+    </Tooltip>
+
   </header>
 </template>
 
@@ -428,6 +460,8 @@ function startArchive(): void {
 /* Overflow "…" trigger — IconButton (md). The "open" state keeps the
    sunken highlight while the menu is showing. */
 .ch-act-more.open { background: var(--color-surface-sunken); color: var(--color-text); }
+.ch-files-btn.open { background: var(--color-surface-sunken); color: var(--color-text); }
+.ch-terminal-btn.open { background: var(--color-surface-sunken); color: var(--color-text); }
 
 /* GitHub PR badge — semantic state colors aligned with GitHub
    (open=green, merged=purple, closed=red, draft=gray). */

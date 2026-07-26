@@ -6,6 +6,8 @@ import { useI18n } from 'vue-i18n';
 import Markdown from './chat/Markdown.vue';
 import type { FileData, FilePreviewRequest } from '../types';
 import { copyTextToClipboard } from '../lib/clipboard';
+import { highlightSourceLines } from '../lib/filePreviewHighlight';
+import { useIsDark } from '../composables/useIsDark';
 import SegmentedControl from './ui/SegmentedControl.vue';
 import Button from './ui/Button.vue';
 import IconButton from './ui/IconButton.vue';
@@ -14,6 +16,7 @@ import PanelHeader from './ui/PanelHeader.vue';
 import Tooltip from './ui/Tooltip.vue';
 
 const { t } = useI18n();
+const isDark = useIsDark();
 
 // Resolve a relative path (from inside a Markdown file) against that file's
 // directory. Handles "./foo", "../foo", and bare "foo" segments.
@@ -115,8 +118,12 @@ const contentKind = computed<ContentKind>(() => {
   if (mime.startsWith('image/')) return 'image';
   if (mime.startsWith('video/')) return 'video';
   if (f.isBinary) return 'binary';
-  // text/* and code files
+  // text/* and code files (incl. application/* when languageId or a code-like
+  // extension is present — e.g. application/toml, unknown mime + .vue).
   if (mime.startsWith('text/') || lang !== '') return 'text';
+  if (/\.(ts|tsx|js|jsx|mjs|cjs|vue|py|rs|go|java|c|cc|cpp|h|hpp|css|scss|less|sql|sh|bash|zsh|toml|xml|yaml|yml)$/i.test(f.path)) {
+    return 'text';
+  }
   return 'binary';
 });
 
@@ -368,40 +375,52 @@ function escapeHtml(value: string): string {
     .replaceAll('"', '&quot;');
 }
 
-function languageKey(): string {
+const languageKey = computed(() => {
   const f = props.file;
   if (!f) return '';
+  if (contentKind.value === 'json') return 'json';
+  if (contentKind.value === 'html') return 'html';
+  if (contentKind.value === 'markdown') return 'markdown';
   const lang = f.languageId?.toLowerCase();
   if (lang) return lang;
   return f.path.split('.').pop()?.toLowerCase() ?? '';
-}
+});
 
-function highlightLine(line: string): string {
-  const lang = languageKey();
-  let html = escapeHtml(line);
+/** True when the current view shows a line-numbered code surface (not MD/HTML preview). */
+const wantsCodeHighlight = computed(() => {
+  const kind = contentKind.value;
+  if (kind === 'json' || kind === 'text') return true;
+  if (kind === 'html' && htmlMode.value === 'source') return true;
+  if (kind === 'markdown' && markdownMode.value === 'source') return true;
+  return false;
+});
 
-  if (contentKind.value === 'json' || lang === 'json' || lang === 'jsonc') {
-    html = html.replace(/(&quot;[^&]*?&quot;)(\s*:)/g, '<span class="tok-key">$1</span>$2');
-    html = html.replace(/(:\s*)(&quot;[^&]*?&quot;)/g, '$1<span class="tok-string">$2</span>');
-    html = html.replace(/\b(true|false|null)\b/g, '<span class="tok-literal">$1</span>');
-    html = html.replace(/(:\s*)(-?\d+(?:\.\d+)?)/g, '$1<span class="tok-number">$2</span>');
-    return html;
-  }
+// Shiki-highlighted HTML per line. null = plain escaped fallback (loading / heavy / fail).
+const highlightedLines = ref<string[] | null>(null);
+let highlightSeq = 0;
 
-  if (contentKind.value === 'html' || lang === 'html' || lang === 'xml' || lang === 'svg') {
-    html = html.replace(/\s([A-Za-z_:][-A-Za-z0-9_:.]*)(=)/g, ' <span class="tok-attr">$1</span>$2');
-    html = html.replace(/(&quot;.*?&quot;)/g, '<span class="tok-string">$1</span>');
-    html = html.replace(/(&lt;\/?)([A-Za-z][\w:-]*)/g, '$1<span class="tok-tag">$2</span>');
-    return html;
-  }
+watch(
+  [sourceText, languageKey, isDark, wantsCodeHighlight],
+  () => {
+    const seq = ++highlightSeq;
+    highlightedLines.value = null;
+    if (!wantsCodeHighlight.value) return;
+    const code = sourceText.value;
+    const lang = languageKey.value;
+    if (!code || !lang) return;
+    const theme = isDark.value ? 'github-dark' : 'github-light';
+    void highlightSourceLines(code, lang, theme).then((linesHtml) => {
+      if (seq !== highlightSeq) return;
+      highlightedLines.value = linesHtml;
+    });
+  },
+  { immediate: true },
+);
 
-  html = html.replace(
-    /\b(async|await|break|case|catch|class|const|continue|else|export|extends|finally|for|from|function|if|import|interface|let|new|return|switch|throw|try|type|while)\b/g,
-    '<span class="tok-keyword">$1</span>',
-  );
-  html = html.replace(/(&quot;.*?&quot;|'.*?')/g, '<span class="tok-string">$1</span>');
-  html = html.replace(/(\/\/.*)$/g, '<span class="tok-comment">$1</span>');
-  return html;
+function highlightLine(line: string, idx: number): string {
+  const hi = highlightedLines.value;
+  if (hi && idx >= 0 && idx < hi.length) return hi[idx] ?? escapeHtml(line);
+  return escapeHtml(line);
 }
 
 // ---------------------------------------------------------------------------
@@ -550,7 +569,7 @@ function truncatePath(path: string, maxLen = 55): string {
               :data-line="idx + 1"
             >
               <span class="fp-gutter">{{ idx + 1 }}</span>
-              <span class="fp-line-text" v-html="highlightLine(line)"></span>
+              <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
             </div>
           </div>
         </div>
@@ -567,7 +586,7 @@ function truncatePath(path: string, maxLen = 55): string {
             :data-line="idx + 1"
           >
             <span class="fp-gutter">{{ idx + 1 }}</span>
-            <span class="fp-line-text" v-html="highlightLine(line)"></span>
+            <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
           </div>
         </div>
       </div>
@@ -591,7 +610,7 @@ function truncatePath(path: string, maxLen = 55): string {
               :data-line="idx + 1"
             >
               <span class="fp-gutter">{{ idx + 1 }}</span>
-              <span class="fp-line-text" v-html="highlightLine(line)"></span>
+              <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
             </div>
           </div>
         </div>
@@ -659,7 +678,7 @@ function truncatePath(path: string, maxLen = 55): string {
             :data-line="idx + 1"
           >
             <span class="fp-gutter">{{ idx + 1 }}</span>
-            <span class="fp-line-text" v-html="highlightLine(line)"></span>
+            <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
           </div>
         </div>
       </div>

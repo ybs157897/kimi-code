@@ -1,6 +1,7 @@
 export interface FilePathLink {
   path: string;
   line?: number;
+  endLine?: number;
 }
 
 export interface FilePathLinkMatch extends FilePathLink {
@@ -59,15 +60,27 @@ const COMMON_FILENAMES = new Set([
 const EXT_PATTERN = [...COMMON_FILE_EXTENSIONS]
   .sort((a, b) => b.length - a.length)
   .join('|');
+
+/** Line/col suffix: :12, :12-40, :12:4, :12:4-40:8, #L12, #L12C4, #L12-L40, #L12C4-L40C8 */
+const LINE_SUFFIX =
+  String.raw`(?:` +
+  String.raw`#L?(\d+)(?:C(\d+))?(?:-L?(\d+)(?:C(\d+))?)?` +
+  String.raw`|` +
+  String.raw`:(\d+)(?::(\d+))?(?:-(\d+)(?::(\d+))?)?` +
+  String.raw`)?`;
+
 const PATH_RE = new RegExp(
   [
     String.raw`(?:^|[\s([{"'` + '`' + String.raw`])`,
     String.raw`(`,
+    // file:// URLs (pathname kept inside the same capture as the scheme)
+    String.raw`file://(?:localhost)?/[^\s)"'\]]+`,
+    String.raw`|`,
     String.raw`(?:~|\.{1,2}|/)?(?:[A-Za-z0-9_.@+()[\]-]+/)+[A-Za-z0-9_.@+()[\]-]+(?:\.(?:${EXT_PATTERN}))?`,
     String.raw`|`,
     String.raw`[A-Za-z0-9_.@+()[\]-]+\.(?:${EXT_PATTERN})`,
     String.raw`)`,
-    String.raw`(?:#L?(\d+)|:(\d+))?`,
+    LINE_SUFFIX,
     String.raw`(?=$|[\s)"'\]}>.,;!?，。；！？）])`,
   ].join(''),
   'gi',
@@ -78,6 +91,17 @@ const TRAILING_PUNCTUATION_RE = /[),.;!?，。；！？）]+$/;
 function hasCommonFileExtension(path: string): boolean {
   const lower = path.toLowerCase();
   return COMMON_FILE_EXTENSIONS.some((ext) => lower.endsWith(`.${ext}`));
+}
+
+function normalizeFileUrl(path: string): string {
+  if (!/^file:/i.test(path)) return path;
+  try {
+    const u = new URL(path);
+    // file:///abs or file://localhost/abs
+    return decodeURIComponent(u.pathname);
+  } catch {
+    return path.replace(/^file:\/\/(localhost)?/i, '');
+  }
 }
 
 export function collectFilePathAliases(text: string): Map<string, string> {
@@ -96,17 +120,54 @@ export function collectFilePathAliases(text: string): Map<string, string> {
   return aliases;
 }
 
+interface LineRange {
+  line?: number;
+  endLine?: number;
+}
+
+function parseLineSuffix(groups: {
+  hashLine?: string;
+  hashCol?: string;
+  hashEndLine?: string;
+  hashEndCol?: string;
+  colonLine?: string;
+  colonCol?: string;
+  colonEndLine?: string;
+  colonEndCol?: string;
+}): LineRange {
+  const lineRaw = groups.hashLine ?? groups.colonLine;
+  const endRaw = groups.hashEndLine ?? groups.colonEndLine;
+  const line = lineRaw ? Number(lineRaw) : undefined;
+  const endLine = endRaw ? Number(endRaw) : undefined;
+  return {
+    line: line !== undefined && Number.isFinite(line) && line > 0 ? line : undefined,
+    endLine: endLine !== undefined && Number.isFinite(endLine) && endLine > 0 ? endLine : undefined,
+  };
+}
+
 export function parseFilePathLinkCandidate(
   text: string,
   options: FindFilePathLinksOptions = {},
 ): FilePathLink | null {
   const trimmed = text.trim();
-  if (!trimmed || /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return null;
+  if (!trimmed) return null;
+  if (/^(https?:|mailto:|tel:|data:|blob:)/i.test(trimmed)) return null;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) && !/^file:/i.test(trimmed)) return null;
 
-  const match = trimmed.match(/^(.*?)(?:#L?(\d+)|:(\d+))?$/i);
+  const suffixRe = new RegExp(
+    String.raw`^(.*?)(?:` +
+      String.raw`#L?(\d+)(?:C(\d+))?(?:-L?(\d+)(?:C(\d+))?)?` +
+      String.raw`|` +
+      String.raw`:(\d+)(?::(\d+))?(?:-(\d+)(?::(\d+))?)?` +
+      String.raw`)?$`,
+    'i',
+  );
+  const match = trimmed.match(suffixRe);
   if (!match) return null;
+
   let path = (match[1] ?? '').replace(TRAILING_PUNCTUATION_RE, '');
   if (!path) return null;
+  path = normalizeFileUrl(path);
 
   const basename = path.split('/').pop() ?? path;
   const hasSeparator = path.includes('/');
@@ -119,11 +180,21 @@ export function parseFilePathLinkCandidate(
     path = alias;
   }
 
-  const lineRaw = match[2] ?? match[3];
-  const line = lineRaw ? Number(lineRaw) : undefined;
+  const range = parseLineSuffix({
+    hashLine: match[2],
+    hashCol: match[3],
+    hashEndLine: match[4],
+    hashEndCol: match[5],
+    colonLine: match[6],
+    colonCol: match[7],
+    colonEndLine: match[8],
+    colonEndCol: match[9],
+  });
+
   return {
     path,
-    line: line !== undefined && Number.isFinite(line) && line > 0 ? line : undefined,
+    line: range.line,
+    endLine: range.endLine,
   };
 }
 
@@ -136,12 +207,15 @@ export function findFilePathLinks(
   let match: RegExpExecArray | null;
   while ((match = PATH_RE.exec(text)) !== null) {
     const full = match[0] ?? '';
+    // Groups: 1=path (or file url path via alt), file url is inside group 1's alternatives
+    // Rebuild matched path+suffix from the regex carefully.
     const rawPath = match[1] ?? '';
     const prefixLength = full.indexOf(rawPath);
     if (prefixLength < 0) continue;
 
-    const lineSuffix = match[2] ?? match[3];
-    let linkText = rawPath + (lineSuffix ? full.slice(prefixLength + rawPath.length) : '');
+    // Suffix groups follow the path group. With file:// alternative the group
+    // indices shift — use the full match slice after path for suffix text.
+    let linkText = full.slice(prefixLength);
     const stripped = linkText.replace(TRAILING_PUNCTUATION_RE, '');
     const trailing = linkText.length - stripped.length;
     linkText = stripped;

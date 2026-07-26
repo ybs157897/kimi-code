@@ -1,0 +1,15 @@
+export default {
+  tab: 'Terminal',
+  newTab: 'New terminal',
+  closeTab: 'Close terminal',
+  closePanel: 'Close panel',
+  maximize: 'Maximize terminal',
+  restore: 'Restore terminal',
+  starting: 'Starting terminal…',
+  startFailed: 'Could not start the terminal.',
+  exited: 'Exited',
+  restart: 'Restart',
+  fit: 'Fit',
+  close: 'Close',
+  new: 'New',
+} as const;

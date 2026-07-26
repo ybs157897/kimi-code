@@ -2599,14 +2599,17 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
   /**
    * List directory contents for the active session.
-   * Returns FsEntry[] — defensive, returns [] on error or no active session.
+   * Empty/omitted path lists the workspace root. Returns [] on error or no session.
    */
-  async function listDir(path: string): Promise<FsEntry[]> {
+  async function listDir(path = ''): Promise<FsEntry[]> {
     const sid = rawState.activeSessionId;
     if (!sid) return [];
     try {
       const api = getKimiWebApi();
-      const result = await api.listDirectory(sid, { path, includeGitStatus: true });
+      const result = await api.listDirectory(sid, {
+        path: path || undefined,
+        includeGitStatus: true,
+      });
       return result.items;
     } catch {
       return [];

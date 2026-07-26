@@ -1,34 +1,37 @@
-// apps/kimi-web/src/composables/useResizable.ts
-// A small reusable hook for a horizontal drag-to-resize handle. It owns the
-// width value, clamps it to [min, max], persists it to localStorage, and wires
-// up pointer events (pointerdown/move/up with capture, no text-selection while
-// dragging). Used by the sidebar session column drag handle.
+// A small reusable hook for a drag-to-resize handle. It owns the size value,
+// clamps it to [min, max], persists it to localStorage, and wires up pointer
+// events (pointerdown/move/up with capture, no text-selection while dragging).
+// Used by the sidebar session column (axis x) and the bottom terminal dock
+// (axis y).
 
 import { onBeforeUnmount, ref, toValue, type MaybeRefOrGetter, type Ref } from 'vue';
 import { safeGetString, safeSetString } from '../lib/storage';
 
 export interface UseResizableOptions {
-  /** localStorage key the chosen width is persisted under. */
+  /** localStorage key the chosen size is persisted under. */
   storageKey: string;
-  /** Width to fall back to when nothing is stored / value is invalid. */
+  /** Size to fall back to when nothing is stored / value is invalid. */
   defaultWidth: number;
-  /** Smallest allowed width (px). */
+  /** Smallest allowed size (px). */
   min: number;
-  /** Largest allowed width (px). Accepts a ref/getter so a cap derived from the
+  /** Largest allowed size (px). Accepts a ref/getter so a cap derived from the
    *  viewport keeps working as the window is resized after the handle mounts. */
   max: MaybeRefOrGetter<number>;
-  /** True when dragging right should shrink the controlled width. */
+  /** True when dragging in the positive axis direction should shrink the size.
+   *  For a bottom panel (axis y), reverse makes dragging up grow the height. */
   reverse?: boolean;
+  /** Resize axis. `x` (default) tracks clientX / width; `y` tracks clientY / height. */
+  axis?: 'x' | 'y';
 }
 
 export interface UseResizable {
-  /** Current width in px (already clamped). */
+  /** Current size in px (already clamped). */
   width: Ref<number>;
   /** True while a drag is in progress. */
   dragging: Ref<boolean>;
   /** Clamp a value to [min, max]. */
   clamp: (value: number) => number;
-  /** Set the width (clamped + persisted). */
+  /** Set the size (clamped + persisted). */
   setWidth: (value: number) => void;
   /** pointerdown handler to attach to the drag handle. */
   onPointerDown: (event: PointerEvent) => void;
@@ -49,12 +52,12 @@ function writeStored(key: string, value: number): void {
   try {
     safeSetString(key, String(value));
   } catch {
-    // localStorage unavailable (e.g. private mode) — width still works in-memory
+    // localStorage unavailable (e.g. private mode) — size still works in-memory
   }
 }
 
 export function useResizable(options: UseResizableOptions): UseResizable {
-  const { storageKey, defaultWidth, min, max, reverse = false } = options;
+  const { storageKey, defaultWidth, min, max, reverse = false, axis = 'x' } = options;
 
   function clamp(value: number): number {
     if (!Number.isFinite(value)) return defaultWidth;
@@ -72,14 +75,15 @@ export function useResizable(options: UseResizableOptions): UseResizable {
 
   // Drag bookkeeping — captured at pointerdown so we resize relative to the
   // start point rather than absolute cursor coordinates.
-  let startX = 0;
+  let startPos = 0;
   let startWidth = 0;
   let activeEl: HTMLElement | null = null;
   let activePointerId = -1;
 
   function onPointerMove(event: PointerEvent): void {
     if (!dragging.value) return;
-    const delta = event.clientX - startX;
+    const pos = axis === 'y' ? event.clientY : event.clientX;
+    const delta = pos - startPos;
     setWidth(startWidth + (reverse ? -delta : delta));
   }
 
@@ -107,8 +111,8 @@ export function useResizable(options: UseResizableOptions): UseResizable {
   function onPointerDown(event: PointerEvent): void {
     event.preventDefault();
     dragging.value = true;
-    startX = event.clientX;
-    // The stored width can exceed the current cap (e.g. after the window narrows
+    startPos = axis === 'y' ? event.clientY : event.clientX;
+    // The stored size can exceed the current cap (e.g. after the window narrows
     // or a side panel opens). Clamp the drag start so the handle responds
     // immediately instead of first covering an invisible delta.
     startWidth = clamp(width.value);
@@ -117,7 +121,7 @@ export function useResizable(options: UseResizableOptions): UseResizable {
     // Suppress text selection / show a resize cursor for the whole drag.
     if (typeof document !== 'undefined') {
       document.body.style.userSelect = 'none';
-      document.body.style.cursor = 'col-resize';
+      document.body.style.cursor = axis === 'y' ? 'row-resize' : 'col-resize';
     }
     try {
       activeEl.setPointerCapture(activePointerId);

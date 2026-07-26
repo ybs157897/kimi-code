@@ -21,4 +21,7 @@ export default {
   forkSession: 'Fork session',
   archiveSession: 'Archive',
   exportSession: 'Export session',
-};
+  toggleTerminal: 'Terminal',
+  toggleTerminalHint: 'Toggle terminal (Ctrl+`)',
+  toggleFiles: 'Files',
+} as const;

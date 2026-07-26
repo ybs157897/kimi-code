@@ -1,0 +1,14 @@
+export default {
+  suggestedTask: 'Suggested task',
+  writingBlock: 'Writing',
+  artifact: 'Artifact',
+  automation: 'Automation',
+  inlineVis: 'Visualization',
+  inlineVisHint: 'Preview unavailable in Kimi Web',
+  alertNote: 'Note',
+  alertTip: 'Tip',
+  alertImportant: 'Important',
+  alertWarning: 'Warning',
+  alertCaution: 'Caution',
+  copyId: 'Copy id',
+} as const;

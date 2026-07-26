@@ -5,7 +5,9 @@ import { useI18n } from 'vue-i18n';
 import Sidebar from './components/Sidebar.vue';
 import ResizeHandle from './components/ResizeHandle.vue';
 import ConversationPane from './components/chat/ConversationPane.vue';
+import TerminalDock from './components/TerminalDock.vue';
 import FilePreview from './components/FilePreview.vue';
+import FileTreePanel from './components/FileTreePanel.vue';
 import ThinkingPanel from './components/chat/ThinkingPanel.vue';
 import AgentDetailPanel from './components/chat/AgentDetailPanel.vue';
 import ToolDiffPanel from './components/chat/ToolDiffPanel.vue';
@@ -35,6 +37,7 @@ import { usePageTitle } from './composables/usePageTitle';
 import { useSidebarLayout } from './composables/useSidebarLayout';
 import { useFilePreview, type DetailTarget } from './composables/useFilePreview';
 import { useDetailPanel } from './composables/useDetailPanel';
+import { useTerminalDock } from './composables/useTerminalDock';
 import { useIsMobile } from './composables/useIsMobile';
 import { openDialogCount } from './composables/dialogStack';
 import type { SwarmMember } from './composables/swarmGroups';
@@ -207,11 +210,24 @@ onUnmounted(() => {
 });
 
 function onGlobalKeydown(e: KeyboardEvent): void {
+  // Ctrl/Cmd+` toggles the bottom terminal dock (desktop, session required).
+  if (e.key === '`' && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey) {
+    if (anyOverlayOpen.value || isMobile.value || !client.activeSessionId.value) return;
+    e.preventDefault();
+    e.stopPropagation();
+    toggleTerminalDock();
+    return;
+  }
   if (e.key !== 'Escape') return;
   // A modal dialog open on top of the side panel owns Escape — leave the event
   // alone so the dialog can close itself instead of the panel behind it.
   if (anyOverlayOpen.value) return;
   if (closeOpenSidePanel()) {
+    e.stopPropagation();
+    e.preventDefault();
+    return;
+  }
+  if (terminalDock.handleEscape()) {
     e.stopPropagation();
     e.preventDefault();
   }
@@ -300,6 +316,9 @@ const {
   openDiffDetail,
   closeDiffDetail,
   selectDiffFile,
+  filesVisible,
+  openFilesPanel,
+  closeFilesPanel,
   btwVisible,
   openSideChatTab,
   closeSideChat,
@@ -307,6 +326,23 @@ const {
   panelDragging,
   closeOpenSidePanel,
 } = useDetailPanel({ client, sideWidth, detailTarget, closeFilePreview });
+
+const terminalDock = useTerminalDock();
+const terminalDockRef = ref<InstanceType<typeof TerminalDock> | null>(null);
+
+// Close the terminal dock when leaving a session (empty composer / no session).
+watch(client.activeSessionId, (sessionId) => {
+  if (!sessionId && terminalDock.open.value) terminalDock.setOpen(false);
+});
+
+function toggleTerminalDock(): void {
+  terminalDock.toggle();
+  if (terminalDock.open.value) {
+    void nextTick(() => {
+      void terminalDockRef.value?.revealActive();
+    });
+  }
+}
 
 // Reference to ConversationPane so we can imperatively switch tabs
 const conversationPaneRef = ref<InstanceType<typeof ConversationPane> | null>(null);
@@ -777,90 +813,130 @@ function openPr(url: string): void {
       @open-settings="showMobileSettings = true"
     />
 
-    <ConversationPane
-      ref="conversationPaneRef"
-      :mobile="isMobile"
-      :turns="client.turns.value"
-      :session-id="client.activeSessionId.value"
-      :approvals="client.pendingApprovals.value"
-      :changes="client.changes.value"
-      :git-info="client.gitInfo.value"
-      :tasks="client.tasks.value"
-      :todos="client.todos.value"
-      :goal="client.goal.value"
-      :activation-badges="client.activationBadges.value"
-      :status="client.status.value"
-      :thinking="client.thinking.value"
-      :plan-mode="client.planMode.value"
-      :swarm-mode="client.swarmMode.value"
-      :goal-mode="client.goalMode.value"
-      :models="client.models.value"
-      :starred-ids="client.starredModelIds.value"
-      :skills="client.skills.value"
-      :questions="client.questions.value"
-      :pending-question-actions="client.pendingQuestionActions"
-      :pending-approval-actions="client.pendingApprovalActions"
-      :running="running"
-      :turn-active="client.turnActive.value"
-      :queued="client.queued.value"
-      :search-files="client.searchFiles"
-      :upload-image="client.uploadImage"
-      :working="client.working.value"
-      :starting="client.isStartingFirstPrompt.value"
-      :fast-moon="client.fastMoon.value"
-      :file-reload-key="client.activeSessionId.value"
-      :session-loading="client.sessionLoading.value"
-      :compaction="client.compaction.value"
-      :has-more-messages="client.hasMoreMessages.value"
-      :loading-more="client.loadingMoreMessages.value"
-      :loading-more-error="client.loadMoreMessagesError.value"
-      :load-older-messages="client.loadOlderMessages"
-      :workspace-name="client.visibleWorkspace.value?.name"
-      :workspace-root="client.visibleWorkspace.value?.root ?? client.status.value.cwd"
-      :git-diff-stats="client.gitDiffStats.value"
-      :workspaces="client.workspacesView.value"
-      :active-workspace-id="client.activeWorkspaceId.value"
-      :session-title="activeSessionTitle"
-      :pr="client.activePullRequest.value"
-      :conversation-toc="client.conversationToc.value"
-      @open-changes="openDiffDetail()"
-      @select-workspace="handleCreateSessionInWorkspace($event)"
-      @add-workspace="showAddWorkspace = true"
-      @open-pr="openPr"
-      @submit="handleSubmit($event)"
-      @steer="client.steerPrompt($event.text, $event.attachments)"
-      @approval="(approvalId, response) => client.respondApproval(approvalId, response)"
-      @cancel-task="client.cancelTask($event)"
-      @answer="(questionId, response) => client.respondQuestion(questionId, response)"
-      @dismiss="(questionId) => client.dismissQuestion(questionId)"
-      @command="handleCommand"
-      @interrupt="client.abortCurrentPrompt()"
-      @unqueue="handleUnqueue"
-      @edit-queued="handleEditQueued"
-      @reorder-queue="handleReorderQueue"
-      @set-permission="client.setPermission($event)"
-      @set-thinking="client.setThinking($event)"
-      @toggle-plan="client.togglePlanMode()"
-      @toggle-swarm="client.toggleSwarmMode()"
-      @toggle-goal="client.toggleGoalMode()"
-      @create-goal="client.createGoal($event)"
-      @control-goal="client.controlGoal($event)"
-      @refresh-git-status="client.activeSessionId.value && client.loadGitStatus(client.activeSessionId.value)"
-      @rename-session="(id, title) => client.renameSession(id, title)"
-      @fork-session="(id) => client.forkSession(id)"
-      @archive-session="confirmArchiveSession($event)"
-      @export-session="(id) => client.exportSession(id)"
-      @compact="client.compact()"
-      @pick-model="openModelPicker()"
-      @select-model="handleComposerSelectModel($event)"
-      @open-file="openFilePreview($event)"
-      @open-media="openMediaPreview($event)"
-      @open-thinking="openThinkingPanel($event)"
-      @open-compaction="openCompactionPanel($event)"
-      @open-agent="openAgentPanel($event)"
-      @open-tool-diff="openToolDiff($event)"
-      @edit-message="handleEditMessage"
-    />
+    <div
+      class="main-col"
+      :class="{
+        'terminal-open': terminalDock.open.value && !isMobile,
+        'terminal-maximized': terminalDock.maximized.value && !isMobile,
+        'terminal-dragging': terminalDock.dragging.value,
+      }"
+    >
+      <div class="main-col__chat">
+        <ConversationPane
+          ref="conversationPaneRef"
+          :mobile="isMobile"
+          :turns="client.turns.value"
+          :session-id="client.activeSessionId.value"
+          :approvals="client.pendingApprovals.value"
+          :changes="client.changes.value"
+          :git-info="client.gitInfo.value"
+          :tasks="client.tasks.value"
+          :todos="client.todos.value"
+          :goal="client.goal.value"
+          :activation-badges="client.activationBadges.value"
+          :status="client.status.value"
+          :thinking="client.thinking.value"
+          :plan-mode="client.planMode.value"
+          :swarm-mode="client.swarmMode.value"
+          :goal-mode="client.goalMode.value"
+          :models="client.models.value"
+          :starred-ids="client.starredModelIds.value"
+          :skills="client.skills.value"
+          :questions="client.questions.value"
+          :pending-question-actions="client.pendingQuestionActions"
+          :pending-approval-actions="client.pendingApprovalActions"
+          :running="running"
+          :turn-active="client.turnActive.value"
+          :queued="client.queued.value"
+          :search-files="client.searchFiles"
+          :upload-image="client.uploadImage"
+          :working="client.working.value"
+          :starting="client.isStartingFirstPrompt.value"
+          :fast-moon="client.fastMoon.value"
+          :file-reload-key="client.activeSessionId.value"
+          :session-loading="client.sessionLoading.value"
+          :compaction="client.compaction.value"
+          :has-more-messages="client.hasMoreMessages.value"
+          :loading-more="client.loadingMoreMessages.value"
+          :loading-more-error="client.loadMoreMessagesError.value"
+          :load-older-messages="client.loadOlderMessages"
+          :workspace-name="client.visibleWorkspace.value?.name"
+          :workspace-root="client.visibleWorkspace.value?.root ?? client.status.value.cwd"
+          :git-diff-stats="client.gitDiffStats.value"
+          :workspaces="client.workspacesView.value"
+          :active-workspace-id="client.activeWorkspaceId.value"
+          :session-title="activeSessionTitle"
+          :pr="client.activePullRequest.value"
+          :conversation-toc="client.conversationToc.value"
+          :terminal-open="terminalDock.open.value"
+          :files-open="filesVisible"
+          @open-changes="openDiffDetail()"
+          @toggle-files="openFilesPanel()"
+          @select-workspace="handleCreateSessionInWorkspace($event)"
+          @add-workspace="showAddWorkspace = true"
+          @open-pr="openPr"
+          @submit="handleSubmit($event)"
+          @steer="client.steerPrompt($event.text, $event.attachments)"
+          @approval="(approvalId, response) => client.respondApproval(approvalId, response)"
+          @cancel-task="client.cancelTask($event)"
+          @answer="(questionId, response) => client.respondQuestion(questionId, response)"
+          @dismiss="(questionId) => client.dismissQuestion(questionId)"
+          @command="handleCommand"
+          @interrupt="client.abortCurrentPrompt()"
+          @unqueue="handleUnqueue"
+          @edit-queued="handleEditQueued"
+          @reorder-queue="handleReorderQueue"
+          @set-permission="client.setPermission($event)"
+          @set-thinking="client.setThinking($event)"
+          @toggle-plan="client.togglePlanMode()"
+          @toggle-swarm="client.toggleSwarmMode()"
+          @toggle-goal="client.toggleGoalMode()"
+          @create-goal="client.createGoal($event)"
+          @control-goal="client.controlGoal($event)"
+          @refresh-git-status="client.activeSessionId.value && client.loadGitStatus(client.activeSessionId.value)"
+          @rename-session="(id, title) => client.renameSession(id, title)"
+          @fork-session="(id) => client.forkSession(id)"
+          @archive-session="confirmArchiveSession($event)"
+          @export-session="(id) => client.exportSession(id)"
+          @compact="client.compact()"
+          @pick-model="openModelPicker()"
+          @select-model="handleComposerSelectModel($event)"
+          @open-file="openFilePreview($event)"
+          @open-media="openMediaPreview($event)"
+          @open-thinking="openThinkingPanel($event)"
+          @open-compaction="openCompactionPanel($event)"
+          @open-agent="openAgentPanel($event)"
+          @open-tool-diff="openToolDiff($event)"
+          @edit-message="handleEditMessage"
+          @toggle-terminal="toggleTerminalDock()"
+        />
+      </div>
+
+      <ResizeHandle
+        v-if="terminalDock.open.value && !terminalDock.maximized.value && !isMobile"
+        class="terminal-handle"
+        axis="y"
+        reverse
+        :storage-key="terminalDock.TERMINAL_HEIGHT_KEY"
+        :default-width="terminalDock.TERMINAL_DEFAULT"
+        :min="terminalDock.TERMINAL_MIN"
+        :max="terminalDock.maxHeight.value"
+        :aria-label="t('layout.resizeTerminalAria')"
+        @update:width="terminalDock.setHeight($event)"
+        @update:dragging="terminalDock.dragging.value = $event"
+      />
+
+      <TerminalDock
+        v-if="!isMobile && client.activeSessionId.value"
+        ref="terminalDockRef"
+        :session-id="client.activeSessionId.value"
+        :open="terminalDock.open.value"
+        :height="terminalDock.panelHeight.value"
+        :maximized="terminalDock.maximized.value"
+        @close="terminalDock.setOpen(false)"
+        @toggle-maximize="terminalDock.toggleMaximized()"
+      />
+    </div>
 
     <!-- Sidebar toggle — floating only when the in-header control can't serve:
          on macOS desktop it's RESIDENT (always rendered beside the traffic
@@ -949,6 +1025,13 @@ function openPr(url: string): void {
         v-else-if="detailTarget === 'toolDiff' && toolDiffTarget"
         :target="toolDiffTarget"
         @close="closeToolDiff"
+      />
+      <FileTreePanel
+        v-else-if="detailTarget === 'files' && client.activeSessionId.value"
+        :session-id="client.activeSessionId.value"
+        :list-dir="client.listDir"
+        @open-file="openFilePreview($event)"
+        @close="closeFilesPanel"
       />
       <FilePreview
         v-else-if="detailTarget === 'file'"
@@ -1240,8 +1323,34 @@ function openPr(url: string): void {
    reshuffle columns when a handle is display:none (v-show/v-if). */
 .app > .side { grid-column: 1; }
 .side-handle { grid-column: 2; }
-.app:not(.mobile) > .con { grid-column: 3; }
+.app:not(.mobile) > .main-col { grid-column: 3; }
 .preview-handle { grid-column: 4; }
+
+/* Conversation + bottom terminal dock share the center column. */
+.main-col {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.main-col__chat {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.main-col.terminal-maximized .main-col__chat {
+  flex: 0 0 0;
+  height: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.terminal-handle {
+  flex: none;
+}
 
 /* Sidebar toggle — floating button pinned to the top-left corner. On macOS
    desktop it is resident (rendered in both states beside the traffic lights);
@@ -1287,6 +1396,10 @@ function openPr(url: string): void {
 .app.mobile {
   grid-template-columns: 1fr;
   grid-template-rows: auto 1fr;
+}
+.app.mobile > .main-col {
+  grid-column: 1;
+  grid-row: 2;
 }
 
 /* The right-side panel column: a permanent grid item whose width animates

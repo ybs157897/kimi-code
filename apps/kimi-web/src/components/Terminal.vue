@@ -4,11 +4,33 @@ import '@xterm/xterm/css/xterm.css';
 import type { FitAddon as FitAddonType } from '@xterm/addon-fit';
 import type { Terminal as XTerm, ITheme } from '@xterm/xterm';
 import { computed, nextTick, onMounted, onUnmounted, ref, toRef, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
 import { useIsDark } from '../composables/useIsDark';
-import { useTerminal } from '../composables/useTerminal';
+import { useTerminal, type TerminalStartMode } from '../composables/useTerminal';
 import Button from './ui/Button.vue';
 
-const props = defineProps<{ sessionId: string }>();
+const props = withDefaults(
+  defineProps<{
+    sessionId: string;
+    /** Server terminal id when mode is `attach`. */
+    terminalId?: string | null;
+    mode?: TerminalStartMode;
+    /** Hide the standalone toolbar — the dock supplies chrome. */
+    embedded?: boolean;
+  }>(),
+  {
+    terminalId: null,
+    mode: 'reuse',
+    embedded: false,
+  },
+);
+
+const emit = defineEmits<{
+  ready: [payload: { terminalId: string; shell: string; cwd: string }];
+  exited: [payload: { exitCode: number | null }];
+}>();
+
+const { t } = useI18n();
 
 // xterm's `fontFamily` is a literal font string — it does NOT resolve CSS
 // variables, so passing `var(--mono)` silently fell back to xterm's default
@@ -19,7 +41,11 @@ const TERMINAL_FONT =
 
 const hostRef = ref<HTMLElement | null>(null);
 const sessionId = toRef(props, 'sessionId');
-const terminalClient = useTerminal(sessionId);
+const attachId = toRef(props, 'terminalId');
+const terminalClient = useTerminal(sessionId, {
+  mode: props.mode,
+  terminalId: attachId,
+});
 const isDark = useIsDark();
 
 let term: XTerm | null = null;
@@ -28,6 +54,9 @@ let resizeObserver: ResizeObserver | null = null;
 let resizeTimer: ReturnType<typeof setTimeout> | null = null;
 let disposeOutput: (() => void) | null = null;
 let disposeExit: (() => void) | null = null;
+let pendingOutput = '';
+let outputFrame: number | undefined;
+let outputWriting = false;
 
 const theme = computed<ITheme>(() => {
   if (isDark.value) {
@@ -61,6 +90,27 @@ const theme = computed<ITheme>(() => {
     white: '#f6f8fa',
   };
 });
+
+function flushOutput(): void {
+  outputFrame = undefined;
+  if (outputWriting || !term || !pendingOutput) return;
+  const data = pendingOutput;
+  pendingOutput = '';
+  outputWriting = true;
+  term.write(data, () => {
+    outputWriting = false;
+    if (pendingOutput) scheduleOutput();
+  });
+}
+
+function scheduleOutput(): void {
+  if (outputFrame === undefined) outputFrame = window.requestAnimationFrame(flushOutput);
+}
+
+function enqueueOutput(data: string): void {
+  pendingOutput += data;
+  scheduleOutput();
+}
 
 function fitAndResize(): void {
   if (!term || !fitAddon || !hostRef.value) return;
@@ -116,11 +166,14 @@ async function initTerminal(): Promise<void> {
   fitAddon = fit;
 
   disposeOutput = terminalClient.onOutput((data) => {
-    term?.write(data);
+    enqueueOutput(data);
   });
   disposeExit = terminalClient.onExit((exitCode) => {
     term?.writeln('');
-    term?.writeln(`[process exited${exitCode === null ? '' : ` with code ${exitCode}`}]`);
+    term?.writeln(
+      `[process exited${exitCode === null ? '' : ` with code ${exitCode}`}]`,
+    );
+    emit('exited', { exitCode });
   });
 
   resizeObserver = new ResizeObserver(scheduleFit);
@@ -133,6 +186,10 @@ async function start(): Promise<void> {
   fitAndResize();
   await terminalClient.start({ cols: term?.cols, rows: term?.rows });
   fitAndResize();
+  const current = terminalClient.terminal.value;
+  if (current) {
+    emit('ready', { terminalId: current.id, shell: current.shell, cwd: current.cwd });
+  }
   term?.focus();
 }
 
@@ -140,6 +197,10 @@ function restart(): void {
   term?.reset();
   term?.focus();
   terminalClient.restart();
+}
+
+function focus(): void {
+  term?.focus();
 }
 
 onMounted(() => {
@@ -157,6 +218,9 @@ watch(sessionId, () => {
 
 onUnmounted(() => {
   if (resizeTimer !== null) clearTimeout(resizeTimer);
+  if (outputFrame !== undefined) cancelAnimationFrame(outputFrame);
+  pendingOutput = '';
+  outputWriting = false;
   resizeObserver?.disconnect();
   disposeOutput?.();
   disposeExit?.();
@@ -164,26 +228,28 @@ onUnmounted(() => {
   term = null;
   fitAddon = null;
 });
+
+defineExpose({ fitAndResize, focus, restart, close: () => terminalClient.close() });
 </script>
 
 <template>
-  <section class="terminal-pane">
-    <div class="terminal-toolbar">
+  <section class="terminal-pane" :class="{ embedded }">
+    <div v-if="!embedded" class="terminal-toolbar">
       <div class="terminal-meta">
         <span class="terminal-dot" :class="{ on: terminalClient.connected.value }"></span>
         <span v-if="terminalClient.terminal.value">{{ terminalClient.terminal.value.shell }}</span>
         <span v-if="terminalClient.terminal.value" class="terminal-cwd">{{ terminalClient.terminal.value.cwd }}</span>
-        <span v-if="terminalClient.readOnly.value" class="terminal-readonly">exited</span>
+        <span v-if="terminalClient.readOnly.value" class="terminal-readonly">{{ t('terminal.exited') }}</span>
       </div>
       <div class="terminal-actions">
-        <Button size="sm" variant="secondary" @click="fitAndResize">fit</Button>
-        <Button size="sm" variant="secondary" @click="terminalClient.close">close</Button>
-        <Button size="sm" variant="primary" @click="restart">new</Button>
+        <Button size="sm" variant="secondary" @click="fitAndResize">{{ t('terminal.fit') }}</Button>
+        <Button size="sm" variant="secondary" @click="terminalClient.close">{{ t('terminal.close') }}</Button>
+        <Button size="sm" variant="primary" @click="restart">{{ t('terminal.new') }}</Button>
       </div>
     </div>
     <div class="terminal-surface">
       <div ref="hostRef" class="terminal-host"></div>
-      <div v-if="terminalClient.loading.value" class="terminal-overlay">starting terminal...</div>
+      <div v-if="terminalClient.loading.value" class="terminal-overlay">{{ t('terminal.starting') }}</div>
       <div v-else-if="terminalClient.error.value" class="terminal-overlay error">{{ terminalClient.error.value }}</div>
     </div>
   </section>
@@ -252,6 +318,9 @@ onUnmounted(() => {
   position: absolute;
   inset: 0;
   padding: 8px;
+}
+.terminal-pane.embedded .terminal-host {
+  padding: 6px 8px;
 }
 .terminal-host :deep(.xterm) {
   height: 100%;

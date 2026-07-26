@@ -1,46 +1,65 @@
 import { onUnmounted, ref, watch, type Ref } from 'vue';
 import { getKimiWebApi } from '../api';
-import type { AppTerminal, KimiEventConnection } from '../api/types';
+import type { AppTerminal } from '../api/types';
+import {
+  onTerminalBusConnection,
+  terminalBusAttach,
+  terminalBusClose,
+  terminalBusConnected,
+  terminalBusInput,
+  terminalBusResize,
+} from './useTerminalBus';
 
-export function useTerminal(sessionId: Ref<string>) {
+export type TerminalStartMode = 'reuse' | 'create' | 'attach';
+
+export function useTerminal(
+  sessionId: Ref<string>,
+  options?: {
+    /** When mode is `attach`, the server terminal id to bind to. */
+    terminalId?: Ref<string | null>;
+    /** reuse = attach first running or create; create = always spawn; attach = bind terminalId. */
+    mode?: TerminalStartMode;
+  },
+) {
+  const mode = options?.mode ?? 'reuse';
+  const attachId = options?.terminalId;
+
   const terminal = ref<AppTerminal | null>(null);
   const loading = ref(false);
   const error = ref<string | null>(null);
-  const connected = ref(false);
+  const connected = ref(terminalBusConnected());
   const readOnly = ref(false);
   const lastSeq = ref(0);
 
   const outputHandlers = new Set<(data: string) => void>();
   const exitHandlers = new Set<(exitCode: number | null) => void>();
-  let conn: KimiEventConnection | null = null;
+  let detachBus: (() => void) | null = null;
+  let offConnection: (() => void) | null = null;
 
-  function ensureConnection(): KimiEventConnection | null {
-    if (conn !== null) return conn;
-    if (typeof WebSocket === 'undefined') return null;
-    conn = getKimiWebApi().connectEvents({
-      onEvent: () => {},
-      onResync: () => {},
-      onError: (_code, msg) => {
-        error.value = msg;
-      },
-      onConnectionChange: (state) => {
-        connected.value = state;
-      },
-      onTerminalOutput: (sid, terminalId, data, seq) => {
-        if (sid !== sessionId.value || terminal.value?.id !== terminalId) return;
+  function ensureBusListeners(sessionIdValue: string, terminalId: string): void {
+    detachBus?.();
+    detachBus = terminalBusAttach(
+      sessionIdValue,
+      terminalId,
+      lastSeq.value,
+      (data, seq) => {
         lastSeq.value = Math.max(lastSeq.value, seq);
         for (const handler of outputHandlers) handler(data);
       },
-      onTerminalExit: (sid, terminalId, exitCode) => {
-        if (sid !== sessionId.value || terminal.value?.id !== terminalId) return;
+      (exitCode) => {
         readOnly.value = true;
         terminal.value = terminal.value
           ? { ...terminal.value, status: 'exited', exitCode }
           : terminal.value;
         for (const handler of exitHandlers) handler(exitCode);
       },
+    );
+  }
+
+  if (!offConnection) {
+    offConnection = onTerminalBusConnection((state) => {
+      connected.value = state;
     });
-    return conn;
   }
 
   async function start(size?: { cols?: number; rows?: number }): Promise<void> {
@@ -50,14 +69,33 @@ export function useTerminal(sessionId: Ref<string>) {
     error.value = null;
     try {
       const api = getKimiWebApi();
-      const existing = (await api.listTerminals(sid)).find((item) => item.status === 'running');
-      const next = existing ?? await api.createTerminal(sid, {
-        cols: size?.cols,
-        rows: size?.rows,
-      });
+      let next: AppTerminal | undefined;
+
+      if (mode === 'attach') {
+        const id = attachId?.value;
+        if (!id) {
+          error.value = 'Missing terminal id';
+          return;
+        }
+        next = await api.getTerminal(sid, id);
+      } else if (mode === 'create') {
+        next = await api.createTerminal(sid, {
+          cols: size?.cols,
+          rows: size?.rows,
+        });
+      } else {
+        const existing = (await api.listTerminals(sid)).find((item) => item.status === 'running');
+        next =
+          existing ??
+          (await api.createTerminal(sid, {
+            cols: size?.cols,
+            rows: size?.rows,
+          }));
+      }
+
       terminal.value = next;
       readOnly.value = next.status === 'exited';
-      ensureConnection()?.terminalAttach(sid, next.id, lastSeq.value);
+      ensureBusListeners(sid, next.id);
     } catch (error_) {
       error.value = error_ instanceof Error ? error_.message : String(error_);
     } finally {
@@ -68,13 +106,13 @@ export function useTerminal(sessionId: Ref<string>) {
   function write(data: string): void {
     const current = terminal.value;
     if (!current || readOnly.value) return;
-    ensureConnection()?.terminalInput(current.sessionId, current.id, data);
+    terminalBusInput(current.sessionId, current.id, data);
   }
 
   function resize(cols: number, rows: number): void {
     const current = terminal.value;
     if (!current || readOnly.value) return;
-    ensureConnection()?.terminalResize(current.sessionId, current.id, cols, rows);
+    terminalBusResize(current.sessionId, current.id, cols, rows);
   }
 
   async function close(): Promise<void> {
@@ -82,7 +120,7 @@ export function useTerminal(sessionId: Ref<string>) {
     if (!current) return;
     readOnly.value = true;
     try {
-      ensureConnection()?.terminalClose(current.sessionId, current.id);
+      terminalBusClose(current.sessionId, current.id);
       await getKimiWebApi().closeTerminal(current.sessionId, current.id);
     } catch (error_) {
       error.value = error_ instanceof Error ? error_.message : String(error_);
@@ -90,10 +128,8 @@ export function useTerminal(sessionId: Ref<string>) {
   }
 
   function restart(): void {
-    const current = terminal.value;
-    if (current) {
-      conn?.terminalDetach(current.sessionId, current.id);
-    }
+    detachBus?.();
+    detachBus = null;
     terminal.value = null;
     readOnly.value = false;
     lastSeq.value = 0;
@@ -102,27 +138,31 @@ export function useTerminal(sessionId: Ref<string>) {
 
   function onOutput(handler: (data: string) => void): () => void {
     outputHandlers.add(handler);
-    return () => outputHandlers.delete(handler);
+    return () => {
+      outputHandlers.delete(handler);
+    };
   }
 
   function onExit(handler: (exitCode: number | null) => void): () => void {
     exitHandlers.add(handler);
-    return () => exitHandlers.delete(handler);
+    return () => {
+      exitHandlers.delete(handler);
+    };
   }
 
   watch(sessionId, () => {
-    const current = terminal.value;
-    if (current) conn?.terminalDetach(current.sessionId, current.id);
+    detachBus?.();
+    detachBus = null;
     terminal.value = null;
     readOnly.value = false;
     lastSeq.value = 0;
   });
 
   onUnmounted(() => {
-    const current = terminal.value;
-    if (current) conn?.terminalDetach(current.sessionId, current.id);
-    conn?.close();
-    conn = null;
+    detachBus?.();
+    detachBus = null;
+    offConnection?.();
+    offConnection = null;
   });
 
   return {

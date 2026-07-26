@@ -241,6 +241,23 @@ export function useDetailPanel({
   }
 
   // ---------------------------------------------------------------------------
+  // Files explorer (workspace tree → FilePreview)
+  // ---------------------------------------------------------------------------
+  function openFilesPanel(): void {
+    if (detailTarget.value === 'files') {
+      closeFilesPanel();
+      return;
+    }
+    detailTarget.value = 'files';
+  }
+
+  function closeFilesPanel(): void {
+    if (detailTarget.value === 'files') detailTarget.value = null;
+  }
+
+  const filesVisible = computed(() => detailTarget.value === 'files');
+
+  // ---------------------------------------------------------------------------
   // Side chat (BTW) — now rendered in the unified right-side detail layer.
   // ---------------------------------------------------------------------------
   async function openSideChatTab(prompt?: string): Promise<void> {
@@ -291,9 +308,10 @@ export function useDetailPanel({
   // toolDiff) or already stored per session (btw), we remember which one was
   // open and restore it when the user switches back.
   //
-  // File preview ('file') and git diff ('diff') are intentionally excluded:
-  // their content is tied to the active session's cwd / git state and is
-  // re-fetched on demand, so restoring them across sessions would be ambiguous.
+  // File preview ('file'), files explorer ('files'), and git diff ('diff') are
+  // intentionally excluded: their content is tied to the active session's cwd /
+  // git state and is re-fetched on demand, so restoring them across sessions
+  // would be ambiguous.
   // ---------------------------------------------------------------------------
   type PanelSnapshot =
     | { kind: 'thinking'; turnId: string; blockIndex: number }
@@ -355,6 +373,7 @@ export function useDetailPanel({
     if (detailTarget.value === 'agent' && agentPanelVisible.value) { closeAgentPanel(); return true; }
     if (detailTarget.value === 'toolDiff' && toolDiffVisible.value) { closeToolDiff(); return true; }
     if (detailTarget.value === 'file') { closeFilePreview(); return true; }
+    if (detailTarget.value === 'files') { closeFilesPanel(); return true; }
     if (detailTarget.value === 'diff') { closeDiffDetail(); return true; }
     if (detailTarget.value === 'btw') { closeSideChat(); return true; }
     return false;
@@ -370,6 +389,7 @@ export function useDetailPanel({
     }
     // Close everything for the incoming session (unchanged behavior).
     closeFilePreview();
+    closeFilesPanel();
     closeThinkingPanel();
     closeCompactionPanel();
     closeAgentPanel();
@@ -410,6 +430,9 @@ export function useDetailPanel({
     openDiffDetail,
     closeDiffDetail,
     selectDiffFile,
+    filesVisible,
+    openFilesPanel,
+    closeFilesPanel,
     btwVisible,
     openSideChatTab,
     closeSideChat,

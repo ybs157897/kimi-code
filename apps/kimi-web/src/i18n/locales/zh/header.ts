@@ -21,4 +21,7 @@ export default {
   forkSession: '分叉会话',
   archiveSession: '归档',
   exportSession: '导出会话',
-};
+  toggleTerminal: '终端',
+  toggleTerminalHint: '切换终端 (Ctrl+`)',
+  toggleFiles: '文件',
+} as const;

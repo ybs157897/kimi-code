@@ -85,6 +85,7 @@ import RiPauseFill from '~icons/ri/pause-fill';
 import RiPencilLine from '~icons/ri/pencil-line';
 import RiPlayFill from '~icons/ri/play-fill';
 import RiQuestionLine from '~icons/ri/question-line';
+import RiRefreshLine from '~icons/ri/refresh-line';
 import RiSortDesc from '~icons/ri/sort-desc';
 import RiSparklingLine from '~icons/ri/sparkling-line';
 import RiStarFill from '~icons/ri/star-fill';
@@ -157,6 +158,7 @@ import RawPauseFill from '~icons/ri/pause-fill?raw';
 import RawPencilLine from '~icons/ri/pencil-line?raw';
 import RawPlayFill from '~icons/ri/play-fill?raw';
 import RawQuestionLine from '~icons/ri/question-line?raw';
+import RawRefreshLine from '~icons/ri/refresh-line?raw';
 import RawSortDesc from '~icons/ri/sort-desc?raw';
 import RawSparklingLine from '~icons/ri/sparkling-line?raw';
 import RawStarFill from '~icons/ri/star-fill?raw';
@@ -180,6 +182,7 @@ export type IconName =
   | 'check'
   | 'archive'
   | 'search'
+  | 'refresh'
   | 'copy'
   | 'link'
   | 'external-link'
@@ -266,6 +269,7 @@ export const ICONS: Record<IconName, IconEntry> = {
   check: entry(RiCheckLine, RawCheckLine),
   archive: entry(RiArchiveLine, RawArchiveLine),
   search: entry(KimiSearch, RawKimiSearch),
+  refresh: entry(RiRefreshLine, RawRefreshLine),
   copy: entry(RiFileCopyLine, RawFileCopyLine),
   link: entry(RiLinksLine, RawLinksLine),
   'external-link': entry(RiExternalLinkLine, RawExternalLinkLine),
@@ -360,6 +364,7 @@ export const ICON_GROUPS: ReadonlyArray<readonly [string, readonly IconName[]]> 
       'close',
       'check',
       'search',
+      'refresh',
       'copy',
       'link',
       'external-link',
