@@ -1,0 +1,4 @@
+# go:embed input — produced by `pnpm run build:frontend` from apps/kimi-web/dist.
+frontend/dist/
+# wails build output
+build/bin/

@@ -166,15 +166,38 @@ function loadStored(): StoredCredential | undefined {
   }
 }
 
+// Desktop shells (apps/kimi-desktop) cannot append a URL fragment to the
+// webview's asset URL, so they hand the server token over via a window global
+// injected before the bundle boots. Read once, then scrubbed like the
+// fragment so the token does not linger on the window object.
+declare global {
+  interface Window {
+    __KIMI_DESKTOP_SERVER_TOKEN__?: string;
+  }
+}
+
+function readDesktopToken(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const token = window.__KIMI_DESKTOP_SERVER_TOKEN__;
+  if (!token) return undefined;
+  try {
+    delete window.__KIMI_DESKTOP_SERVER_TOKEN__;
+  } catch {
+    window.__KIMI_DESKTOP_SERVER_TOKEN__ = undefined;
+  }
+  return token;
+}
+
 /**
  * Initialize the credential store. Call once at app boot (before the first
- * API/WS call). Prefers a fragment token over a stored one. Returns true if a
+ * API/WS call). Prefers a freshly injected token (URL fragment, or the
+ * desktop shell's window global) over a stored one. Returns true if a
  * credential is available afterwards (so the caller can skip the modal).
  */
 export function initServerAuth(): boolean {
-  const fragment = readFragmentToken();
-  if (fragment) {
-    setCredential(fragment);
+  const injected = readFragmentToken() ?? readDesktopToken();
+  if (injected) {
+    setCredential(injected);
     return true;
   }
   memory = loadStored();

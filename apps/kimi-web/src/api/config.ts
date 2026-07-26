@@ -15,9 +15,26 @@ export interface KimiApiConfig {
   clientUiMode: string;
 }
 
+// Desktop shells (apps/kimi-desktop) run this bundle from a webview asset
+// scheme, so same-origin API calls cannot work there. The shell injects the
+// loopback API origin at runtime before the bundle boots.
+declare global {
+  interface Window {
+    __KIMI_DESKTOP_SERVER_ORIGIN__?: string;
+  }
+}
+
+function desktopServerOrigin(): string | undefined {
+  if (typeof window === 'undefined') return undefined;
+  const value = window.__KIMI_DESKTOP_SERVER_ORIGIN__;
+  return value && value.trim() ? value : undefined;
+}
+
 export function readKimiApiConfig(): KimiApiConfig {
   return {
-    serverHttpUrl: normalizeServerOrigin(import.meta.env.VITE_KIMI_SERVER_HTTP_URL),
+    serverHttpUrl: normalizeServerOrigin(
+      desktopServerOrigin() ?? import.meta.env.VITE_KIMI_SERVER_HTTP_URL,
+    ),
     clientId: getClientId(),
     clientName: WEB_CLIENT_NAME,
     clientVersion: webClientVersion(),
@@ -63,6 +80,9 @@ function shortOrigin(origin: string): string {
  *  - prod (server serves the SPA) → the page origin (it IS the server).
  */
 export function serverEndpointLabel(): string {
+  const desktop = desktopServerOrigin();
+  if (desktop) return shortOrigin(normalizeServerOrigin(desktop));
+
   const direct = import.meta.env.VITE_KIMI_SERVER_HTTP_URL;
   if (direct && direct.trim()) return shortOrigin(normalizeServerOrigin(direct));
 

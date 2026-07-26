@@ -78,6 +78,7 @@
         ./packages/telemetry
         ./packages/transcript
         ./apps/kimi-code
+        ./apps/kimi-desktop
         ./apps/vscode
         ./apps/kimi-inspect
         ./apps/kimi-web
@@ -105,6 +106,7 @@
         "@moonshot-ai/transcript"
         "@moonshot-ai/kimi-code"
         "kimi-code"
+        "@moonshot-ai/kimi-desktop"
         "@moonshot-ai/kimi-inspect"
         "@moonshot-ai/kimi-web"
         "@moonshot-ai/vis"

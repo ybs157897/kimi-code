@@ -1,0 +1,12 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "kimi-desktop",
+  "outputfilename": "Kimi Code",
+  "frontend:install": "",
+  "frontend:build": "pnpm run build:frontend",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Kimi Code"
+  }
+}
