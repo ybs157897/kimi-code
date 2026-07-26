@@ -382,6 +382,23 @@ export interface WireProvider {
   models?: string[];
 }
 
+/** GET /providers/{id} — the single-provider read reveals the stored api_key
+ *  so a local client can prefill its edit form. */
+export interface WireProviderDetail extends WireProvider {
+  api_key?: string;
+}
+
+/** Model row in POST /providers and PUT /providers/{id} bodies. */
+export interface WireProviderModelInput {
+  model: string;
+  max_context_size: number;
+  display_name?: string;
+  capabilities?: string[];
+  max_output_size?: number;
+  support_efforts?: string[];
+  adaptive_thinking?: boolean;
+}
+
 export interface WireProviderRefreshResult {
   changed: Array<{
     provider_id: string;

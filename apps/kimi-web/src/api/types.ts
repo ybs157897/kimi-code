@@ -687,6 +687,30 @@ export interface AppSkill {
   source: string;
 }
 
+/** A model row in the provider create/edit form (config.toml [models.*]). */
+export interface AppProviderModelInput {
+  /** Raw model name as the provider API expects it (not the alias id). */
+  model: string;
+  displayName?: string;
+  maxContextSize: number;
+}
+
+/** Payload for creating or replacing a provider (POST/PUT /providers). */
+export interface AppProviderInput {
+  id: string;
+  type: string;
+  /** Create: stored as-is. Replace: undefined = keep stored key, '' = clear. */
+  apiKey?: string;
+  baseUrl?: string;
+  defaultModel?: string;
+  models: AppProviderModelInput[];
+}
+
+/** GET /providers/{id} — includes the stored api key for edit prefill. */
+export interface AppProviderDetail extends AppProvider {
+  apiKey?: string;
+}
+
 export interface AppExpertTeamMemberInfo {
   agent: string;
   role: 'lead' | 'member';
@@ -816,7 +840,12 @@ export interface KimiWebApi {
   // PRESUMED — not in current daemon docs; isolated in adapter, swap when backend defines them.
   listModels(): Promise<AppModel[]>;
   listProviders(): Promise<AppProvider[]>;
-  addProvider(input: { type: string; apiKey?: string; baseUrl?: string; defaultModel?: string }): Promise<AppProvider>;
+  /** Create a provider with its model list — POST /providers. */
+  createProvider(input: AppProviderInput): Promise<AppProvider>;
+  /** Full read of one provider (reveals the stored api key) — GET /providers/{id}. */
+  getProvider(id: string): Promise<AppProviderDetail>;
+  /** Replace a provider's config + model list — PUT /providers/{id}. */
+  replaceProvider(id: string, input: AppProviderInput): Promise<AppProvider>;
   deleteProvider(id: string): Promise<{ deleted: true }>;
   refreshProvider(id: string): Promise<ProviderRefreshResult>;
   refreshAllProviders(): Promise<ProviderRefreshResult>;

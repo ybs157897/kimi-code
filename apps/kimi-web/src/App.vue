@@ -449,10 +449,6 @@ async function handleComposerSelectModel(modelId: string): Promise<void> {
   }
 }
 
-async function handleAddProvider(input: { type: string; apiKey?: string; baseUrl?: string; defaultModel?: string }): Promise<void> {
-  await client.addProvider(input);
-}
-
 async function handleRefreshProvider(id: string): Promise<void> {
   await client.refreshProvider(id);
 }
@@ -1110,9 +1106,11 @@ function openPr(url: string): void {
     <ProviderManager
       v-if="showProviders"
       :providers="client.providers.value"
+      :models="client.models.value"
       :loading="providersLoading"
       :unavailable="providersUnavailable"
-      @add="handleAddProvider($event)"
+      :load-detail="client.getProviderDetail"
+      :save="client.saveProvider"
       @refresh="handleRefreshProvider($event)"
       @delete="confirmDeleteProvider($event)"
       @open-login="() => { showProviders = false; openLogin(); }"

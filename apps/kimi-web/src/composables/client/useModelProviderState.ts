@@ -11,6 +11,8 @@ import type {
   AppMessage,
   AppModel,
   AppProvider,
+  AppProviderDetail,
+  AppProviderInput,
   AppSession,
   AppSkill,
   OAuthLoginStartResult,
@@ -470,19 +472,34 @@ export function useModelProviderState(
     }
   }
 
-  /** Add a provider, then reload providers + models */
-  async function addProvider(input: {
-    type: string;
-    apiKey?: string;
-    baseUrl?: string;
-    defaultModel?: string;
-  }): Promise<void> {
+  /** Create or replace a provider (with its model list), then reload caches.
+   *  Returns true on success so the form can close only when the save stuck. */
+  async function saveProvider(
+    input: AppProviderInput,
+    existingId?: string,
+  ): Promise<boolean> {
     try {
       const api = getKimiWebApi();
-      await api.addProvider(input);
+      if (existingId === undefined) {
+        await api.createProvider(input);
+      } else {
+        await api.replaceProvider(existingId, input);
+      }
       await Promise.all([loadProviders(), loadModels()]);
+      return true;
     } catch (err) {
-      pushOperationFailure('addProvider', err);
+      pushOperationFailure('saveProvider', err);
+      return false;
+    }
+  }
+
+  /** Full single-provider read (stored api key included) for the edit form. */
+  async function getProviderDetail(id: string): Promise<AppProviderDetail | null> {
+    try {
+      return await getKimiWebApi().getProvider(id);
+    } catch (err) {
+      pushOperationFailure('getProvider', err);
+      return null;
     }
   }
 
@@ -591,7 +608,8 @@ export function useModelProviderState(
     resolveThinkingForPrompt,
     toggleStarModel,
     activateSkill,
-    addProvider,
+    saveProvider,
+    getProviderDetail,
     deleteProvider,
     refreshProvider,
     refreshAllProviders,

@@ -13,6 +13,8 @@ import type {
   AppMessageRole,
   AppModel,
   AppProvider,
+  AppProviderDetail,
+  AppProviderInput,
   ProviderRefreshResult,
   AppSession,
   AppSkill,
@@ -66,6 +68,7 @@ import type {
   WireEvent,
   WireExpertTeamDefinition,
   WireExpertTeamSnapshot,
+  WireProviderDetail,
   WireFileMeta,
   WireFsBrowseResult,
   WireFsEntry,
@@ -1254,24 +1257,35 @@ export class DaemonKimiWebApi implements KimiWebApi {
     return data.items.map(toAppProvider);
   }
 
-  async addProvider(input: {
-    type: string;
-    apiKey?: string;
-    baseUrl?: string;
-    defaultModel?: string;
-  }): Promise<AppProvider> {
-    // PRESUMED endpoint: POST /v1/providers → WireProvider
-    const body: Record<string, unknown> = { type: input.type };
-    if (input.apiKey !== undefined) body['api_key'] = input.apiKey;
-    if (input.baseUrl !== undefined) body['base_url'] = input.baseUrl;
-    if (input.defaultModel !== undefined) body['default_model'] = input.defaultModel;
-    const data = await this.http.post<WireProvider>('/providers', body);
+  async createProvider(input: AppProviderInput): Promise<AppProvider> {
+    // POST /providers → the created provider (201).
+    const data = await this.http.post<WireProvider>('/providers', providerRequestBody(input));
     return toAppProvider(data);
   }
 
+  async getProvider(id: string): Promise<AppProviderDetail> {
+    // GET /providers/{id} — reveals the stored api_key for edit prefill.
+    const data = await this.http.get<WireProviderDetail>(`/providers/${encodeURIComponent(id)}`);
+    return { ...toAppProvider(data), apiKey: data.api_key };
+  }
+
+  async replaceProvider(id: string, input: AppProviderInput): Promise<AppProvider> {
+    // PUT /providers/{id} → { provider }. api_key is tri-state: absent keeps
+    // the stored key, '' clears it, anything else replaces it.
+    const body = providerRequestBody(input);
+    delete body['id'];
+    if (input.id !== id) body['new_id'] = input.id;
+    const data = await this.http.put<{ provider: WireProvider }>(
+      `/providers/${encodeURIComponent(id)}`,
+      body,
+    );
+    return toAppProvider(data.provider);
+  }
+
   async deleteProvider(id: string): Promise<{ deleted: true }> {
-    // PRESUMED endpoint: DELETE /v1/providers/{id} → { deleted: true }
-    return this.http.delete<{ deleted: true }>(`/providers/${encodeURIComponent(id)}`);
+    // DELETE /providers/{id} → 204.
+    await this.http.delete<unknown>(`/providers/${encodeURIComponent(id)}`);
+    return { deleted: true };
   }
 
   async refreshProvider(id: string): Promise<ProviderRefreshResult> {
@@ -1588,6 +1602,27 @@ export class DaemonKimiWebApi implements KimiWebApi {
       },
     };
   }
+}
+
+/** camelCase form → the snake_case POST/PUT /providers body. */
+function providerRequestBody(input: AppProviderInput): Record<string, unknown> {
+  const models = input.models.map((row) => {
+    const model: Record<string, unknown> = {
+      model: row.model,
+      max_context_size: row.maxContextSize,
+    };
+    if (row.displayName !== undefined && row.displayName !== '') {
+      model['display_name'] = row.displayName;
+    }
+    return model;
+  });
+  const body: Record<string, unknown> = { id: input.id, type: input.type, models };
+  if (input.apiKey !== undefined) body['api_key'] = input.apiKey;
+  if (input.baseUrl !== undefined && input.baseUrl !== '') body['base_url'] = input.baseUrl;
+  if (input.defaultModel !== undefined && input.defaultModel !== '') {
+    body['default_model'] = input.defaultModel;
+  }
+  return body;
 }
 
 function toProviderRefreshResult(data: WireProviderRefreshResult): ProviderRefreshResult {

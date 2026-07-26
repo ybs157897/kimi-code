@@ -1,9 +1,10 @@
 <!-- apps/kimi-web/src/components/settings/ProviderManager.vue -->
-<!-- Modal overlay for managing providers: list, add, refresh, delete. -->
+<!-- Modal overlay for managing providers: list, create/edit (with per-model
+     context sizes), refresh, delete. -->
 <script setup lang="ts">
 import { onMounted, onUnmounted, reactive, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { AppProvider } from '../../api/types';
+import type { AppModel, AppProvider, AppProviderDetail, AppProviderInput } from '../../api/types';
 import { useDialogFocus } from '../../composables/useDialogFocus';
 import Dialog from '../ui/Dialog.vue';
 import Button from '../ui/Button.vue';
@@ -23,13 +24,18 @@ useDialogFocus(dialogRef);
 
 const props = defineProps<{
   providers: AppProvider[];
+  /** Model catalog — prefills the edit form's model rows for a provider. */
+  models: AppModel[];
   loading?: boolean;
   /** If true, providers could not be fetched (daemon 404 / unsupported) */
   unavailable?: boolean;
+  /** Full single-provider read (stored api key included) for edit prefill. */
+  loadDetail: (id: string) => Promise<AppProviderDetail | null>;
+  /** Create (existingId undefined) or replace a provider. True = saved. */
+  save: (input: AppProviderInput, existingId?: string) => Promise<boolean>;
 }>();
 
 const emit = defineEmits<{
-  add: [input: { type: string; apiKey?: string; baseUrl?: string; defaultModel?: string }];
   refresh: [id: string];
   delete: [id: string];
   /** Open the login dialog for the given platform (OAuth flow) */
@@ -48,44 +54,149 @@ function onDeleteProvider(id: string): void {
 }
 
 // -------------------------------------------------------------------------
-// Add-provider form
+// Create / edit form
 // -------------------------------------------------------------------------
 
-const showAddForm = ref(false);
-const addForm = reactive({
-  type: 'moonshot',
+// The six wire protocols the server accepts as a provider `type`
+// (kap-server rest-modelCatalog providerWireTypeSchema).
+const PROVIDER_TYPES = [
+  'openai',
+  'openai_responses',
+  'anthropic',
+  'kimi',
+  'google-genai',
+  'vertexai',
+];
+const DEFAULT_CONTEXT_SIZE = 131_072;
+
+interface ModelRow {
+  model: string;
+  displayName: string;
+  /** `v-model.number` yields '' while the field is cleared. */
+  maxContextSize: number | string;
+}
+
+const formOpen = ref(false);
+/** Set while editing an existing provider (its current id, for PUT). */
+const editingId = ref<string | undefined>(undefined);
+const editLoading = ref(false);
+const formBusy = ref(false);
+const formError = ref('');
+/** Edit mode: whether the provider already has a stored key (empty input = keep). */
+const hasStoredKey = ref(false);
+const form = reactive({
+  id: '',
+  type: 'openai',
   apiKey: '',
   baseUrl: '',
   defaultModel: '',
+  models: [] as ModelRow[],
 });
-const addError = ref('');
 
-const PROVIDER_TYPES = ['moonshot', 'anthropic', 'openai', 'custom'];
+function emptyRow(): ModelRow {
+  return { model: '', displayName: '', maxContextSize: DEFAULT_CONTEXT_SIZE };
+}
 
 function openAdd(): void {
-  addForm.type = 'moonshot';
-  addForm.apiKey = '';
-  addForm.baseUrl = '';
-  addForm.defaultModel = '';
-  addError.value = '';
-  showAddForm.value = true;
+  editingId.value = undefined;
+  hasStoredKey.value = false;
+  form.id = '';
+  form.type = 'openai';
+  form.apiKey = '';
+  form.baseUrl = '';
+  form.defaultModel = '';
+  form.models = [emptyRow()];
+  formError.value = '';
+  formOpen.value = true;
 }
-function cancelAdd(): void {
-  showAddForm.value = false;
+
+/** The raw model name for a catalog entry (alias ids are `<provider>/<model>`). */
+function rawModelName(aliasId: string, providerId: string): string {
+  const prefix = `${providerId}/`;
+  return aliasId.startsWith(prefix) ? aliasId.slice(prefix.length) : aliasId;
 }
-function submitAdd(): void {
-  if (!addForm.apiKey.trim()) {
-    addError.value = t('providers.apiKeyRequired');
+
+async function openEdit(provider: AppProvider): Promise<void> {
+  editLoading.value = true;
+  try {
+    const detail = await props.loadDetail(provider.id);
+    if (detail === null) return;
+    editingId.value = provider.id;
+    hasStoredKey.value = detail.hasApiKey;
+    form.id = detail.id;
+    form.type = detail.type;
+    // The stored key prefills the input so it round-trips unchanged on save;
+    // clearing the field keeps it (see submit()).
+    form.apiKey = detail.apiKey ?? '';
+    form.baseUrl = detail.baseUrl ?? '';
+    form.defaultModel = detail.defaultModel ?? '';
+    const rows = props.models
+      .filter((model) => model.provider === provider.id)
+      .map((model) => ({
+        model: rawModelName(model.id, provider.id),
+        displayName: model.displayName ?? '',
+        maxContextSize: model.maxContextSize,
+      }));
+    form.models = rows.length > 0 ? rows : [emptyRow()];
+    formError.value = '';
+    formOpen.value = true;
+  } finally {
+    editLoading.value = false;
+  }
+}
+
+function cancelForm(): void {
+  formOpen.value = false;
+}
+
+function addModelRow(): void {
+  form.models.push(emptyRow());
+}
+
+function removeModelRow(index: number): void {
+  form.models.splice(index, 1);
+}
+
+async function submitForm(): Promise<void> {
+  const id = form.id.trim();
+  if (!id) {
+    formError.value = t('providers.idRequired');
     return;
   }
-  addError.value = '';
-  emit('add', {
-    type: addForm.type,
-    apiKey: addForm.apiKey.trim() || undefined,
-    baseUrl: addForm.baseUrl.trim() || undefined,
-    defaultModel: addForm.defaultModel.trim() || undefined,
-  });
-  showAddForm.value = false;
+  const models = form.models
+    .map((row) => ({
+      model: row.model.trim(),
+      displayName: row.displayName.trim() || undefined,
+      maxContextSize: Math.floor(Number(row.maxContextSize)),
+    }))
+    .filter((row) => row.model.length > 0);
+  if (models.length === 0 || models.some((row) => !Number.isFinite(row.maxContextSize) || row.maxContextSize < 1)) {
+    formError.value = t('providers.modelsRequired');
+    return;
+  }
+  if (editingId.value === undefined && !form.apiKey.trim()) {
+    formError.value = t('providers.apiKeyRequired');
+    return;
+  }
+  formError.value = '';
+  const apiKey = form.apiKey.trim();
+  const input: AppProviderInput = {
+    id,
+    type: form.type,
+    // Replace semantics: an absent api_key keeps the stored one, so an empty
+    // input in edit mode means "keep".
+    apiKey: apiKey === '' ? undefined : apiKey,
+    baseUrl: form.baseUrl.trim() || undefined,
+    defaultModel: form.defaultModel.trim() || undefined,
+    models,
+  };
+  formBusy.value = true;
+  try {
+    const saved = await props.save(input, editingId.value);
+    if (saved) formOpen.value = false;
+  } finally {
+    formBusy.value = false;
+  }
 }
 
 // -------------------------------------------------------------------------
@@ -94,7 +205,7 @@ function submitAdd(): void {
 
 function handleKeydown(e: KeyboardEvent): void {
   if (e.key === 'Escape') {
-    if (showAddForm.value) { cancelAdd(); return; }
+    if (formOpen.value) { cancelForm(); return; }
     emit('close');
   }
 }
@@ -122,7 +233,7 @@ function statusLabel(status: AppProvider['status']): string {
   <Dialog :open="true" :close-on-esc="false" :title="t('providers.title')" size="xl" height="fixed" @close="emit('close')">
     <div ref="dialogRef" class="pm">
       <!-- Provider list -->
-      <div class="prov-list">
+      <div v-if="!formOpen" class="prov-list">
         <!-- Loading state -->
         <div v-if="loading" class="state-row">
           <Spinner size="sm" />
@@ -147,7 +258,7 @@ function statusLabel(status: AppProvider['status']): string {
               />
             </Tooltip>
             <div class="prov-info">
-              <span class="prov-type">{{ p.type }}</span>
+              <span class="prov-type">{{ p.id }} <span class="prov-proto">({{ p.type }})</span></span>
               <span v-if="p.baseUrl" class="prov-url">{{ p.baseUrl }}</span>
               <span class="prov-meta">
                 <Badge :variant="p.hasApiKey ? 'success' : 'neutral'" size="sm">
@@ -158,10 +269,13 @@ function statusLabel(status: AppProvider['status']): string {
             </div>
             <!-- Actions -->
             <div class="prov-actions">
-              <Tooltip :text="t('providers.refreshTitle', { type: p.type })">
+              <Tooltip :text="t('providers.editTitle', { type: p.id })">
+                <Button variant="secondary" size="sm" :disabled="editLoading" @click="openEdit(p)">{{ t('providers.edit') }}</Button>
+              </Tooltip>
+              <Tooltip :text="t('providers.refreshTitle', { type: p.id })">
                 <Button variant="secondary" size="sm" @click="emit('refresh', p.id)">{{ t('providers.refresh') }}</Button>
               </Tooltip>
-              <Tooltip :text="t('providers.deleteTitle', { type: p.type })">
+              <Tooltip :text="t('providers.deleteTitle', { type: p.id })">
                 <Button variant="danger-soft" size="sm" @click="onDeleteProvider(p.id)">{{ t('providers.delete') }}</Button>
               </Tooltip>
             </div>
@@ -169,9 +283,9 @@ function statusLabel(status: AppProvider['status']): string {
         </template>
       </div>
 
-      <!-- Add provider form / button -->
-      <div v-if="!unavailable" class="add-section">
-        <template v-if="!showAddForm">
+      <!-- Add buttons / create-edit form -->
+      <div v-if="!unavailable" class="add-section" :class="{ 'add-section--form': formOpen }">
+        <template v-if="!formOpen">
           <div class="add-btns">
             <!-- OAuth login shortcuts for common platforms -->
             <Button variant="secondary" size="sm" @click="emit('openLogin', 'moonshot')">
@@ -184,20 +298,33 @@ function statusLabel(status: AppProvider['status']): string {
             </Button>
             <Button variant="primary" size="sm" @click="openAdd">
               <Icon name="plus" size="sm" />
-              {{ t('providers.enterApiKey') }}
+              {{ t('providers.addProvider') }}
             </Button>
           </div>
         </template>
         <template v-else>
           <div class="add-form">
-            <Field :label="t('providers.fieldType')">
-              <Select v-model="addForm.type">
-                <option v-for="pt in PROVIDER_TYPES" :key="pt" :value="pt">{{ pt }}</option>
-              </Select>
-            </Field>
-            <Field :label="t('providers.fieldApiKey')">
+            <div class="form-title">
+              {{ editingId === undefined ? t('providers.addProvider') : t('providers.editProvider') }}
+            </div>
+            <div class="form-grid">
+              <Field :label="t('providers.fieldId')">
+                <Input
+                  v-model="form.id"
+                  :placeholder="t('providers.idPlaceholder')"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </Field>
+              <Field :label="t('providers.fieldType')">
+                <Select v-model="form.type">
+                  <option v-for="pt in PROVIDER_TYPES" :key="pt" :value="pt">{{ pt }}</option>
+                </Select>
+              </Field>
+            </div>
+            <Field :label="t('providers.fieldApiKey')" :hint="editingId !== undefined && hasStoredKey ? t('providers.apiKeyKeepHint') : undefined">
               <Input
-                v-model="addForm.apiKey"
+                v-model="form.apiKey"
                 type="password"
                 placeholder="sk-…"
                 autocomplete="off"
@@ -206,24 +333,75 @@ function statusLabel(status: AppProvider['status']): string {
             </Field>
             <Field :label="t('providers.fieldBaseUrl')">
               <Input
-                v-model="addForm.baseUrl"
+                v-model="form.baseUrl"
                 :placeholder="t('providers.baseUrlPlaceholder')"
                 autocomplete="off"
                 spellcheck="false"
               />
             </Field>
-            <Field :label="t('providers.fieldDefaultModel')">
+
+            <!-- Model list: name / display name / max context size -->
+            <div class="models-heading">{{ t('providers.modelsHeading') }}</div>
+            <div class="model-rows">
+              <div class="model-row model-row--head">
+                <span>{{ t('providers.modelName') }}</span>
+                <span>{{ t('providers.modelDisplayName') }}</span>
+                <span>{{ t('providers.modelContextSize') }}</span>
+                <span />
+              </div>
+              <div v-for="(row, index) in form.models" :key="index" class="model-row">
+                <Input
+                  v-model="row.model"
+                  :placeholder="t('providers.modelNamePlaceholder')"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <Input
+                  v-model="row.displayName"
+                  :placeholder="t('providers.optional')"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+                <Input
+                  v-model.number="row.maxContextSize"
+                  type="number"
+                  min="1"
+                  autocomplete="off"
+                />
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  :disabled="form.models.length <= 1"
+                  :aria-label="t('providers.removeModel')"
+                  @click="removeModelRow(index)"
+                >
+                  <Icon name="minus" size="sm" />
+                </Button>
+              </div>
+              <div>
+                <Button variant="secondary" size="sm" @click="addModelRow">
+                  <Icon name="plus" size="sm" />
+                  {{ t('providers.addModel') }}
+                </Button>
+              </div>
+            </div>
+
+            <Field :label="t('providers.fieldDefaultModel')" :hint="t('providers.defaultModelHint')">
               <Input
-                v-model="addForm.defaultModel"
+                v-model="form.defaultModel"
                 :placeholder="t('providers.optional')"
                 autocomplete="off"
                 spellcheck="false"
               />
             </Field>
-            <div v-if="addError" class="add-error">{{ addError }}</div>
+
+            <div v-if="formError" class="add-error">{{ formError }}</div>
             <div class="form-btns">
-              <Button variant="primary" size="sm" @click="submitAdd">{{ t('providers.add') }}</Button>
-              <Button variant="secondary" size="sm" @click="cancelAdd">{{ t('common.cancel') }}</Button>
+              <Button variant="primary" size="sm" :disabled="formBusy" @click="submitForm">
+                <Spinner v-if="formBusy" size="sm" />
+                {{ editingId === undefined ? t('providers.add') : t('providers.save') }}
+              </Button>
+              <Button variant="secondary" size="sm" :disabled="formBusy" @click="cancelForm">{{ t('common.cancel') }}</Button>
             </div>
           </div>
         </template>
@@ -294,6 +472,10 @@ function statusLabel(status: AppProvider['status']): string {
   font-weight: var(--weight-medium);
   color: var(--color-text);
 }
+.prov-proto {
+  font-weight: var(--weight-regular);
+  color: var(--color-text-muted);
+}
 .prov-url {
   font-family: var(--font-mono);
   font-size: var(--text-xs);
@@ -323,6 +505,7 @@ function statusLabel(status: AppProvider['status']): string {
   border-top: 1px solid var(--color-line);
   padding-top: var(--space-4);
 }
+.add-section--form { border-top: none; padding-top: 0; }
 .add-btns {
   display: flex;
   flex-wrap: wrap;
@@ -331,6 +514,39 @@ function statusLabel(status: AppProvider['status']): string {
 
 /* Form */
 .add-form { display: flex; flex-direction: column; gap: var(--space-3); }
+.form-title {
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+.form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-3);
+}
+.models-heading {
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-semibold);
+  color: var(--color-text);
+}
+.model-rows {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+.model-row {
+  display: grid;
+  grid-template-columns: 1.2fr 1fr 0.8fr auto;
+  gap: var(--space-2);
+  align-items: center;
+}
+.model-row--head {
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
 .add-error {
   font-family: var(--font-ui);
   font-size: var(--text-sm);
@@ -360,5 +576,7 @@ function statusLabel(status: AppProvider['status']): string {
     flex: 1 1 100%;
     justify-content: flex-end;
   }
+  .form-grid { grid-template-columns: 1fr; }
+  .model-row { grid-template-columns: 1fr 1fr 0.9fr auto; }
 }
 </style>

@@ -415,6 +415,10 @@ export class DaemonHttpClient {
     return this.request<T>('PATCH', path, body);
   }
 
+  async put<T>(path: string, body: unknown): Promise<T> {
+    return this.request<T>('PUT', path, body);
+  }
+
   async delete<T>(path: string): Promise<T> {
     return this.request<T>('DELETE', path);
   }
@@ -475,6 +479,20 @@ export class DaemonHttpClient {
         timestamp: Date.now(),
         durationMs: Date.now() - startedAt,
       });
+    }
+
+    // 204 carries no envelope at all (e.g. DELETE /providers/{id}).
+    if (response.status === 204) {
+      traceRestResponse({
+        method,
+        path,
+        requestId,
+        status: response.status,
+        durationMs: Date.now() - startedAt,
+        code: 0,
+        msg: '',
+      });
+      return undefined as T;
     }
 
     // Parse envelope

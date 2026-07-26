@@ -567,22 +567,28 @@ const hasUpload = computed(() => !!props.uploadImage);
 
 const dropdownOpen = ref(false);
 const permDropdownOpen = ref(false);
+const thinkDropdownOpen = ref(false);
 const toolbarRef = ref<HTMLElement | null>(null);
+
+function anyToolbarDropdownOpen(): boolean {
+  return dropdownOpen.value || permDropdownOpen.value || thinkDropdownOpen.value;
+}
 
 function toggleDropdown(): void {
   dropdownOpen.value = !dropdownOpen.value;
   if (dropdownOpen.value) {
     permDropdownOpen.value = false;
+    thinkDropdownOpen.value = false;
     closeModes();
     document.addEventListener('click', onDocClick, true);
-  } else {
+  } else if (!anyToolbarDropdownOpen()) {
     document.removeEventListener('click', onDocClick, true);
   }
 }
 
 function closeDropdown(): void {
   dropdownOpen.value = false;
-  if (!permDropdownOpen.value) {
+  if (!anyToolbarDropdownOpen()) {
     document.removeEventListener('click', onDocClick, true);
   }
 }
@@ -591,16 +597,36 @@ function togglePermDropdown(): void {
   permDropdownOpen.value = !permDropdownOpen.value;
   if (permDropdownOpen.value) {
     dropdownOpen.value = false;
+    thinkDropdownOpen.value = false;
     closeModes();
     document.addEventListener('click', onDocClick, true);
-  } else {
+  } else if (!anyToolbarDropdownOpen()) {
     document.removeEventListener('click', onDocClick, true);
   }
 }
 
 function closePermDropdown(): void {
   permDropdownOpen.value = false;
-  if (!dropdownOpen.value) {
+  if (!anyToolbarDropdownOpen()) {
+    document.removeEventListener('click', onDocClick, true);
+  }
+}
+
+function toggleThinkDropdown(): void {
+  thinkDropdownOpen.value = !thinkDropdownOpen.value;
+  if (thinkDropdownOpen.value) {
+    dropdownOpen.value = false;
+    permDropdownOpen.value = false;
+    closeModes();
+    document.addEventListener('click', onDocClick, true);
+  } else if (!anyToolbarDropdownOpen()) {
+    document.removeEventListener('click', onDocClick, true);
+  }
+}
+
+function closeThinkDropdown(): void {
+  thinkDropdownOpen.value = false;
+  if (!anyToolbarDropdownOpen()) {
     document.removeEventListener('click', onDocClick, true);
   }
 }
@@ -609,6 +635,7 @@ function onDocClick(e: MouseEvent): void {
   if (toolbarRef.value && !toolbarRef.value.contains(e.target as Node)) {
     closeDropdown();
     closePermDropdown();
+    closeThinkDropdown();
   }
 }
 
@@ -1163,6 +1190,23 @@ function selectModel(modelId: string): void {
             </span>
           </Tooltip>
 
+          <!-- Thinking pill — pick the reasoning level without opening the
+               model menu. Hidden when the model does not support thinking. -->
+          <span
+            v-if="status && thinkingAvailability !== 'unsupported'"
+            class="model-pill think-pill"
+            :class="{ open: thinkDropdownOpen }"
+            role="button"
+            tabindex="0"
+            @click.stop="toggleThinkDropdown"
+            @keydown.enter="toggleThinkDropdown"
+            @keydown.space.prevent="toggleThinkDropdown"
+          >
+            <span class="think-pill-label">{{ t('status.thinkingLabel') }}</span>
+            <b>{{ thinkingSegmentLabel(activeThinkingSegment) }}</b>
+            <Icon class="cv" name="chevron-down" size="sm" />
+          </span>
+
           <!-- Model pill — click to open quick-switch dropdown -->
           <span
             v-if="status"
@@ -1196,6 +1240,24 @@ function selectModel(modelId: string): void {
           >
             <Spinner v-if="starting" size="sm" />
             <Icon v-else name="send" size="sm" />
+          </button>
+        </div>
+
+        <!-- Thinking dropdown — the same levels as the model menu's segmented
+             control, one row per level with a check on the active one. -->
+        <div v-if="thinkDropdownOpen && status" class="model-dropdown think-dropdown" role="menu" @click.stop>
+          <div class="md-section">{{ t('status.thinkingLabel') }}</div>
+          <button
+            v-for="seg in thinkingSegments"
+            :key="seg"
+            class="md-row"
+            :class="{ 'is-current': seg === activeThinkingSegment }"
+            :disabled="thinkingReadonly"
+            role="menuitem"
+            @click="setThinkingSegment(seg); closeThinkDropdown()"
+          >
+            <span class="md-name">{{ thinkingSegmentLabel(seg) }}</span>
+            <Icon v-if="seg === activeThinkingSegment" class="md-check" name="check" size="sm" />
           </button>
         </div>
 
@@ -1686,6 +1748,13 @@ function selectModel(modelId: string): void {
   transition: background 0.1s;
   position: relative;
   overflow: hidden;
+}
+.think-pill-label {
+  color: var(--muted);
+  font-weight: var(--weight-regular);
+}
+.think-dropdown {
+  min-width: 140px;
 }
 .model-pill:hover {
   background: var(--color-surface-sunken);
