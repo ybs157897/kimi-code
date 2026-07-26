@@ -52,7 +52,7 @@ Some commands are only available in the idle state. Executing these commands whi
 | `/plan clear` | — | Clear the current plan | No |
 | `/swarm on\|off` | — | Turn swarm mode on or off without sending a prompt. | Yes |
 | `/swarm <task>` | — | Turn swarm mode on, then send `<task>` as a normal prompt. If the turn completes normally, swarm mode turns off automatically. In `manual` permission mode, Kimi Code asks whether to switch to `auto` or `yolo` before starting. | No |
-| `/experts [status\|off\|<plugin-id>]` | `/expert-team` | Select an installed expert team; `status` shows the complete member roster and live phases, while `off` restores the standard Agent. Available only when the `expert-teams` experimental feature is enabled | No |
+| `/experts [status\|off\|<plugin-id>]` | `/expert-team` | Select an available expert team (installed expert plugins, or team packages dropped into `.kimi-code/experts/` / `~/.kimi-code/experts/`); `status` shows the complete member roster and live phases, while `off` restores the standard Agent | No |
 | `/goal [...]` | — | Start or manage an autonomous goal | See below |
 
 ::: warning

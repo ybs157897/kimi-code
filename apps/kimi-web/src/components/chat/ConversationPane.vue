@@ -3,7 +3,7 @@
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ActivationBadges, ApprovalBlock, ChatTurn, ConversationStatus, FilePreviewRequest, PermissionMode, QueuedPromptView, TaskItem, TodoView, ToolMedia, TurnAttachment, UIQuestion, WorkspaceView } from '../../types';
-import type { AppGoal, AppModel, AppSkill, QuestionResponse, ThinkingLevel } from '../../api/types';
+import type { AppExpertTeam, AppExpertTeamStatus, AppGoal, AppModel, AppSkill, QuestionResponse, ThinkingLevel } from '../../api/types';
 import type { FileItem } from './MentionMenu.vue';
 import type { PromptAttachment } from '../../composables/useKimiWebClient';
 import ChatPane from './ChatPane.vue';
@@ -34,6 +34,8 @@ const props = defineProps<{
   planMode?: boolean;
   swarmMode?: boolean;
   goalMode?: boolean;
+  expertTeams?: AppExpertTeam[];
+  expertTeamStatus?: AppExpertTeamStatus | null;
   questions?: UIQuestion[];
   /** Question ids with an in-flight respond/dismiss (drives the card loading
    *  state). Keyed by questionId with the action kind. */
@@ -118,6 +120,8 @@ const emit = defineEmits<{
   togglePlan: [];
   toggleSwarm: [];
   toggleGoal: [];
+  selectExpertTeam: [pluginId: string];
+  clearExpertTeam: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
   compact: [];
@@ -1335,6 +1339,8 @@ defineExpose({ loadComposerForEdit, focusComposer });
               :models="models"
               :starred-ids="starredIds"
               :skills="skills"
+              :expert-teams="expertTeams"
+              :expert-team-status="expertTeamStatus"
               :starting="starting"
               hide-context
               @submit="handleComposerSubmit"
@@ -1348,6 +1354,8 @@ defineExpose({ loadComposerForEdit, focusComposer });
               @toggle-plan="emit('togglePlan')"
               @toggle-swarm="emit('toggleSwarm')"
               @toggle-goal="emit('toggleGoal')"
+              @select-expert-team="emit('selectExpertTeam', $event)"
+              @clear-expert-team="emit('clearExpertTeam')"
               @open-btw="emit('command', '/btw')"
               @create-goal="emit('createGoal', $event)"
               @control-goal="emit('controlGoal', $event)"
@@ -1410,6 +1418,8 @@ defineExpose({ loadComposerForEdit, focusComposer });
         :models="models"
         :starred-ids="starredIds"
         :skills="skills"
+        :expert-teams="expertTeams"
+        :expert-team-status="expertTeamStatus"
         :goal="goal"
         :goal-expand-signal="goalExpandSignal"
         :dock-panel="dockPanel"
@@ -1442,6 +1452,8 @@ defineExpose({ loadComposerForEdit, focusComposer });
         @toggle-plan="emit('togglePlan')"
         @toggle-swarm="emit('toggleSwarm')"
         @toggle-goal="emit('toggleGoal')"
+          @select-expert-team="emit('selectExpertTeam', $event)"
+          @clear-expert-team="emit('clearExpertTeam')"
           @open-btw="emit('command', '/btw')"
           @create-goal="emit('createGoal', $event)"
           @focus-goal="focusGoal"

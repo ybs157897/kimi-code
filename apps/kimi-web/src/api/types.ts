@@ -687,6 +687,47 @@ export interface AppSkill {
   source: string;
 }
 
+export interface AppExpertTeamMemberInfo {
+  agent: string;
+  role: 'lead' | 'member';
+  displayName?: string;
+  description?: string;
+}
+
+/** An expert team available to a session (installed plugin or drop-in package). */
+export interface AppExpertTeam {
+  pluginId: string;
+  pluginVersion?: string;
+  displayName: string;
+  description?: string;
+  tags: string[];
+  leadAgentName: string;
+  memberAgentNames: string[];
+  members: AppExpertTeamMemberInfo[];
+  quickPrompts: string[];
+}
+
+export type AppExpertTeamMemberStatus =
+  | 'spawning'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'shutdown';
+
+/** The active expert-team mode of a session, plus the live roster if created. */
+export interface AppExpertTeamStatus {
+  pluginId: string;
+  displayName: string;
+  leadAgentName: string;
+  memberAgentNames: string[];
+  activatedAt: string;
+  teamMembers: Array<{
+    name: string;
+    agentId: string;
+    status: AppExpertTeamMemberStatus;
+  }>;
+}
+
 // ---------------------------------------------------------------------------
 // KimiWebApi — the app-facing interface
 // ---------------------------------------------------------------------------
@@ -738,6 +779,11 @@ export interface KimiWebApi {
   /** List skills for a workspace (no session required) — GET /workspaces/{id}/skills. */
   listSkillsForWorkspace(workspaceId: string): Promise<AppSkill[]>;
   activateSkill(sessionId: string, skillName: string, args?: string): Promise<{ activated: true; skillName: string }>;
+  /** Expert teams live on the native /api/v2 surface — v2 backends only. */
+  listExpertTeams(sessionId: string): Promise<AppExpertTeam[]>;
+  getExpertTeam(sessionId: string): Promise<AppExpertTeamStatus | null>;
+  activateExpertTeam(sessionId: string, pluginId: string): Promise<AppExpertTeamStatus>;
+  deactivateExpertTeam(sessionId: string): Promise<void>;
   listTasks(sessionId: string, status?: AppTaskStatus): Promise<AppTask[]>;
   getTask(sessionId: string, taskId: string, input?: { withOutput?: boolean; outputBytes?: number }): Promise<AppTask>;
   cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: true }>;

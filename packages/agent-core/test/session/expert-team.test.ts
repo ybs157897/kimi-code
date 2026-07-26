@@ -77,6 +77,7 @@ async function makeSession(
   homedir: string,
   workDir: string,
   onEvent?: (event: unknown) => void,
+  expertTeamsProvider?: () => Promise<readonly ExpertTeamRuntime[]>,
 ): Promise<Session> {
   const session = new Session({
     id: 'expert-team-test',
@@ -100,7 +101,8 @@ async function makeSession(
         },
       },
     }),
-    expertTeams: [testTeam()],
+    expertTeams: expertTeamsProvider === undefined ? [testTeam()] : [],
+    expertTeamsProvider,
     experimentalFlags: enabledFlags(),
   });
   return session;
@@ -380,12 +382,37 @@ describe('Session expert-team runtime lifecycle', () => {
       homedir,
       rpc: sessionRpc(),
       expertTeams: [testTeam()],
-      experimentalFlags: new FlagResolver({}, FLAG_DEFINITIONS),
+      experimentalFlags: new FlagResolver(
+        { KIMI_CODE_EXPERIMENTAL_EXPERT_TEAMS: '0' },
+        FLAG_DEFINITIONS,
+      ),
     });
     await session.resume();
     expect(session.metadata.expertTeam).toBeUndefined();
     expect(session.metadata.expertTeamRuntime).toBeUndefined();
     expect(session.getExpertTeamRuntime()).toBeUndefined();
+    await session.close();
+  });
+
+  it('re-scans the catalog through expertTeamsProvider on list and activate', async () => {
+    const workDir = await makeTempDir();
+    const homedir = await makeTempDir();
+    let teams: readonly ExpertTeamRuntime[] = [];
+    const session = await makeSession(homedir, workDir, undefined, async () => teams);
+    await session.createMain();
+
+    expect(await session.listExpertTeams()).toEqual([]);
+
+    // A team dropped into the catalog after session creation is visible and
+    // activatable without recreating the session.
+    teams = [testTeam()];
+    expect((await session.listExpertTeams()).map((team) => team.pluginId)).toEqual([
+      'test-team',
+    ]);
+    await session.activateExpertTeam('test-team');
+    expect(session.getExpertTeam()?.pluginId).toBe('test-team');
+
+    await session.deactivateExpertTeam();
     await session.close();
   });
 });

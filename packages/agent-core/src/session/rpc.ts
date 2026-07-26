@@ -93,7 +93,7 @@ export class SessionAPIImpl implements PromisableMethods<SessionAPI> {
     return this.session.listPluginCommands();
   }
 
-  listExpertTeams(_payload: EmptyPayload): readonly ExpertTeamDefinition[] {
+  listExpertTeams(_payload: EmptyPayload): Promise<readonly ExpertTeamDefinition[]> {
     return this.session.listExpertTeams();
   }
 

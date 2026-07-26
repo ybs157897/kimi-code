@@ -6,6 +6,8 @@ import type {
   AppApprovalRequest,
   AppConfig,
   AppEvent,
+  AppExpertTeam,
+  AppExpertTeamStatus,
   AppGoal,
   AppModel,
   AppProvider,
@@ -49,6 +51,8 @@ import type {
   WireWorkspace,
   WireEvent,
   WireConfig,
+  WireExpertTeamDefinition,
+  WireExpertTeamSnapshot,
 } from './wire';
 
 // ---------------------------------------------------------------------------
@@ -790,4 +794,42 @@ export function wireEventSessionId(wire: WireEvent): string {
 
 export function wireEventSeq(wire: WireEvent): number {
   return wire.seq;
+}
+
+// ---------------------------------------------------------------------------
+// Expert teams (native /api/v2 surface)
+// ---------------------------------------------------------------------------
+
+export function toAppExpertTeam(wire: WireExpertTeamDefinition): AppExpertTeam {
+  return {
+    pluginId: wire.plugin_id,
+    pluginVersion: wire.plugin_version,
+    displayName: wire.display_name,
+    description: wire.description,
+    tags: wire.tags ?? [],
+    leadAgentName: wire.lead_agent_name,
+    memberAgentNames: wire.member_agent_names ?? [],
+    members: (wire.members ?? []).map((member) => ({
+      agent: member.agent,
+      role: member.role,
+      displayName: member.display_name,
+      description: member.description,
+    })),
+    quickPrompts: wire.quick_prompts ?? [],
+  };
+}
+
+export function toAppExpertTeamStatus(wire: WireExpertTeamSnapshot): AppExpertTeamStatus {
+  return {
+    pluginId: wire.binding.plugin_id,
+    displayName: wire.binding.display_name,
+    leadAgentName: wire.binding.lead_agent_name,
+    memberAgentNames: wire.binding.member_agent_names ?? [],
+    activatedAt: wire.binding.activated_at,
+    teamMembers: (wire.team?.members ?? []).map((member) => ({
+      name: member.name,
+      agentId: member.agent_id,
+      status: member.status,
+    })),
+  };
 }

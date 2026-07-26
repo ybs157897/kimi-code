@@ -1,8 +1,8 @@
 /**
  * `expertTeam` domain (L6) — expert-team experimental flag registration.
  *
- * Off by default while the plugin contract and product entry points are being
- * validated. Importing this module registers the flag with the App catalog.
+ * On by default; `KIMI_CODE_EXPERIMENTAL_EXPERT_TEAMS=0` opts out. Importing
+ * this module registers the flag with the App catalog.
  */
 
 import { type FlagDefinitionInput, registerFlagDefinition } from '#/app/flag/flagRegistry';
@@ -16,7 +16,7 @@ export const expertTeamsFlag: FlagDefinitionInput = {
   description:
     'Activate plugin-defined expert-team modes with a lead, declared specialists, shared progress, and explicit team messaging.',
   env: EXPERT_TEAMS_FLAG_ENV,
-  default: false,
+  default: true,
   surface: 'both',
 };
 

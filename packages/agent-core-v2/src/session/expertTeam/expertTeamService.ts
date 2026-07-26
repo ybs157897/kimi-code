@@ -12,17 +12,26 @@ import { InstantiationType } from '#/_base/di/extensions';
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
 import { Emitter } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
 import { Error2, ErrorCodes } from '#/errors';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
+import {
+  discoverDirectoryExperts,
+  mergeDirectoryExperts,
+  sessionExpertRoots,
+} from '#/app/plugin/directoryExperts';
 import { IPluginService } from '#/app/plugin/plugin';
 import {
   EXPERT_TEAMS_FLAG_ID,
   normalizePluginId,
   pluginExpertProfileName,
+  type EnabledPluginExpert,
 } from '#/app/plugin/types';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { IWireService } from '#/wire/wire';
@@ -66,13 +75,27 @@ export class SessionExpertTeamService
     @IPluginService private readonly plugins: IPluginService,
     @ISessionAgentProfileCatalog private readonly catalog: ISessionAgentProfileCatalog,
     @IAgentLifecycleService private readonly lifecycle: IAgentLifecycleService,
+    @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
   }
 
+  /** Installed plugin experts merged with drop-in `experts/` directory packages. */
+  private async enabledExperts(): Promise<readonly EnabledPluginExpert[]> {
+    const directory = await discoverDirectoryExperts(
+      sessionExpertRoots(this.workspace.workDir, this.bootstrap.homeDir),
+    );
+    for (const issue of directory.issues) {
+      this.log.warn(`Skipping directory expert package at ${issue.dir}: ${issue.message}`);
+    }
+    return mergeDirectoryExperts(directory.experts, await this.plugins.enabledExperts());
+  }
+
   async listAvailable(): Promise<readonly ExpertTeamDefinition[]> {
     if (!this.flags.enabled(EXPERT_TEAMS_FLAG_ID)) return [];
-    const experts = await this.plugins.enabledExperts();
+    const experts = await this.enabledExperts();
     return experts.flatMap((expert) => {
       if (expert.type !== 'team' || expert.teamInfo === undefined) return [];
       return [{
@@ -113,7 +136,7 @@ export class SessionExpertTeamService
       );
     }
 
-    const expert = (await this.plugins.enabledExperts()).find(
+    const expert = (await this.enabledExperts()).find(
       (candidate) => candidate.pluginId === normalizedId,
     );
     if (expert === undefined) {

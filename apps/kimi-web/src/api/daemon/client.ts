@@ -6,6 +6,8 @@ import { buildRestUrl, buildWsUrl } from '../config';
 import { traceKeyEvent } from '../../debug/trace';
 import type {
   AppConfig,
+  AppExpertTeam,
+  AppExpertTeamStatus,
   AppGoal,
   AppMessage,
   AppMessageRole,
@@ -40,6 +42,8 @@ import {
   toAppApprovalRequest,
   toAppConfig,
   toAppEvent,
+  toAppExpertTeam,
+  toAppExpertTeamStatus,
   toAppFsEntry,
   toAppGoal,
   toAppMessage,
@@ -60,6 +64,8 @@ import type {
   WireTask,
   WireConfig,
   WireEvent,
+  WireExpertTeamDefinition,
+  WireExpertTeamSnapshot,
   WireFileMeta,
   WireFsBrowseResult,
   WireFsEntry,
@@ -295,16 +301,20 @@ function isCompactionReason(reason: string): boolean {
 
 export class DaemonKimiWebApi implements KimiWebApi {
   private readonly http: DaemonHttpClient;
+  /** Native v2-engine surfaces (expert teams) live under /api/v2. */
+  private readonly httpV2: DaemonHttpClient;
   private readonly config: KimiApiConfig;
 
   constructor(config: KimiApiConfig) {
     this.config = config;
-    this.http = new DaemonHttpClient(config.serverHttpUrl, {
+    const identity = {
       clientId: config.clientId,
       clientName: config.clientName,
       clientVersion: config.clientVersion,
       clientUiMode: config.clientUiMode,
-    });
+    };
+    this.http = new DaemonHttpClient(config.serverHttpUrl, identity);
+    this.httpV2 = new DaemonHttpClient(config.serverHttpUrl, identity, '/api/v2');
   }
 
   // -------------------------------------------------------------------------
@@ -897,6 +907,38 @@ export class DaemonKimiWebApi implements KimiWebApi {
       args !== undefined && args.length > 0 ? { args } : {},
     );
     return { activated: data.activated, skillName: data.skill_name };
+  }
+
+  // -------------------------------------------------------------------------
+  // Expert teams (native /api/v2 surface; v2 backends only)
+  // -------------------------------------------------------------------------
+
+  async listExpertTeams(sessionId: string): Promise<AppExpertTeam[]> {
+    const data = await this.httpV2.get<{ experts: WireExpertTeamDefinition[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/expert-teams`,
+    );
+    return (data.experts ?? []).map(toAppExpertTeam);
+  }
+
+  async getExpertTeam(sessionId: string): Promise<AppExpertTeamStatus | null> {
+    const data = await this.httpV2.get<{ expert_team: WireExpertTeamSnapshot | null }>(
+      `/sessions/${encodeURIComponent(sessionId)}/expert-team`,
+    );
+    return data.expert_team === null ? null : toAppExpertTeamStatus(data.expert_team);
+  }
+
+  async activateExpertTeam(sessionId: string, pluginId: string): Promise<AppExpertTeamStatus> {
+    const data = await this.httpV2.post<{ expert_team: WireExpertTeamSnapshot }>(
+      `/sessions/${encodeURIComponent(sessionId)}/expert-team/activate`,
+      { plugin_id: pluginId },
+    );
+    return toAppExpertTeamStatus(data.expert_team);
+  }
+
+  async deactivateExpertTeam(sessionId: string): Promise<void> {
+    await this.httpV2.post<{ deactivated: true }>(
+      `/sessions/${encodeURIComponent(sessionId)}/expert-team/deactivate`,
+    );
   }
 
   // -------------------------------------------------------------------------

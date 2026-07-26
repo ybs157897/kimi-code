@@ -98,6 +98,13 @@ export interface SessionOptions {
   readonly pluginCommands?: readonly PluginCommandDef[];
   readonly expertTeams?: readonly ExpertTeamRuntime[];
   /**
+   * Live source for the expert-team catalog. When provided, listing and
+   * activation re-run it so teams dropped into an `experts/` directory (or
+   * newly installed plugins) surface without recreating the session;
+   * `expertTeams` then only seeds the catalog for resume.
+   */
+  readonly expertTeamsProvider?: () => Promise<readonly ExpertTeamRuntime[]>;
+  /**
    * Code-based extension manager (App-scoped). When provided, the session
    * builds a per-session runner over the currently loaded extensions and binds
    * it to the main agent so events fire from the turn/permission hook points
@@ -235,6 +242,7 @@ export class Session {
   private activeExpertTeam: ExpertTeamRuntime | undefined;
   private previousExpertProfile: ResolvedAgentProfile | undefined;
   private expertTeamRuntime: TeamRuntime | undefined;
+  private expertTeams: readonly ExpertTeamRuntime[] = [];
 
   constructor(public readonly options: SessionOptions) {
     // Attach the per-session log sink up front so the constructor's
@@ -262,6 +270,7 @@ export class Session {
     this.persistenceKaos = options.persistenceKaos ?? options.kaos;
     this.additionalDirs = normalizeAdditionalDirs(options.additionalDirs ?? []);
     this.pluginCommands = options.pluginCommands ?? [];
+    this.expertTeams = options.expertTeams ?? [];
     this.skills = new SessionSkillRegistry({
       sessionId: options.id,
     });
@@ -951,9 +960,10 @@ export class Session {
     return this.pluginCommands;
   }
 
-  listExpertTeams(): readonly ExpertTeamDefinition[] {
+  async listExpertTeams(): Promise<readonly ExpertTeamDefinition[]> {
     if (!this.experimentalFlags.enabled(EXPERT_TEAMS_FLAG_ID)) return [];
-    return (this.options.expertTeams ?? []).map((team) => ({
+    await this.refreshExpertTeams();
+    return this.expertTeams.map((team) => ({
       pluginId: team.pluginId,
       pluginVersion: team.pluginVersion,
       displayName: team.displayName,
@@ -979,7 +989,7 @@ export class Session {
 
     const definition =
       this.activeExpertTeam ??
-      (this.options.expertTeams ?? []).find((team) => team.pluginId === snapshot.pluginId);
+      this.expertTeams.find((team) => team.pluginId === snapshot.pluginId);
     const persistedMembers: readonly ExpertTeamMemberState[] =
       this.metadata.expertTeamRuntime?.members.map((member) => ({
         ...member,
@@ -1022,7 +1032,8 @@ export class Session {
     if (normalizedPluginId.length === 0) {
       throw new KimiError(ErrorCodes.REQUEST_INVALID, 'Expert team plugin id cannot be empty');
     }
-    const team = (this.options.expertTeams ?? []).find(
+    await this.refreshExpertTeams();
+    const team = this.expertTeams.find(
       (candidate) => candidate.pluginId.toLowerCase() === normalizedPluginId,
     );
     if (team === undefined) {
@@ -1518,12 +1529,31 @@ export class Session {
       : DEFAULT_AGENT_PROFILES[profileName];
   }
 
+  /** Re-runs the live catalog source; a failed refresh keeps the last good catalog. */
+  private async refreshExpertTeams(): Promise<void> {
+    const provider = this.options.expertTeamsProvider;
+    if (provider === undefined) return;
+    try {
+      this.expertTeams = await provider();
+    } catch (error) {
+      this.log.warn('expert team refresh failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
   private async restoreExpertTeamMode(main: Agent): Promise<void> {
     const snapshot = this.metadata.expertTeam;
     if (snapshot === undefined) return;
-    const team = (this.options.expertTeams ?? []).find(
+    let team = this.expertTeams.find(
       (candidate) => candidate.pluginId === snapshot.pluginId,
     );
+    if (team === undefined && this.options.expertTeamsProvider !== undefined) {
+      await this.refreshExpertTeams();
+      team = this.expertTeams.find(
+        (candidate) => candidate.pluginId === snapshot.pluginId,
+      );
+    }
     if (!this.experimentalFlags.enabled(EXPERT_TEAMS_FLAG_ID) || team === undefined) {
       if (team === undefined) {
         this.log.warn('active expert team plugin is unavailable', {

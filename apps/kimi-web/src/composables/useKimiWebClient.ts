@@ -65,6 +65,8 @@ import type {
   AppQuestionRequest,
   AppSession,
   AppSessionRuntimeStatus,
+  AppExpertTeam,
+  AppExpertTeamStatus,
   AppSkill,
   AppTask,
   AppWarning,
@@ -322,6 +324,10 @@ export interface ExtendedState extends KimiClientState {
   sessionLoading: boolean;
   queuedBySession: Record<string, QueuedPrompt[]>;
   gitStatusBySession: Record<string, GitStatusEntry>;
+  /** Expert teams available to a session (v2 backends only; server-owned). */
+  expertTeamsBySession: Record<string, AppExpertTeam[]>;
+  /** The active expert-team mode per session; null = standard agent. */
+  expertTeamStatusBySession: Record<string, AppExpertTeamStatus | null>;
   // Real daemon prompt_id of the last submitted prompt, per session. This is the
   // AUTHORITATIVE id for :abort — the event projector synthesizes a `pr_…` id
   // when turn.started races ahead of binding, which the daemon rejects.
@@ -398,6 +404,8 @@ const rawState: ExtendedState = reactive({
   goalModeBySession: loadModeMapFromStorage(GOAL_MODE_STORAGE_KEY),
   loading: false,
   sessionLoading: false,
+  expertTeamsBySession: {},
+  expertTeamStatusBySession: {},
   queuedBySession: {},
   gitStatusBySession: {},
   promptIdBySession: {},
@@ -2074,6 +2082,16 @@ const goalMode = computed<boolean>(() => {
   return sid ? (rawState.goalModeBySession[sid] ?? false) : draftModes.goalMode;
 });
 
+// Expert teams reflect the ACTIVE session; server-owned, so no draft state.
+const expertTeams = computed<AppExpertTeam[]>(() => {
+  const sid = rawState.activeSessionId;
+  return sid ? (rawState.expertTeamsBySession[sid] ?? []) : [];
+});
+const expertTeamStatus = computed<AppExpertTeamStatus | null>(() => {
+  const sid = rawState.activeSessionId;
+  return sid ? (rawState.expertTeamStatusBySession[sid] ?? null) : null;
+});
+
 const activationBadges = computed<ActivationBadges>(() => {
   const swarmCounts = countSwarmMembers(swarms.value);
   return {
@@ -2900,6 +2918,10 @@ export function useKimiWebClient() {
     toggleSwarmMode: workspaceState.toggleSwarmMode,
     setGoalMode: workspaceState.setGoalMode,
     toggleGoalMode: workspaceState.toggleGoalMode,
+    expertTeams,
+    expertTeamStatus,
+    activateExpertTeam: workspaceState.activateExpertTeam,
+    deactivateExpertTeam: workspaceState.deactivateExpertTeam,
     createGoal: workspaceState.createGoal,
     controlGoal: workspaceState.controlGoal,
     enqueue: workspaceState.enqueue,

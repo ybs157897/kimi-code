@@ -6,7 +6,7 @@
 import { onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ActivationBadges, ApprovalBlock, ConversationStatus, PermissionMode, QueuedPromptView, TaskItem, TodoView, UIQuestion } from '../../types';
-import type { AppGoal, AppModel, AppSkill, QuestionResponse, ThinkingLevel } from '../../api/types';
+import type { AppExpertTeam, AppExpertTeamStatus, AppGoal, AppModel, AppSkill, QuestionResponse, ThinkingLevel } from '../../api/types';
 import type { FileItem } from './MentionMenu.vue';
 import type { PromptAttachment } from '../../composables/useKimiWebClient';
 import Composer from './Composer.vue';
@@ -37,6 +37,8 @@ const props = defineProps<{
   models?: AppModel[];
   starredIds?: string[];
   skills?: AppSkill[];
+  expertTeams?: AppExpertTeam[];
+  expertTeamStatus?: AppExpertTeamStatus | null;
   goal?: AppGoal | null;
   goalExpandSignal?: number;
   dockPanel: 'bash' | 'subagent' | 'todos' | null;
@@ -66,6 +68,8 @@ const emit = defineEmits<{
   togglePlan: [];
   toggleSwarm: [];
   toggleGoal: [];
+  selectExpertTeam: [pluginId: string];
+  clearExpertTeam: [];
   openBtw: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
@@ -281,6 +285,8 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       :models="models"
       :starred-ids="starredIds"
       :skills="skills"
+      :expert-teams="expertTeams"
+      :expert-team-status="expertTeamStatus"
       :starting="starting"
       @submit="emit('submit', $event)"
       @steer="emit('steer', $event)"
@@ -291,6 +297,8 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       @toggle-plan="emit('togglePlan')"
       @toggle-swarm="emit('toggleSwarm')"
       @toggle-goal="emit('toggleGoal')"
+      @select-expert-team="emit('selectExpertTeam', $event)"
+      @clear-expert-team="emit('clearExpertTeam')"
       @open-btw="emit('openBtw')"
       @create-goal="emit('createGoal', $event)"
       @control-goal="emit('controlGoal', $event)"

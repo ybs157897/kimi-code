@@ -1,11 +1,17 @@
 import { randomUUID } from 'node:crypto';
 import { homedir } from 'node:os';
+import path from 'node:path';
 
 import { ErrorCodes, KimiError } from '#/errors';
 import { getRootLogger, log } from '#/logging/logger';
-import { ExtensionManager, type ExtensionCommandDef, type ExtensionReloadSummary } from '#/extension';
+import { CONFIG_DIR_NAME, ExtensionManager, type ExtensionCommandDef, type ExtensionReloadSummary } from '#/extension';
 import { PluginManager } from '#/plugin';
-import { loadExpertTeams } from '../expert-team';
+import {
+  discoverDirectoryExperts,
+  EXPERT_TEAMS_DIR_NAME,
+  loadExpertTeams,
+  type ExpertTeamRuntime,
+} from '../expert-team';
 import { LocalFetchURLProvider } from '#/tools/providers/local-fetch-url';
 import { MoonshotFetchURLProvider } from '#/tools/providers/moonshot-fetch-url';
 import { MoonshotWebSearchProvider } from '#/tools/providers/moonshot-web-search';
@@ -371,14 +377,8 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     await this.pluginsReady;
     const pluginSessionStarts = this.plugins.enabledSessionStarts();
     const pluginCommands = await this.plugins.enabledCommands();
-    const expertTeams = await loadExpertTeams(this.plugins.enabledExperts(), {
-      onError: (expert, error) => {
-        log.warn('expert team load failed', {
-          pluginId: expert.pluginId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-    });
+    const expertTeamsProvider = this.expertTeamsLoader(workDir);
+    const expertTeams = await expertTeamsProvider();
     const mcpConfig = this.mergePluginMcpConfig(withCallerMcp);
     // Discover + load code-based extensions for this working directory. Errors
     // are captured (not thrown) so a broken extension file cannot block session
@@ -409,6 +409,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       pluginSessionStarts,
       pluginCommands,
       expertTeams,
+      expertTeamsProvider,
       extensionManager: this.extensions,
       appVersion: this.appVersion,
       additionalDirs,
@@ -537,14 +538,8 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
     await this.pluginsReady;
     const pluginSessionStarts = this.plugins.enabledSessionStarts();
     const pluginCommands = await this.plugins.enabledCommands();
-    const expertTeams = await loadExpertTeams(this.plugins.enabledExperts(), {
-      onError: (expert, error) => {
-        log.warn('expert team load failed', {
-          pluginId: expert.pluginId,
-          error: error instanceof Error ? error.message : String(error),
-        });
-      },
-    });
+    const expertTeamsProvider = this.expertTeamsLoader(summary.workDir);
+    const expertTeams = await expertTeamsProvider();
     const mcpConfig = this.mergePluginMcpConfig(withCallerMcp);
     const runtime = await this.resolveRuntime(config);
     const parentKaos = parentKaosForRead;
@@ -571,6 +566,7 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       pluginSessionStarts,
       pluginCommands,
       expertTeams,
+      expertTeamsProvider,
       extensionManager: this.extensions,
       appVersion: this.appVersion,
       additionalDirs,
@@ -1342,6 +1338,37 @@ export class KimiCore implements PromisableMethods<CoreAPI> {
       resolveOAuthTokenProvider: this.resolveOAuthTokenProvider,
       promptCacheKey: sessionId,
     });
+  }
+
+  /**
+   * Live expert-team catalog for a session: drop-in `experts/` directories
+   * (project `.kimi-code/experts/`, then `<kimiHome>/experts/`) merged with
+   * installed expert plugins. Directory packages win id collisions so a local
+   * copy can shadow an installed plugin.
+   */
+  private expertTeamsLoader(workDir: string): () => Promise<readonly ExpertTeamRuntime[]> {
+    return async () => {
+      const directory = await discoverDirectoryExperts([
+        path.join(workDir, CONFIG_DIR_NAME, EXPERT_TEAMS_DIR_NAME),
+        path.join(this.homeDir, EXPERT_TEAMS_DIR_NAME),
+      ]);
+      for (const issue of directory.issues) {
+        log.warn('directory expert team skipped', issue);
+      }
+      const fromDirectories = new Set(directory.experts.map((expert) => expert.pluginId));
+      const experts = [
+        ...directory.experts,
+        ...this.plugins.enabledExperts().filter((expert) => !fromDirectories.has(expert.pluginId)),
+      ];
+      return loadExpertTeams(experts, {
+        onError: (expert, error) => {
+          log.warn('expert team load failed', {
+            pluginId: expert.pluginId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      });
+    };
   }
 
   private mergePluginMcpConfig(base: SessionMcpConfig | undefined): SessionMcpConfig | undefined {

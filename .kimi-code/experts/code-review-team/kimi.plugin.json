@@ -1,0 +1,36 @@
+{
+  "name": "code-review-team",
+  "version": "1.0.0",
+  "description": "Example expert team: a review lead coordinating a correctness reviewer and a code-quality reviewer.",
+  "displayName": "Code Review Team",
+  "expertType": "team",
+  "agentName": "review-lead",
+  "teamInfo": {
+    "leadAgent": "review-lead",
+    "memberAgents": ["correctness-reviewer", "quality-reviewer"]
+  },
+  "members": [
+    {
+      "agent": "review-lead",
+      "role": "lead",
+      "displayName": "Review Lead",
+      "description": "Coordinates the review, merges findings, and reports to the user."
+    },
+    {
+      "agent": "correctness-reviewer",
+      "role": "member",
+      "displayName": "Correctness Reviewer",
+      "description": "Hunts for bugs, edge cases, and broken invariants in the change."
+    },
+    {
+      "agent": "quality-reviewer",
+      "role": "member",
+      "displayName": "Quality Reviewer",
+      "description": "Reviews readability, naming, structure, and test coverage."
+    }
+  ],
+  "quickPrompts": [
+    "Review my currently staged changes.",
+    "Review the latest commit on this branch."
+  ]
+}

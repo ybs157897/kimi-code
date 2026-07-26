@@ -75,9 +75,10 @@ export function serverEndpointLabel(): string {
   return shortOrigin(origin);
 }
 
-// The real server serves everything (incl. healthz + ws) under the /api/v1 prefix.
-export function buildRestUrl(origin: string, path: string): string {
-  return `${origin}/api/v1${path.startsWith('/') ? path : `/${path}`}`;
+// The real server serves everything (incl. healthz + ws) under the /api/v1
+// prefix; native v2-engine surfaces (expert teams) live under /api/v2.
+export function buildRestUrl(origin: string, path: string, apiPrefix = '/api/v1'): string {
+  return `${origin}${apiPrefix}${path.startsWith('/') ? path : `/${path}`}`;
 }
 
 export function buildWsUrl(origin: string, clientId: string): string {

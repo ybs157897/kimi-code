@@ -9,7 +9,7 @@ import { buildSlashItems, parseSlash, SKILL_COMMAND_PREFIX } from '../../lib/sla
 import { formatTokens } from '../../lib/formatTokens';
 import type { FileItem } from './MentionMenu.vue';
 import type { ActivationBadges, ConversationStatus, PermissionMode, QueuedPromptView } from '../../types';
-import type { AppGoal, AppModel, AppSkill, ThinkingLevel } from '../../api/types';
+import type { AppExpertTeam, AppExpertTeamStatus, AppGoal, AppModel, AppSkill, ThinkingLevel } from '../../api/types';
 import {
   commitLevel,
   effectiveThinkingLevel,
@@ -62,6 +62,10 @@ const props = withDefaults(defineProps<{
   starredIds?: string[];
   /** Session skills shown in the `/` menu (after the built-in commands). */
   skills?: AppSkill[];
+  /** Expert teams available to the session (v2 backends only; empty hides the section). */
+  expertTeams?: AppExpertTeam[];
+  /** The active expert-team mode, or null for the standard agent. */
+  expertTeamStatus?: AppExpertTeamStatus | null;
   /** Hide the context-usage indicator (used on the empty-session landing page). */
   hideContext?: boolean;
 }>(), {
@@ -73,6 +77,8 @@ const props = withDefaults(defineProps<{
   models: () => [],
   starredIds: () => [],
   skills: () => [],
+  expertTeams: () => [],
+  expertTeamStatus: null,
 });
 
 const placeholder = computed(() =>
@@ -97,6 +103,8 @@ const emit = defineEmits<{
   togglePlan: [];
   toggleSwarm: [];
   toggleGoal: [];
+  selectExpertTeam: [pluginId: string];
+  clearExpertTeam: [];
   openBtw: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
@@ -675,6 +683,18 @@ const goalArmed = computed(() => goalActive.value || props.goalMode === true);
 const goalCanPause = computed(() => goalStatus.value === 'active');
 const goalCanResume = computed(() => goalStatus.value === 'paused' || goalStatus.value === 'blocked');
 
+// Expert teams — server-owned mode; the section renders only when the backend
+// reported at least one team (or one is still active after its package left).
+const expertOn = computed(() => props.expertTeamStatus !== null);
+const showExpertTeams = computed(() => props.expertTeams.length > 0 || expertOn.value);
+function onExpertTeamRow(pluginId: string): void {
+  if (props.expertTeamStatus?.pluginId === pluginId) {
+    emit('clearExpertTeam');
+    return;
+  }
+  emit('selectExpertTeam', pluginId);
+}
+
 // Modes selector (plan / goal / swarm) — the popover that replaces the bare
 // "plan" pill. Plan/Swarm are real client toggles; goal reflects agent-driven
 // state and focuses its card when active.
@@ -684,7 +704,7 @@ const modesMenuRef = ref<HTMLElement | null>(null);
 // The menu is position:fixed (so no composer stacking context can paint over
 // it); these coords anchor it just above the pill, computed on open.
 const modesMenuStyle = ref<Record<string, string>>({});
-const anyModeActive = computed(() => planOn.value || swarmOn.value || goalArmed.value);
+const anyModeActive = computed(() => planOn.value || swarmOn.value || goalArmed.value || expertOn.value);
 function closeModes(): void {
   modesOpen.value = false;
   document.removeEventListener('mousedown', onModesDocClick);
@@ -1007,6 +1027,7 @@ function selectModel(modelId: string): void {
               <span v-if="planOn" class="mode-tag">{{ t('status.planLabel') }}</span>
               <span v-if="swarmOn" class="mode-tag">{{ t('status.swarmLabel') }}</span>
               <span v-if="goalArmed" class="mode-tag">{{ t('status.goalLabel') }}</span>
+              <span v-if="expertOn" class="mode-tag">{{ props.expertTeamStatus?.displayName }}</span>
             </button>
 
             <div v-if="modesOpen" ref="modesMenuRef" class="modes-menu" :style="modesMenuInlineStyle" role="menu">
@@ -1075,6 +1096,47 @@ function selectModel(modelId: string): void {
                   </Button>
                 </div>
               </div>
+              <!-- Expert teams — one exclusive server-owned mode per session. -->
+              <template v-if="showExpertTeams">
+                <div class="modes-menu-divider" role="separator" />
+                <div class="modes-menu-heading">{{ t('status.expertTeamsLabel') }}</div>
+                <button
+                  v-for="team in props.expertTeams"
+                  :key="team.pluginId"
+                  type="button"
+                  class="mode-row"
+                  :class="{ on: props.expertTeamStatus?.pluginId === team.pluginId }"
+                  role="menuitem"
+                  @click="onExpertTeamRow(team.pluginId)"
+                >
+                  <span class="mode-row-icon"><Icon name="team" size="sm" /></span>
+                  <span class="mode-row-info">
+                    <span class="mode-row-name">{{ team.displayName }}</span>
+                    <span class="mode-row-desc">{{
+                      team.description ?? t('status.expertTeamMembers', { count: team.memberAgentNames.length })
+                    }}</span>
+                  </span>
+                  <span
+                    class="mode-switch"
+                    :class="{ on: props.expertTeamStatus?.pluginId === team.pluginId }"
+                  ><span class="mode-knob" /></span>
+                </button>
+                <!-- A still-active team whose package disappeared from the catalog. -->
+                <button
+                  v-if="expertOn && !props.expertTeams.some((team) => team.pluginId === props.expertTeamStatus?.pluginId)"
+                  type="button"
+                  class="mode-row on"
+                  role="menuitem"
+                  @click="emit('clearExpertTeam')"
+                >
+                  <span class="mode-row-icon"><Icon name="team" size="sm" /></span>
+                  <span class="mode-row-info">
+                    <span class="mode-row-name">{{ props.expertTeamStatus?.displayName }}</span>
+                    <span class="mode-row-desc">{{ t('status.expertTeamUnavailable') }}</span>
+                  </span>
+                  <span class="mode-switch on"><span class="mode-knob" /></span>
+                </button>
+              </template>
             </div>
           </div>
 
@@ -1951,6 +2013,18 @@ function selectModel(modelId: string): void {
   display: flex;
   flex-direction: column;
   gap: 1px;
+}
+.modes-menu-divider {
+  height: 1px;
+  background: var(--line);
+  margin: 3px 0;
+}
+.modes-menu-heading {
+  padding: 4px 7px 2px;
+  font-size: var(--text-xs);
+  color: var(--muted);
+  text-transform: uppercase;
+  font-weight: var(--weight-semibold);
 }
 .mode-row {
   display: grid;

@@ -88,6 +88,7 @@ import RiQuestionLine from '~icons/ri/question-line';
 import RiRefreshLine from '~icons/ri/refresh-line';
 import RiSortDesc from '~icons/ri/sort-desc';
 import RiSparklingLine from '~icons/ri/sparkling-line';
+import RiTeamLine from '~icons/ri/team-line';
 import RiStarFill from '~icons/ri/star-fill';
 import RiStarLine from '~icons/ri/star-line';
 import RiStopFill from '~icons/ri/stop-fill';
@@ -161,6 +162,7 @@ import RawQuestionLine from '~icons/ri/question-line?raw';
 import RawRefreshLine from '~icons/ri/refresh-line?raw';
 import RawSortDesc from '~icons/ri/sort-desc?raw';
 import RawSparklingLine from '~icons/ri/sparkling-line?raw';
+import RawTeamLine from '~icons/ri/team-line?raw';
 import RawStarFill from '~icons/ri/star-fill?raw';
 import RawStarLine from '~icons/ri/star-line?raw';
 import RawStopFill from '~icons/ri/stop-fill?raw';
@@ -236,6 +238,7 @@ export type IconName =
   | 'alert-triangle'
   | 'clock'
   | 'sparkles'
+  | 'team'
   | 'target'
   | 'pause'
   | 'play'
@@ -323,6 +326,7 @@ export const ICONS: Record<IconName, IconEntry> = {
   'alert-triangle': entry(RiAlertLine, RawAlertLine),
   clock: entry(RiTimeLine, RawTimeLine),
   sparkles: entry(RiSparklingLine, RawSparklingLine),
+  team: entry(RiTeamLine, RawTeamLine),
   target: entry(RiTargetLine, RawTargetLine),
   pause: entry(RiPauseFill, RawPauseFill),
   play: entry(RiPlayFill, RawPlayFill),
@@ -435,6 +439,7 @@ export const ICON_GROUPS: ReadonlyArray<readonly [string, readonly IconName[]]> 
       'alert-triangle',
       'clock',
       'sparkles',
+      'team',
       'pause',
       'play',
       'stop',

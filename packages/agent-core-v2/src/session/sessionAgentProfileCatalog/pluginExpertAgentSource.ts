@@ -21,7 +21,13 @@ import {
 } from '#/app/agentFileCatalog/agentProfileSource';
 import { IUserFileAgentSource } from '#/app/agentFileCatalog/userFileAgentSource';
 import type { AgentProfile } from '#/app/agentProfileCatalog/agentProfileCatalog';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
+import {
+  discoverDirectoryExperts,
+  mergeDirectoryExperts,
+  sessionExpertRoots,
+} from '#/app/plugin/directoryExperts';
 import { IPluginService } from '#/app/plugin/plugin';
 import {
   EXPERT_TEAMS_FLAG_ID,
@@ -29,6 +35,7 @@ import {
   pluginExpertProfileName,
 } from '#/app/plugin/types';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 
 export interface IPluginExpertAgentSource extends IAgentProfileSource {
   readonly _serviceBrand: undefined;
@@ -67,15 +74,24 @@ export class PluginExpertAgentSource implements IPluginExpertAgentSource {
     @IUserFileAgentSource private readonly user: IUserFileAgentSource,
     @IFlagService private readonly flags: IFlagService,
     @ILogService private readonly log: ILogService,
+    @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
   ) {}
 
   async load(): Promise<AgentProfileContribution> {
     if (!this.flags.enabled(EXPERT_TEAMS_FLAG_ID)) {
       return { profiles: [], skipped: [], scannedRoots: [] };
     }
-    const experts = await this.plugins.enabledExperts();
-    const profiles: AgentProfile[] = [];
+    const directory = await discoverDirectoryExperts(
+      sessionExpertRoots(this.workspace.workDir, this.bootstrap.homeDir),
+    );
     const skipped: Array<{ path: string; reason: string }> = [];
+    for (const issue of directory.issues) {
+      skipped.push({ path: issue.dir, reason: issue.message });
+      this.log.warn(`Skipping directory expert package at ${issue.dir}: ${issue.message}`);
+    }
+    const experts = mergeDirectoryExperts(directory.experts, await this.plugins.enabledExperts());
+    const profiles: AgentProfile[] = [];
     for (const expert of experts) {
       for (const agentPath of expert.agents) {
         try {

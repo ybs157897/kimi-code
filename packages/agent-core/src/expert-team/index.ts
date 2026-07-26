@@ -6,6 +6,7 @@ import { load as loadYaml } from 'js-yaml';
 import type { EnabledPluginExpert, PluginExpertMember } from '../plugin';
 import { DEFAULT_AGENT_PROFILES, type ResolvedAgentProfile } from '../profile';
 
+export * from './discovery';
 export * from './runtime';
 
 export interface ExpertTeamDefinition {

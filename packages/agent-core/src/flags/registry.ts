@@ -38,7 +38,7 @@ export const FLAG_DEFINITIONS = [
     description:
       'Activate plugin-defined expert-team modes with a lead and declared specialist agents.',
     env: 'KIMI_CODE_EXPERIMENTAL_EXPERT_TEAMS',
-    default: false,
+    default: true,
     surface: 'both',
   },
 ] as const satisfies readonly FlagDefinitionInput[];

@@ -43,7 +43,7 @@ export async function handleExpertsCommand(
   ) {
     host.showNotice(
       'No expert teams installed',
-      'Install an expert plugin with /plugins install <path>, then run /reload.',
+      'Drop a team package into .kimi-code/experts/ (or ~/.kimi-code/experts/), or install an expert plugin with /plugins install <path>.',
     );
     return;
   }
