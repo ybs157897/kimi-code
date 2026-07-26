@@ -28,6 +28,8 @@ const exactProfile: ResolvedAgentProfile = {
       `extra:${context.additionalDirsInfo ?? ''}`,
     ].join('\n'),
   tools: ['Read', 'Write'],
+  disallowedTools: ['Bash'],
+  subagents: ['explore'],
 };
 
 describe('AgentProfileService.applyProfile', () => {
@@ -74,6 +76,23 @@ describe('AgentProfileService.applyProfile', () => {
     await svc.applyProfile(exactProfile);
 
     expect(svc.data().systemPrompt).toBe(exactSystemPrompt(workDir, 'project instructions'));
+    expect(svc.data().activeToolNames).toEqual(['Read', 'Write']);
+    expect(svc.data().disallowedTools).toEqual(['Bash']);
+    expect(svc.data().subagents).toEqual(['explore']);
+  });
+
+  it('replaces the complete profile binding when switching profiles', async () => {
+    const { profile: svc } = buildContext();
+    await svc.applyProfile(exactProfile);
+
+    await svc.applyProfile(profile);
+
+    expect(svc.data()).toMatchObject({
+      profileName: 'agents-profile',
+      activeToolNames: [],
+      disallowedTools: [],
+    });
+    expect(svc.data().subagents).toBeUndefined();
   });
 
   it('refreshes the active profile system prompt exactly without resetting active tools', async () => {

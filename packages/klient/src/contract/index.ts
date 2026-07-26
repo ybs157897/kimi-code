@@ -29,6 +29,7 @@ import { providersContract } from './global/providers.js';
 import { sessionsContract } from './global/sessions.js';
 import { workspacesContract } from './global/workspaces.js';
 import { sessionApprovalContract } from './session/approval.js';
+import { sessionExpertTeamContract } from './session/expertTeam.js';
 import { sessionInteractionContract } from './session/interaction.js';
 import { sessionLifecycleContract } from './session/lifecycle.js';
 import { sessionMetadataContract } from './session/metadata.js';
@@ -55,6 +56,7 @@ export const globalContract: KlientContract = {
   sessionInteractionService: sessionInteractionContract,
   sessionApprovalService: sessionApprovalContract,
   sessionQuestionService: sessionQuestionContract,
+  sessionExpertTeamService: sessionExpertTeamContract,
   // agent scope
   agentRPCService: agentRpcContract,
   agentActivityView: agentActivityViewContract,

@@ -234,6 +234,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v2/sessions/{session_id}/expert-team",
+    ],
+    [
+      "GET",
+      "/api/v2/sessions/{session_id}/expert-teams",
+    ],
+    [
+      "GET",
       "/asyncapi.json",
     ],
     [
@@ -371,6 +379,14 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v1/workspaces",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/expert-team/activate",
+    ],
+    [
+      "POST",
+      "/api/v2/sessions/{session_id}/expert-team/deactivate",
     ],
     [
       "PUT",

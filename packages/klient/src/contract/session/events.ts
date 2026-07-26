@@ -12,6 +12,7 @@ import type {
   InteractionResolution,
 } from '@moonshot-ai/agent-core-v2/session/interaction/interaction';
 import type { SessionMetadataChangedEvent } from '@moonshot-ai/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import type { ExpertTeamSnapshot } from '@moonshot-ai/agent-core-v2/session/expertTeam/expertTeam';
 
 import type { EventRegistration } from '../types.js';
 import {
@@ -19,6 +20,7 @@ import {
   interactionSchema,
 } from './interaction.js';
 import { sessionMetadataChangedEventSchema } from './metadata.js';
+import { expertTeamSnapshotSchema } from './expertTeam.js';
 
 /**
  * Scope-stream registration (`kind: 'stream'`). Declared structurally here
@@ -39,6 +41,7 @@ export interface SessionEventPayloads {
   'metadata.changed': SessionMetadataChangedEvent;
   'interactions.changed': readonly Interaction[];
   'interactions.resolved': InteractionResolution;
+  'expert-team.changed': ExpertTeamSnapshot | null;
 }
 
 export type SessionEventName = keyof SessionEventPayloads;
@@ -62,5 +65,11 @@ export const sessionEvents = {
     kind: 'stream',
     name: 'interactions:resolved',
     schema: interactionResolutionSchema,
+  },
+  'expert-team.changed': {
+    kind: 'emitter',
+    service: 'sessionExpertTeamService',
+    event: 'onDidChange',
+    schema: z.union([expertTeamSnapshotSchema, z.null()]),
   },
 } satisfies Record<SessionEventName, SessionEventRegistration>;

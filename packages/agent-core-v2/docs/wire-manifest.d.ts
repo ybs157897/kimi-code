@@ -21,7 +21,7 @@
 // owning model offloads inline media to blob storage), cross-reducers
 // (foreign models that also reduce this record on dispatch and replay).
 
-// Index (44 record types)
+// Index (49 record types)
 //   config.update                      profile              persisted  src/agent/profile/profileOps.ts
 //   context_size.measured              contextSize          transient  src/agent/contextSize/contextSizeOps.ts
 //   context.append_loop_event          contextMemory        persisted  src/agent/contextMemory/contextOps.ts
@@ -32,6 +32,11 @@
 //   cron.add                           cron                 transient  src/session/cron/cronOps.ts
 //   cron.cursor                        cron                 transient  src/session/cron/cronOps.ts
 //   cron.delete                        cron                 transient  src/session/cron/cronOps.ts
+//   expert_team.activate               expertTeam           persisted  src/session/expertTeam/expertTeamOps.ts
+//   expert_team.create                 expertTeam           persisted  src/session/expertTeam/expertTeamOps.ts
+//   expert_team.deactivate             expertTeam           persisted  src/session/expertTeam/expertTeamOps.ts
+//   expert_team.delete                 expertTeam           persisted  src/session/expertTeam/expertTeamOps.ts
+//   expert_team.member_upsert          expertTeam           persisted  src/session/expertTeam/expertTeamOps.ts
 //   forked                             goal                 persisted  src/agent/goal/goalOps.ts
 //   full_compaction.begin              fullCompaction       persisted  src/agent/fullCompaction/compactionOps.ts
 //   full_compaction.cancel             fullCompaction       persisted  src/agent/fullCompaction/compactionOps.ts
@@ -133,7 +138,7 @@ interface ContextAppendMessagePayload {
     }[];
     id?: string;
     providerMessageId?: string;
-    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | undefined;
+    origin?: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'team_message' | undefined;
     isError?: boolean;
     note?: string;
   };
@@ -198,6 +203,103 @@ interface CronCursorPayload {
 interface CronDeletePayload {
   _name: 'cron.delete';
   ids: string[];
+}
+
+/**
+ * model: expertTeam · persisted
+ * owner: src/session/expertTeam/expertTeamOps.ts
+ */
+interface ExpertTeamActivatePayload {
+  _name: 'expert_team.activate';
+  snapshot: {
+    binding: {
+      pluginId: string;
+      pluginVersion?: string;
+      displayName: string;
+      leadAgentName: string;
+      leadProfileName: string;
+      memberAgentNames: string[];
+      previousProfile: {
+        profileName?: string;
+        modelAlias?: string;
+        thinkingLevel: string;
+        cwd: string;
+        systemPrompt: string;
+        activeToolNames?: string[];
+        disallowedTools?: string[];
+        subagents?: string[];
+      };
+      activatedAt: string;
+    };
+    team?: {
+      id: string;
+      name: string;
+      description?: string;
+      createdAt: string;
+      members: {
+        name: string;
+        agentId: string;
+        profileName: string;
+        status: 'spawning' | 'running' | 'completed' | 'failed' | 'shutdown';
+        updatedAt: string;
+        taskId?: string;
+      }[];
+    };
+  };
+}
+
+/**
+ * model: expertTeam · persisted
+ * owner: src/session/expertTeam/expertTeamOps.ts
+ */
+interface ExpertTeamCreatePayload {
+  _name: 'expert_team.create';
+  team: {
+    id: string;
+    name: string;
+    description?: string;
+    createdAt: string;
+    members: {
+      name: string;
+      agentId: string;
+      profileName: string;
+      status: 'spawning' | 'running' | 'completed' | 'failed' | 'shutdown';
+      updatedAt: string;
+      taskId?: string;
+    }[];
+  };
+}
+
+/**
+ * model: expertTeam · persisted
+ * owner: src/session/expertTeam/expertTeamOps.ts
+ */
+interface ExpertTeamDeactivatePayload {
+  _name: 'expert_team.deactivate';
+}
+
+/**
+ * model: expertTeam · persisted
+ * owner: src/session/expertTeam/expertTeamOps.ts
+ */
+interface ExpertTeamDeletePayload {
+  _name: 'expert_team.delete';
+}
+
+/**
+ * model: expertTeam · persisted
+ * owner: src/session/expertTeam/expertTeamOps.ts
+ */
+interface ExpertTeamMemberUpsertPayload {
+  _name: 'expert_team.member_upsert';
+  member: {
+    name: string;
+    agentId: string;
+    profileName: string;
+    status: 'spawning' | 'running' | 'completed' | 'failed' | 'shutdown';
+    updatedAt: string;
+    taskId?: string;
+  };
 }
 
 /**
@@ -580,7 +682,7 @@ interface TurnPromptPayload {
   _name: 'turn.prompt';
   input: readonly ContentPart[];
   /** PromptOrigin */
-  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry';
+  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'team_message';
 }
 
 /**
@@ -591,7 +693,7 @@ interface TurnSteerPayload {
   _name: 'turn.steer';
   input: readonly ContentPart[];
   /** PromptOrigin */
-  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry';
+  origin: 'user' | 'skill_activation' | 'plugin_command' | 'injection' | 'shell_command' | 'compaction_summary' | 'system_trigger' | 'task' | 'cron_job' | 'cron_missed' | 'hook_result' | 'retry' | 'team_message';
 }
 
 /**
@@ -624,6 +726,11 @@ interface WirePayloadMap {
   "cron.add": CronAddPayload;
   "cron.cursor": CronCursorPayload;
   "cron.delete": CronDeletePayload;
+  "expert_team.activate": ExpertTeamActivatePayload;
+  "expert_team.create": ExpertTeamCreatePayload;
+  "expert_team.deactivate": ExpertTeamDeactivatePayload;
+  "expert_team.delete": ExpertTeamDeletePayload;
+  "expert_team.member_upsert": ExpertTeamMemberUpsertPayload;
   "forked": ForkedPayload;
   "full_compaction.begin": FullCompactionBeginPayload;
   "full_compaction.cancel": FullCompactionCancelPayload;

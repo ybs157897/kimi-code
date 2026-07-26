@@ -41,6 +41,7 @@ import { IUserFileAgentSource } from '#/app/agentFileCatalog/userFileAgentSource
 import { IExplicitFileAgentSource } from './explicitFileAgentSource';
 import { IExtraFileAgentSource } from './extraFileAgentSource';
 import { IProjectFileAgentSource } from './projectFileAgentSource';
+import { IPluginExpertAgentSource } from './pluginExpertAgentSource';
 import { ISessionAgentProfileCatalog } from './sessionAgentProfileCatalog';
 
 export class SessionAgentProfileCatalogService
@@ -66,10 +67,11 @@ export class SessionAgentProfileCatalogService
     @IExtraFileAgentSource extra: IExtraFileAgentSource,
     @IProjectFileAgentSource project: IProjectFileAgentSource,
     @IExplicitFileAgentSource explicit: IExplicitFileAgentSource,
+    @IPluginExpertAgentSource pluginExpert: IPluginExpertAgentSource,
     @ILogService private readonly log: ILogService,
   ) {
     super();
-    this.sources = [user, extra, project, explicit].toSorted(
+    this.sources = [user, extra, project, explicit, pluginExpert].toSorted(
       (a, b) => a.priority - b.priority,
     );
     for (const s of this.sources) {

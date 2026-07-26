@@ -195,9 +195,8 @@ describe('Agent config', () => {
     });
 
     expect(ctx.newEvents()).toMatchInlineSnapshot(`
-      [wire] config.update            { "profileName": "test-profile", "systemPrompt": "Profile system prompt.", "disallowedTools": [], "time": "<time>" }
-      [emit] agent.status.updated     { "model": "mock-model", "maxContextTokens": 1000000 }
-      [wire] tools.set_active_tools   { "names": [ "Read" ], "time": "<time>" }
+      [wire] profile.bind           { "cwd": "<cwd>", "modelAlias": "mock-model", "profileName": "test-profile", "thinkingEffort": "off", "systemPrompt": "Profile system prompt.", "activeToolNames": [ "Read" ], "disallowedTools": [], "time": "<time>" }
+      [emit] agent.status.updated   { "model": "mock-model", "maxContextTokens": 1000000 }
     `);
   });
 

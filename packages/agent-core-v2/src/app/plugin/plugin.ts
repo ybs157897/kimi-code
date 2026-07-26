@@ -13,6 +13,7 @@ import type { McpServerConfig } from '#/agent/mcp/config-schema';
 import type { SkillRoot } from '#/app/skillCatalog/types';
 
 import type {
+  EnabledPluginExpert,
   EnabledPluginSessionStart,
   PluginCommandDef,
   PluginInfo,
@@ -57,6 +58,7 @@ export interface IPluginService {
   listPluginCommands(): Promise<readonly PluginCommandDef[]>;
   checkUpdates(): Promise<readonly PluginUpdateStatus[]>;
   pluginSkillRoots(): Promise<readonly SkillRoot[]>;
+  enabledExperts(): Promise<readonly EnabledPluginExpert[]>;
   enabledSessionStarts(): Promise<readonly EnabledPluginSessionStart[]>;
   enabledMcpServers(): Promise<Record<string, McpServerConfig>>;
   enabledHooks(): Promise<readonly HookDef[]>;

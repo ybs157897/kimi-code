@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { AgentTranscript } from '#/store/agentTranscript';
 import { TranscriptStore } from '#/store/transcriptStore';
 import { appendAtOffset } from '#/ops/apply';
+import { isPlainAgentId } from '#/contract/schema';
 import type {
   FrameUpsertOp,
   TurnUpsertOp,
@@ -55,6 +56,13 @@ function toolFrame(state: ToolCallFrame['state'], output?: unknown): TranscriptO
     },
   ];
 }
+
+describe('agent ids', () => {
+  it('accepts expert-team member ids while rejecting path-hostile ids', () => {
+    expect(isPlainAgentId('architect@delivery-team')).toBe(true);
+    expect(isPlainAgentId('../architect@delivery-team')).toBe(false);
+  });
+});
 
 describe('AgentTranscript', () => {
   it('applies turn/step/frame and keeps a self-consistent snapshot', () => {

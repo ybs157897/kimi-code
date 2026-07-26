@@ -64,7 +64,42 @@ const pluginCommandEntrySchema = z.object({
   name: z.string(),
 });
 
-const pluginManifestKindSchema = z.enum(['kimi-plugin-root', 'kimi-plugin-dir']);
+const localizedTextSchema = z.union([z.string(), z.record(z.string(), z.string())]);
+
+const pluginExpertMemberSchema = z.object({
+  agent: z.string(),
+  role: z.enum(['lead', 'member']),
+  displayName: z.string().optional(),
+  name: localizedTextSchema.optional(),
+  profession: localizedTextSchema.optional(),
+  description: z.string().optional(),
+  avatar: z.string().optional(),
+});
+
+const pluginExpertSchema = z.object({
+  type: z.enum(['agent', 'team']),
+  agentName: z.string(),
+  agents: z.array(z.string()),
+  teamInfo: z
+    .object({
+      leadAgent: z.string(),
+      memberAgents: z.array(z.string()),
+    })
+    .optional(),
+  members: z.array(pluginExpertMemberSchema).optional(),
+  profession: z.string().optional(),
+  displayDescription: z.string().optional(),
+  tags: z.array(z.string()).optional(),
+  quickPrompts: z.array(z.string()).optional(),
+  defaultInitPrompt: z.string().optional(),
+  categoryId: z.string().optional(),
+});
+
+const pluginManifestKindSchema = z.enum([
+  'kimi-plugin-root',
+  'kimi-plugin-dir',
+  'codebuddy-plugin-dir',
+]);
 
 const pluginSourceSchema = z.enum(['local-path', 'zip-url', 'github']);
 
@@ -90,6 +125,7 @@ export const pluginManifestSchema = z.object({
   commands: z.array(pluginCommandEntrySchema).optional(),
   interface: pluginInterfaceSchema.optional(),
   skillInstructions: z.string().optional(),
+  expert: pluginExpertSchema.optional(),
 });
 
 export const pluginMcpServerInfoSchema = z.object({

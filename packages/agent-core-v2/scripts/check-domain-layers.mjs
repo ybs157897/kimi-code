@@ -211,6 +211,7 @@ const DOMAIN_LAYER = new Map([
   // Its highest real dependency is `agentLifecycle` (target lookup), so it
   // sits in L6 beside it.
   ['subagent', 6],
+  ['expertTeam', 6],
   ['sessionLifecycle', 6],
   ['externalHooks', 6],
   ['externalHooksRunner', 6],

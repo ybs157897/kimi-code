@@ -23,6 +23,7 @@ import type {
   SkillSource,
   SystemTriggerOrigin,
   TaskOrigin,
+  TeamMessageOrigin,
   UserPromptOrigin,
 } from '@moonshot-ai/agent-core-v2/agent/contextMemory/types';
 import { messageContentSchema } from '@moonshot-ai/agent-core-v2/agent/contextMemory/protocolMessage';
@@ -211,6 +212,14 @@ export const retryOriginSchema = z.object({
   trigger: z.string().optional(),
 }) satisfies z.ZodType<RetryOrigin>;
 
+export const teamMessageOriginSchema = z.object({
+  kind: z.literal('team_message'),
+  teamId: z.string(),
+  fromAgentId: z.string(),
+  toAgentId: z.string(),
+  messageType: z.enum(['message', 'shutdown_request', 'shutdown_response']),
+}) satisfies z.ZodType<TeamMessageOrigin>;
+
 export const promptOriginSchema = z.discriminatedUnion('kind', [
   userPromptOriginSchema,
   skillActivationOriginSchema,
@@ -225,6 +234,7 @@ export const promptOriginSchema = z.discriminatedUnion('kind', [
   cronMissedOriginSchema,
   hookResultOriginSchema,
   retryOriginSchema,
+  teamMessageOriginSchema,
 ]);
 
 export const goalStatusSchema = z.enum(['active', 'paused', 'blocked', 'complete']) satisfies z.ZodType<GoalStatus>;

@@ -30,6 +30,7 @@ import { transformOpenApiDocument } from './openapi/transforms';
 import { registerRequestLogging } from './requestLogging';
 import { resolveRequestId } from './request-id';
 import { registerApiV1Routes } from './routes/registerApiV1Routes';
+import { registerApiV2Routes } from './routes/registerApiV2Routes';
 import { registerWebAssetRoutes } from './routes/webAssets';
 import {
   createServerLogger,
@@ -343,6 +344,7 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
           { name: 'terminals', description: 'PTY terminal sessions' },
           { name: 'fs', description: 'Filesystem operations' },
           { name: 'files', description: 'File upload & download' },
+          { name: 'expert-teams', description: 'Plugin-defined expert-team modes' },
         ],
       },
       transformObject: (documentObject) => {
@@ -373,6 +375,7 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
     transcriptService,
     dangerousBypassAuth: opts.disableAuth === true,
   });
+  await registerApiV2Routes(app, core);
 
   const wssV1 = registerWsV1(core, {
     validateCredential,

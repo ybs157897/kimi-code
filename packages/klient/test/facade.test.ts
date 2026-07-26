@@ -90,6 +90,30 @@ describe('facade routing', () => {
       method: 'status',
       args: [undefined],
     });
+
+    channel.result = {
+      binding: {
+        pluginId: 'delivery-experts',
+        displayName: 'Delivery Experts',
+        leadAgentName: 'delivery-lead',
+        leadProfileName: 'expert:delivery-experts:delivery-lead',
+        memberAgentNames: ['architect'],
+        previousProfile: {
+          profileName: 'agent',
+          thinkingLevel: 'medium',
+          cwd: '/workspace',
+          systemPrompt: 'default agent prompt',
+        },
+        activatedAt: '2026-07-26T00:00:00.000Z',
+      },
+    };
+    await klient.session('s1').expertTeam.activate('delivery-experts');
+    expect(channel.calls[3]).toMatchObject({
+      scope: { sessionId: 's1' },
+      service: 'sessionExpertTeamService',
+      method: 'activate',
+      args: ['delivery-experts'],
+    });
   });
 
   it('env() fans out property reads and merges them', async () => {

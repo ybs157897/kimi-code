@@ -25,6 +25,10 @@ import type {
   Interaction,
   InteractionKind,
 } from '@moonshot-ai/agent-core-v2/session/interaction/interaction';
+import type {
+  ExpertTeamDefinition,
+  ExpertTeamSnapshot,
+} from '@moonshot-ai/agent-core-v2/session/expertTeam/expertTeam';
 
 import type { ScopeRef } from '../channel.js';
 import type { ScopedCaller } from './global.js';
@@ -50,6 +54,13 @@ export interface SessionQuestionsFacade {
 export interface SessionInteractionsFacade {
   list(kind?: InteractionKind): Promise<readonly Interaction[]>;
   respond(id: string, response: unknown): Promise<void>;
+}
+
+export interface SessionExpertTeamFacade {
+  list(): Promise<readonly ExpertTeamDefinition[]>;
+  get(): Promise<ExpertTeamSnapshot | null>;
+  activate(pluginId: string): Promise<ExpertTeamSnapshot>;
+  deactivate(): Promise<void>;
 }
 
 /**
@@ -78,6 +89,7 @@ export interface SessionFacade {
   readonly approvals: SessionApprovalsFacade;
   readonly questions: SessionQuestionsFacade;
   readonly interactions: SessionInteractionsFacade;
+  readonly expertTeam: SessionExpertTeamFacade;
   /** Agent id → metadata for every agent registered in this session. */
   agents(): Promise<Readonly<Record<string, AgentMeta>>>;
 }
@@ -164,6 +176,23 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
         >,
       respond: (id, response) =>
         call(scope, 'sessionInteractionService', 'respond', [id, response]) as Promise<void>,
+    },
+
+    expertTeam: {
+      list: () =>
+        call(scope, 'sessionExpertTeamService', 'listAvailable', []) as Promise<
+          readonly ExpertTeamDefinition[]
+        >,
+      get: () =>
+        call(scope, 'sessionExpertTeamService', 'snapshot', []) as Promise<
+          ExpertTeamSnapshot | null
+        >,
+      activate: (pluginId) =>
+        call(scope, 'sessionExpertTeamService', 'activate', [
+          pluginId,
+        ]) as Promise<ExpertTeamSnapshot>,
+      deactivate: () =>
+        call(scope, 'sessionExpertTeamService', 'deactivate', []) as Promise<void>,
     },
 
     agents: async () => {

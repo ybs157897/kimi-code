@@ -21,7 +21,7 @@ export const agentIdSchema = z.string().min(1);
  * filesystem throw unhandled errors (`ERR_INVALID_ARG_VALUE`,
  * `ENAMETOOLONG`) instead of reading a `wire.jsonl`.
  */
-const AGENT_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
+const AGENT_ID_PATTERN = /^[A-Za-z0-9._@-]{1,128}$/;
 
 /**
  * Whether an agent id is a single plain name. Ids are joined into filesystem

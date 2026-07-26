@@ -33,4 +33,22 @@ describe('plugin archive extraction', () => {
     expect(detectedRoot).toBe(join(outDir, 'plugin'));
     await expect(readFile(join(detectedRoot, 'kimi.plugin.json'), 'utf8')).resolves.toContain('zip-demo');
   });
+
+  it('detects a nested WorkBuddy expert root', async () => {
+    const source = join(dir, 'workbuddy-source');
+    const nested = join(source, 'example-expert-team');
+    await mkdir(join(nested, '.codebuddy-plugin'), { recursive: true });
+    await writeFile(
+      join(nested, '.codebuddy-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'example-expert-team' }),
+      'utf8',
+    );
+    const zipPath = join(dir, 'workbuddy.zip');
+    execFileSync('zip', ['-qr', zipPath, '.'], { cwd: source });
+
+    const outDir = join(dir, 'workbuddy-out');
+    const detectedRoot = await extractZip(await readFile(zipPath), outDir);
+
+    expect(detectedRoot).toBe(join(outDir, 'example-expert-team'));
+  });
 });

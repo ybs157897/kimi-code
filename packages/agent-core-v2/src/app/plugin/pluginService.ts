@@ -32,6 +32,7 @@ import {
   type SetPluginMcpServerEnabledInput,
 } from './plugin';
 import type {
+  EnabledPluginExpert,
   EnabledPluginSessionStart,
   PluginCommandDef,
   PluginInfo,
@@ -154,6 +155,10 @@ export class PluginService extends Disposable implements IPluginService {
 
   pluginSkillRoots(): Promise<readonly SkillRoot[]> {
     return this.runConsumptionRead([], async () => this.manager.pluginSkillRoots());
+  }
+
+  enabledExperts(): Promise<readonly EnabledPluginExpert[]> {
+    return this.runConsumptionRead([], async () => this.manager.enabledExperts());
   }
 
   enabledSessionStarts(): Promise<readonly EnabledPluginSessionStart[]> {

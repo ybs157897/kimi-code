@@ -25,6 +25,43 @@ export interface PluginInterface {
   readonly websiteURL?: string;
 }
 
+export type PluginExpertType = 'agent' | 'team';
+
+export const EXPERT_TEAMS_FLAG_ID = 'expert-teams';
+
+export type PluginExpertMemberRole = 'lead' | 'member';
+
+export type PluginLocalizedText = string | Readonly<Record<string, string>>;
+
+export interface PluginExpertMember {
+  readonly agent: string;
+  readonly role: PluginExpertMemberRole;
+  readonly displayName?: string;
+  readonly name?: PluginLocalizedText;
+  readonly profession?: PluginLocalizedText;
+  readonly description?: string;
+  readonly avatar?: string;
+}
+
+export interface PluginExpertTeamInfo {
+  readonly leadAgent: string;
+  readonly memberAgents: readonly string[];
+}
+
+export interface PluginExpert {
+  readonly type: PluginExpertType;
+  readonly agentName: string;
+  readonly agents: readonly string[];
+  readonly teamInfo?: PluginExpertTeamInfo;
+  readonly members?: readonly PluginExpertMember[];
+  readonly profession?: string;
+  readonly displayDescription?: string;
+  readonly tags?: readonly string[];
+  readonly quickPrompts?: readonly string[];
+  readonly defaultInitPrompt?: string;
+  readonly categoryId?: string;
+}
+
 export interface PluginManifest {
   readonly name: string;
   readonly version?: string;
@@ -40,6 +77,7 @@ export interface PluginManifest {
   readonly commands?: readonly PluginCommandEntry[];
   readonly interface?: PluginInterface;
   readonly skillInstructions?: string;
+  readonly expert?: PluginExpert;
 }
 
 export interface PluginMcpServerState {
@@ -76,7 +114,10 @@ export interface PluginCommandEntry {
   readonly name: string;
 }
 
-export type PluginManifestKind = 'kimi-plugin-root' | 'kimi-plugin-dir';
+export type PluginManifestKind =
+  | 'kimi-plugin-root'
+  | 'kimi-plugin-dir'
+  | 'codebuddy-plugin-dir';
 export type PluginSource = 'local-path' | 'zip-url' | 'github';
 export type PluginState = 'ok' | 'error';
 
@@ -146,6 +187,14 @@ export interface EnabledPluginSessionStart {
   readonly skillName: string;
 }
 
+export interface EnabledPluginExpert extends PluginExpert {
+  readonly pluginId: string;
+  readonly pluginRoot: string;
+  readonly pluginVersion?: string;
+  readonly displayName: string;
+  readonly description?: string;
+}
+
 export interface ReloadSummary {
   readonly added: readonly string[];
   readonly removed: readonly string[];
@@ -165,4 +214,8 @@ export const PLUGIN_NAME_REGEX = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 export function normalizePluginId(name: string): string {
   return name.toLowerCase();
+}
+
+export function pluginExpertProfileName(pluginId: string, agentName: string): string {
+  return `expert:${normalizePluginId(pluginId)}:${agentName}`;
 }

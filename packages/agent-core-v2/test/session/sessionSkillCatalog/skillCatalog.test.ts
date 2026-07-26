@@ -105,6 +105,7 @@ function pluginStub(
     listPluginCommands: async () => [],
     checkUpdates: async () => [],
     pluginSkillRoots: async () => skillRoots,
+    enabledExperts: async () => [],
     enabledSessionStarts: async () => [],
     enabledMcpServers: async () => ({}),
     enabledHooks: async () => [],

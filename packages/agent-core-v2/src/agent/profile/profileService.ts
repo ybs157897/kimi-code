@@ -359,12 +359,25 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   useProfile(profile: ResolvedAgentProfile, context: SystemPromptContext): void {
     this.activeProfile = profile;
-    this.update({
+    this.activeToolNamesOverlay = undefined;
+    const systemPrompt = profile.systemPrompt(context);
+    this.wire.dispatch(
+      profileBind({
+        cwd: this.cwd,
+        modelAlias: this.modelAlias,
+        profileName: profile.name,
+        thinkingEffort: this.thinkingLevel,
+        systemPrompt,
+        activeToolNames: profile.tools,
+        disallowedTools: profile.disallowedTools ?? [],
+        subagents: profile.subagents,
+      }),
+    );
+    this.afterConfigDispatch({
       profileName: profile.name,
-      systemPrompt: profile.systemPrompt(context),
+      systemPrompt,
       disallowedTools: profile.disallowedTools ?? [],
     });
-    this.setActiveTools(profile.tools);
   }
 
   async applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void> {

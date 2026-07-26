@@ -42,6 +42,7 @@ export const AGENT_PROFILE_SOURCE_PRIORITY = {
   extra: 20,
   project: 30,
   explicit: 40,
+  pluginExpert: 50,
 } as const;
 
 export interface IAgentProfileSource {

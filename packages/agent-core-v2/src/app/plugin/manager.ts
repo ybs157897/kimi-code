@@ -24,6 +24,7 @@ import { parseManifest, type ParsedManifestResult } from './manifest';
 import { readInstalled, writeInstalled, type InstalledRecord } from './store';
 import {
   normalizePluginId,
+  type EnabledPluginExpert,
   type EnabledPluginSessionStart,
   type PluginCapabilityState,
   type PluginCommandDef,
@@ -310,6 +311,25 @@ export class PluginManager {
       }
     }
     return roots;
+  }
+
+  enabledExperts(): readonly EnabledPluginExpert[] {
+    const out: EnabledPluginExpert[] = [];
+    for (const record of this.records.values()) {
+      if (!record.enabled || record.state !== 'ok' || record.manifest?.expert === undefined) {
+        continue;
+      }
+      out.push({
+        ...record.manifest.expert,
+        pluginId: record.id,
+        pluginRoot: record.root,
+        pluginVersion: record.manifest.version,
+        displayName: record.manifest.interface?.displayName ?? record.id,
+        description:
+          record.manifest.interface?.shortDescription ?? record.manifest.description,
+      });
+    }
+    return out.toSorted((a, b) => a.pluginId.localeCompare(b.pluginId));
   }
 
   enabledSessionStarts(): readonly EnabledPluginSessionStart[] {

@@ -84,6 +84,14 @@ export interface RetryOrigin {
   readonly trigger?: string;
 }
 
+export interface TeamMessageOrigin {
+  readonly kind: 'team_message';
+  readonly teamId: string;
+  readonly fromAgentId: string;
+  readonly toAgentId: string;
+  readonly messageType: 'message' | 'shutdown_request' | 'shutdown_response';
+}
+
 export type PromptOrigin =
   | UserPromptOrigin
   | SkillActivationOrigin
@@ -96,7 +104,8 @@ export type PromptOrigin =
   | CronJobOrigin
   | CronMissedOrigin
   | HookResultOrigin
-  | RetryOrigin;
+  | RetryOrigin
+  | TeamMessageOrigin;
 
 export type ContextMessage = Message & {
   readonly id?: string;
