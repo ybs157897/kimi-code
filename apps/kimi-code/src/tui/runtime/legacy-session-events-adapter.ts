@@ -22,7 +22,6 @@ import {
   type TUIAgentReplaySource,
 } from './agent-replay';
 import type {
-  SessionEventsPort,
   SessionScopedEventsPort,
   TUIApprovalDisplay,
   TUIApprovalRequest,
@@ -84,29 +83,6 @@ export function createLegacySessionScopedEventsPort(
   const broker = getLegacySessionEventsBroker(session);
   return {
     subscribe: (listener) => broker.subscribeSession(listener),
-    respondToApproval: (id, response) => broker.respondToApproval(id, response),
-    respondToQuestion: (id, result) => broker.respondToQuestion(id, result),
-  };
-}
-
-/**
- * @deprecated Combined compatibility port for the pre-split TUI controller.
- * Both subscriptions share the session's single legacy broker.
- */
-export function createLegacySessionEventsPort(
-  session: LegacySessionEventsSource,
-): SessionEventsPort {
-  const broker = getLegacySessionEventsBroker(session);
-  return {
-    subscribe(listener) {
-      const unsubscribeSession = broker.subscribeSession(listener);
-      const unsubscribeAgent = broker.subscribeAllAgents(listener);
-      return () => {
-        unsubscribeSession();
-        unsubscribeAgent();
-      };
-    },
-    readReplay: (requestedAgentId = 'main') => broker.readReplay(requestedAgentId),
     respondToApproval: (id, response) => broker.respondToApproval(id, response),
     respondToQuestion: (id, result) => broker.respondToQuestion(id, result),
   };

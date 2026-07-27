@@ -643,7 +643,10 @@ export type TUIAgentEvent = TUIAgentEventPayload & {
 export type TUIAgentEventListener = (event: TUIAgentEvent) => void;
 export type UnsubscribeAgentEvents = () => void;
 
-/** Runtime-neutral live event and replay boundary for one fixed agent scope. */
+/**
+ * Runtime-neutral event chain rooted at one interactive agent. Live delivery
+ * may include descendant agents; replay is always read for the root agent.
+ */
 export interface AgentEventsPort {
   readonly sessionId: string;
   readonly agentId: string;

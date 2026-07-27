@@ -222,7 +222,7 @@ describe('TUI session runtime (bound port composition)', () => {
     await runtime.init.generateAgentsMd();
     await runtime.init.cancel();
     const btwAgentId = await runtime.btw.start();
-    await runtime.events.readReplay('worker');
+    await runtime.agentEvents.readReplay();
     await runtime.extensionCommands.list();
     await runtime.skills.activate('review', 'src/main.ts');
     await runtime.context.undoHistory();
@@ -529,7 +529,7 @@ describe('TUI session runtime (bound port composition)', () => {
     await runtime.init.generateAgentsMd();
     await runtime.init.cancel();
     const btwAgentId = await runtime.btw.start();
-    await runtime.events.readReplay();
+    await runtime.agentEvents.readReplay();
     await runtime.extensionCommands.list();
     await runtime.skills.list();
     await runtime.skills.activate('review', 'src/main.ts');

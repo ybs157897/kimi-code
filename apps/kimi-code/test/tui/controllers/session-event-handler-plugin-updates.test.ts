@@ -36,7 +36,7 @@ function makeHost() {
     },
     session: {},
     aborted: false,
-    sessionEventUnsubscribe: undefined,
+    runtimeEventUnsubscribe: undefined,
     streamingUI,
     requireSession: vi.fn(() => ({})),
     setAppState: vi.fn(),

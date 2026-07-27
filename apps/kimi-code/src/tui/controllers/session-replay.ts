@@ -86,7 +86,7 @@ export class SessionReplayRenderer {
   async hydrateFromReplay(runtime: TUISessionRuntime): Promise<boolean> {
     this.host.setAppState({ isReplaying: true });
     try {
-      const main = await runtime.events.readReplay(runtime.agentId);
+      const main = await runtime.agentEvents.readReplay();
       if (main === undefined) {
         this.host.showError('Session history is unavailable for this session.');
         return false;

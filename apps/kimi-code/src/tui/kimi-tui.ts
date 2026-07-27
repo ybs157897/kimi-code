@@ -356,7 +356,7 @@ export class KimiTUI {
   private readonly imageStore = new ImageAttachmentStore();
   private fdPath: string | null = detectFdPath();
   private fdDownloadStarted = false;
-  sessionEventUnsubscribe: (() => void) | undefined;
+  runtimeEventUnsubscribe: (() => void) | undefined;
   cancelInFlight: (() => void) | undefined;
   deferUserMessages = false;
   aborted = false;
@@ -1938,8 +1938,8 @@ export class KimiTUI {
 
   private unloadCurrentSession(reason: string): TUISessionRuntime | undefined {
     const previous = this.activeSessionBinding?.runtime;
-    this.sessionEventUnsubscribe?.();
-    this.sessionEventUnsubscribe = undefined;
+    this.runtimeEventUnsubscribe?.();
+    this.runtimeEventUnsubscribe = undefined;
     this.approvalController.cancelAll(reason);
     this.questionController.cancelAll(reason);
     this.session = undefined;
@@ -2092,8 +2092,8 @@ export class KimiTUI {
   async reloadCurrentSessionView(statusMessage: string): Promise<void> {
     const currentRuntime = this.requireSessionRuntime();
     const identity = await currentRuntime.lifecycle.getIdentity();
-    this.sessionEventUnsubscribe?.();
-    this.sessionEventUnsubscribe = undefined;
+    this.runtimeEventUnsubscribe?.();
+    this.runtimeEventUnsubscribe = undefined;
     this.approvalController.cancelAll('reloading session');
     this.questionController.cancelAll('reloading session');
 

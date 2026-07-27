@@ -21,7 +21,8 @@ import type {
   RuntimeTelemetryPort,
   RuntimeTelemetryProperties,
 } from '#/tui/runtime/runtime-telemetry-port';
-import type { SessionEventsPort } from '#/tui/runtime/session-events-port';
+import type { AgentEventsPort } from '#/tui/runtime/agent-events-port';
+import type { SessionScopedEventsPort } from '#/tui/runtime/session-events-port';
 import type { SessionControlPort } from '#/tui/runtime/session-control-port';
 import type { SessionMcpPort } from '#/tui/runtime/session-mcp-port';
 import type { SessionSkillsPort } from '#/tui/runtime/session-skills-port';
@@ -278,7 +279,8 @@ function makeTUIRuntime(
     models?: RuntimeModelCatalogPort;
     sessionExport?: RuntimeSessionExportPort;
     extensionCommands?: ExtensionCommandPort;
-    events?: SessionEventsPort;
+    sessionEvents?: SessionScopedEventsPort;
+    agentEvents?: AgentEventsPort;
     mcp?: SessionMcpPort;
     skills?: SessionSkillsPort;
     warnings?: SessionWarningsPort;
@@ -371,14 +373,21 @@ function makeTUIRuntime(
       reload: vi.fn(async () => {}),
       activate: vi.fn(async () => undefined),
     } satisfies ExtensionCommandPort);
-  const events =
-    input.events ??
+  const sessionEvents =
+    input.sessionEvents ??
     ({
       subscribe: vi.fn(() => vi.fn()),
-      readReplay: vi.fn(async () => undefined),
       respondToApproval: vi.fn(async () => {}),
       respondToQuestion: vi.fn(async () => {}),
-    } satisfies SessionEventsPort);
+    } satisfies SessionScopedEventsPort);
+  const agentEvents =
+    input.agentEvents ??
+    ({
+      sessionId: 'ses-1',
+      agentId: 'main',
+      subscribe: vi.fn(() => vi.fn()),
+      readReplay: vi.fn(async () => undefined),
+    } satisfies AgentEventsPort);
   const mcp =
     input.mcp ??
     ({
@@ -422,21 +431,24 @@ function makeTUIRuntime(
     lifecycle,
     agent,
     expertTeam,
-    events,
+    sessionEvents,
+    agentEvents,
     mcp,
     extensionCommands,
     skills,
     warnings,
     workspace,
   } as TUISessionRuntime;
-  const bindSession = vi.fn((sessionId: string, _agentId?: string) =>
+  const bindSession = vi.fn((sessionId: string, agentId = 'main') =>
     sessionId === sessionRuntime.sessionId
       ? sessionRuntime
       : ({
           ...sessionRuntime,
           sessionId,
+          agentId,
           lifecycle: sessionControl.session(sessionId),
-          agent: sessionControl.agent(sessionId, 'main'),
+          agent: sessionControl.agent(sessionId, agentId),
+          agentEvents: { ...agentEvents, sessionId, agentId },
         } as TUISessionRuntime),
   );
   const runtime = {
@@ -481,7 +493,8 @@ function makeTUIRuntime(
     sessionControl,
     models,
     sessionRuntime,
-    events,
+    sessionEvents,
+    agentEvents,
     mcp,
     extensionCommands,
     skills,
@@ -851,19 +864,29 @@ describe('KimiTUI startup', () => {
   it('owns event subscriptions through the active session runtime across switching and close', async () => {
     const session = makeSession();
     const nextSession = makeSession({ id: 'ses-2' });
-    const firstUnsubscribe = vi.fn();
-    const secondUnsubscribe = vi.fn();
-    const events = {
+    const firstSessionUnsubscribe = vi.fn();
+    const secondSessionUnsubscribe = vi.fn();
+    const firstAgentUnsubscribe = vi.fn();
+    const secondAgentUnsubscribe = vi.fn();
+    const sessionEvents = {
       subscribe: vi
         .fn()
-        .mockReturnValueOnce(firstUnsubscribe)
-        .mockReturnValueOnce(secondUnsubscribe),
-      readReplay: vi.fn(async () => undefined),
+        .mockReturnValueOnce(firstSessionUnsubscribe)
+        .mockReturnValueOnce(secondSessionUnsubscribe),
       respondToApproval: vi.fn(async () => {}),
       respondToQuestion: vi.fn(async () => {}),
-    } satisfies SessionEventsPort;
+    } satisfies SessionScopedEventsPort;
+    const agentEvents = {
+      sessionId: 'ses-1',
+      agentId: 'main',
+      subscribe: vi
+        .fn()
+        .mockReturnValueOnce(firstAgentUnsubscribe)
+        .mockReturnValueOnce(secondAgentUnsubscribe),
+      readReplay: vi.fn(async () => undefined),
+    } satisfies AgentEventsPort;
     const harness = makeHarness(session);
-    const { runtime } = makeTUIRuntime({ events });
+    const { runtime } = makeTUIRuntime({ sessionEvents, agentEvents });
     const driver = makeDriver(harness, {
       ...makeStartupInput(),
       runtime,
@@ -873,16 +896,20 @@ describe('KimiTUI startup', () => {
     driver.sessionEventHandler.startSubscription();
     await driver.switchToSession(nextSession, 'Session switched.');
 
-    expect(firstUnsubscribe).toHaveBeenCalledOnce();
-    expect(events.subscribe).toHaveBeenCalledTimes(2);
+    expect(firstSessionUnsubscribe).toHaveBeenCalledOnce();
+    expect(firstAgentUnsubscribe).toHaveBeenCalledOnce();
+    expect(sessionEvents.subscribe).toHaveBeenCalledTimes(2);
+    expect(agentEvents.subscribe).toHaveBeenCalledTimes(2);
     expect(session.onEvent).not.toHaveBeenCalled();
     expect(session.setApprovalHandler).not.toHaveBeenCalled();
     expect(session.setQuestionHandler).not.toHaveBeenCalled();
 
     await driver.closeSession('test close');
 
-    expect(firstUnsubscribe).toHaveBeenCalledOnce();
-    expect(secondUnsubscribe).toHaveBeenCalledOnce();
+    expect(firstSessionUnsubscribe).toHaveBeenCalledOnce();
+    expect(firstAgentUnsubscribe).toHaveBeenCalledOnce();
+    expect(secondSessionUnsubscribe).toHaveBeenCalledOnce();
+    expect(secondAgentUnsubscribe).toHaveBeenCalledOnce();
   });
 
   it('maps runtime warning severities after startup when the raw session is unavailable', async () => {

@@ -62,10 +62,10 @@ import type {
 import type { TUIState } from '../tui-state';
 import { createGoal as startGoalCommand } from '../commands/goal';
 import type {
-  SessionEventsPort,
-  TUISessionEvent,
+  SessionScopedEventsPort,
   TUISessionExpertTeamChangedEvent,
   TUISessionMetadataChangedEvent,
+  TUISessionScopedEvent,
 } from '../runtime/session-events-port';
 import type { UpcomingGoal } from '../runtime/session-goal-queue-port';
 import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
@@ -100,14 +100,14 @@ type TurnStepInterruptedEvent = AgentEventOf<'turn.step.interrupted'>;
 type TurnStepStartedEvent = AgentEventOf<'turn.step.started'>;
 type WarningEvent = AgentEventOf<'warning'>;
 
-function sessionEventId(event: TUISessionEvent): string {
+function sessionEventId(event: TUISessionScopedEvent): string {
   return event.type === 'interaction.requested' ? event.interaction.sessionId : event.sessionId;
 }
 
 export interface SessionEventHost {
   state: TUIState;
   aborted: boolean;
-  sessionEventUnsubscribe: (() => void) | undefined;
+  runtimeEventUnsubscribe: (() => void) | undefined;
   readonly streamingUI: StreamingUIController;
 
   requireSessionRuntime(): TUISessionRuntime;
@@ -230,15 +230,28 @@ export class SessionEventHandler {
       if (!this.isActiveSessionRuntime(sessionRuntime)) return;
       host.sendQueuedMessage(item);
     };
-    host.sessionEventUnsubscribe?.();
+    host.runtimeEventUnsubscribe?.();
     const mcpOAuthOpener = new McpOAuthAuthorizationUrlOpener(openUrl);
-    const { events, sessionId } = sessionRuntime;
-    host.sessionEventUnsubscribe = events.subscribe((event) => {
+    const { sessionEvents, agentEvents, sessionId } = sessionRuntime;
+    const unsubscribeSession = sessionEvents.subscribe((event) => {
       if (host.aborted) return;
       if (!this.isActiveSessionRuntime(sessionRuntime)) return;
       if (sessionEventId(event) !== sessionId) return;
-      this.handleSessionEvent(event, events, sendQueued, mcpOAuthOpener);
+      this.handleSessionScopedEvent(event, sessionEvents);
     });
+    const unsubscribeAgent = agentEvents.subscribe((event) => {
+      if (host.aborted) return;
+      if (!this.isActiveSessionRuntime(sessionRuntime)) return;
+      if (event.sessionId !== sessionId) return;
+      if (event.type === 'tool.progress') {
+        mcpOAuthOpener.handleToolProgress(event);
+      }
+      this.handleEvent(event, sendQueued);
+    });
+    host.runtimeEventUnsubscribe = () => {
+      unsubscribeSession();
+      unsubscribeAgent();
+    };
     void this.syncMcpServerStatusSnapshot(sessionRuntime);
   }
 
@@ -341,11 +354,9 @@ export class SessionEventHandler {
   // Private handlers
   // ---------------------------------------------------------------------------
 
-  private handleSessionEvent(
-    event: TUISessionEvent,
-    events: SessionEventsPort,
-    sendQueued: (item: QueuedMessage) => void,
-    mcpOAuthOpener: McpOAuthAuthorizationUrlOpener,
+  private handleSessionScopedEvent(
+    event: TUISessionScopedEvent,
+    events: SessionScopedEventsPort,
   ): void {
     if (event.type === 'session.metadata.changed') {
       this.handleSessionMetadataChanged(event);
@@ -362,50 +373,48 @@ export class SessionEventHandler {
     if (event.type === 'interaction.resolved') {
       // Resolution is an acknowledgement only. The UI controller advances
       // when its local user response resolves, never from a runtime echo.
-      return;
     }
-    if (event.type === 'tool.progress') {
-      mcpOAuthOpener.handleToolProgress(event);
-    }
-    this.handleEvent(event, sendQueued);
   }
 
   private handleInteractionRequested(
     interaction: Extract<
-      TUISessionEvent,
+      TUISessionScopedEvent,
       { type: 'interaction.requested' }
     >['interaction'],
-    events: SessionEventsPort,
+    events: SessionScopedEventsPort,
   ): void {
     const response =
       interaction.kind === 'approval'
         ? this.host
             .requestApprovalResponse(interaction.request)
             .then((result) => {
-              if (!this.isActiveEventPort(events, interaction.sessionId)) return;
+              if (!this.isActiveSessionEventsPort(events, interaction.sessionId)) return;
               this.host.recordApprovalResponse(interaction.request, result);
               return events.respondToApproval(interaction.id, result);
             })
         : this.host
             .requestQuestionResponse(interaction.request)
             .then((result) =>
-              this.isActiveEventPort(events, interaction.sessionId)
+              this.isActiveSessionEventsPort(events, interaction.sessionId)
                 ? events.respondToQuestion(interaction.id, result)
                 : undefined,
             );
 
     void response.catch((error: unknown) => {
-      if (!this.isActiveEventPort(events, interaction.sessionId)) return;
+      if (!this.isActiveSessionEventsPort(events, interaction.sessionId)) return;
       const kind = interaction.kind === 'approval' ? 'approval' : 'question';
       this.host.showError(`Failed to respond to ${kind}: ${formatErrorMessage(error)}`);
     });
   }
 
-  private isActiveEventPort(events: SessionEventsPort, sessionId: string): boolean {
+  private isActiveSessionEventsPort(
+    events: SessionScopedEventsPort,
+    sessionId: string,
+  ): boolean {
     if (this.host.aborted) return false;
     try {
       const runtime = this.host.requireSessionRuntime();
-      return runtime.sessionId === sessionId && runtime.events === events;
+      return runtime.sessionId === sessionId && runtime.sessionEvents === events;
     } catch {
       return false;
     }

@@ -2,12 +2,13 @@ import type { KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
 import type { KimiV2Runtime } from '@moonshot-ai/kimi-code-sdk/v2';
 
 import type { ExtensionCommandPort } from './extension-command-port';
+import { createKlientAgentEventsPort } from './klient-agent-events-adapter';
 import { createKlientExtensionCommandPort } from './klient-extension-command-adapter';
 import { createKlientSessionBtwPort } from './klient-session-btw-adapter';
 import { createKlientSessionContextControlPort } from './klient-session-context-control-adapter';
 import { createKlientSessionContextViewPort } from './klient-session-context-view-adapter';
 import { createKlientSessionControlPort } from './klient-session-control-adapter';
-import { createKlientSessionEventsPort } from './klient-session-events-adapter';
+import { createKlientSessionScopedEventsPort } from './klient-session-events-adapter';
 import { createKlientSessionExpertTeamPort } from './klient-session-expert-team-adapter';
 import { createKlientSessionGoalQueuePort } from './klient-session-goal-queue-adapter';
 import { createKlientSessionInitPort } from './klient-session-init-adapter';
@@ -20,11 +21,12 @@ import { createKlientSessionSwarmPort } from './klient-session-swarm-adapter';
 import { createKlientSessionWarningsPort } from './klient-session-warnings-adapter';
 import { createKlientSessionWorkspacePort } from './klient-session-workspace-adapter';
 import { createLegacyExtensionCommandPort } from './legacy-extension-command-adapter';
+import { createLegacySessionAgentEventsPort } from './legacy-agent-events-adapter';
 import { createLegacySessionBtwPort } from './legacy-session-btw-adapter';
 import { createLegacySessionContextControlPort } from './legacy-session-context-control-adapter';
 import { createLegacySessionContextViewPort } from './legacy-session-context-view-adapter';
 import { createLegacySessionControlPort } from './legacy-session-control-adapter';
-import { createLegacySessionEventsPort } from './legacy-session-events-adapter';
+import { createLegacySessionScopedEventsPort } from './legacy-session-events-adapter';
 import { createLegacySessionExpertTeamPort } from './legacy-session-expert-team-adapter';
 import { createLegacySessionGoalQueuePort } from './legacy-session-goal-queue-adapter';
 import { createLegacySessionInitPort } from './legacy-session-init-adapter';
@@ -44,7 +46,8 @@ import {
 } from './session-control-port';
 import type { SessionContextControlPort } from './session-context-control-port';
 import type { SessionContextViewPort } from './session-context-view-port';
-import type { SessionEventsPort } from './session-events-port';
+import type { AgentEventsPort } from './agent-events-port';
+import type { SessionScopedEventsPort } from './session-events-port';
 import type { SessionExpertTeamPort } from './session-expert-team-port';
 import type { SessionGoalQueuePort } from './session-goal-queue-port';
 import type { SessionInitPort } from './session-init-port';
@@ -70,7 +73,8 @@ export interface TUISessionRuntime {
   readonly btw: SessionBtwPort;
   readonly context: SessionContextControlPort;
   readonly contextView: SessionContextViewPort;
-  readonly events: SessionEventsPort;
+  readonly sessionEvents: SessionScopedEventsPort;
+  readonly agentEvents: AgentEventsPort;
   readonly goalQueue: SessionGoalQueuePort;
   readonly mcp: SessionMcpPort;
   readonly pluginCommands: SessionPluginCommandsPort;
@@ -101,7 +105,8 @@ export function createLegacyTUISessionRuntime(
     btw: createLegacySessionBtwPort(session),
     context: createLegacySessionContextControlPort(session),
     contextView: createLegacySessionContextViewPort(harness, session, agentId),
-    events: createLegacySessionEventsPort(session),
+    sessionEvents: createLegacySessionScopedEventsPort(session),
+    agentEvents: createLegacySessionAgentEventsPort(session, agentId),
     goalQueue: createLegacySessionGoalQueuePort(session),
     mcp: createLegacySessionMcpPort(session),
     pluginCommands: createLegacySessionPluginCommandsPort(session),
@@ -134,7 +139,8 @@ export function createKlientTUISessionRuntime(
     btw: createKlientSessionBtwPort(session),
     context: createKlientSessionContextControlPort(session, agentId),
     contextView: createKlientSessionContextViewPort(session, agentId),
-    events: createKlientSessionEventsPort(session, sessionId, agentId),
+    sessionEvents: createKlientSessionScopedEventsPort(session, sessionId, agentId),
+    agentEvents: createKlientAgentEventsPort(session, sessionId, agentId),
     goalQueue: createKlientSessionGoalQueuePort(session),
     mcp: createKlientSessionMcpPort(session, agentId),
     pluginCommands: createKlientSessionPluginCommandsPort(

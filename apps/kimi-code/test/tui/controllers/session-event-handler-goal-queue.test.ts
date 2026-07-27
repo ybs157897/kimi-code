@@ -35,11 +35,19 @@ function fakeGoalSnapshot(objective: string, status: 'active' | 'blocked' | 'pau
 
 function makeHost(options: { createGoalRejects?: boolean } = {}) {
   let eventListener: ((event: unknown) => void) | undefined;
-  const events = {
+  const agentEvents = {
+    sessionId: 's1',
+    agentId: 'main',
+    subscribe: vi.fn(() => vi.fn()),
+    readReplay: vi.fn(async () => undefined),
+  };
+  const sessionEvents = {
     subscribe: vi.fn((listener: (event: unknown) => void) => {
       eventListener = listener;
       return vi.fn();
     }),
+    respondToApproval: vi.fn(async () => {}),
+    respondToQuestion: vi.fn(async () => {}),
   };
   const agent = {
     prompt: vi.fn(async (_input: string) => undefined),
@@ -58,7 +66,8 @@ function makeHost(options: { createGoalRejects?: boolean } = {}) {
     sessionId: 's1',
     agentId: 'main',
     agent,
-    events,
+    sessionEvents,
+    agentEvents,
     goalQueue,
     mcp: { list: vi.fn(async () => []) },
   };
@@ -84,7 +93,7 @@ function makeHost(options: { createGoalRejects?: boolean } = {}) {
     },
     session: undefined,
     aborted: false,
-    sessionEventUnsubscribe: undefined,
+    runtimeEventUnsubscribe: undefined,
     streamingUI: {
       setTurnId: vi.fn(),
       flushNow: vi.fn(),

@@ -1,4 +1,3 @@
-import type { TUIAgentEvent, TUIAgentReplay } from './agent-events-port';
 import type { SessionExpertTeamSnapshot } from './session-expert-team-port';
 
 export type TUIWireValue =
@@ -213,32 +212,12 @@ export type TUISessionScopedEvent =
   | TUIInteractionRequestedEvent
   | TUIInteractionResolvedEvent;
 
-/**
- * @deprecated Temporary mixed-event compatibility for controllers that have
- * not yet moved their agent branches to AgentEventsPort.
- */
-export type TUISessionEvent = TUISessionScopedEvent | TUIAgentEvent;
-
-/** @deprecated Use TUISessionScopedEventListener for SessionScopedEventsPort. */
-export type TUISessionEventListener = (event: TUISessionEvent) => void;
 export type TUISessionScopedEventListener = (event: TUISessionScopedEvent) => void;
 export type UnsubscribeSessionEvents = () => void;
 
 /** Runtime-neutral session event and interaction boundary consumed by the TUI. */
 export interface SessionScopedEventsPort {
   subscribe(listener: TUISessionScopedEventListener): UnsubscribeSessionEvents;
-  respondToApproval(id: string, response: TUIApprovalResponse): Promise<void>;
-  respondToQuestion(id: string, result: TUIQuestionResult): Promise<void>;
-}
-
-/**
- * @deprecated Transitional combined surface for controllers that have not yet
- * split session and agent subscriptions. New code uses SessionScopedEventsPort
- * with AgentEventsPort.
- */
-export interface SessionEventsPort {
-  subscribe(listener: TUISessionEventListener): UnsubscribeSessionEvents;
-  readReplay(agentId?: string): Promise<TUIAgentReplay | undefined>;
   respondToApproval(id: string, response: TUIApprovalResponse): Promise<void>;
   respondToQuestion(id: string, result: TUIQuestionResult): Promise<void>;
 }

@@ -19,20 +19,16 @@ import type {
 } from '@moonshot-ai/kimi-code-sdk';
 
 import { createKlientAgentEventsPort } from '#/tui/runtime/klient-agent-events-adapter';
+import { createKlientSessionScopedEventsPort } from '#/tui/runtime/klient-session-events-adapter';
 import {
-  createKlientSessionEventsPort,
-  createKlientSessionScopedEventsPort,
-} from '#/tui/runtime/klient-session-events-adapter';
-import { createLegacyAgentEventsPort } from '#/tui/runtime/legacy-agent-events-adapter';
-import {
-  createLegacySessionEventsPort,
-  createLegacySessionScopedEventsPort,
-} from '#/tui/runtime/legacy-session-events-adapter';
+  createLegacyAgentEventsPort,
+  createLegacySessionAgentEventsPort,
+} from '#/tui/runtime/legacy-agent-events-adapter';
+import { createLegacySessionScopedEventsPort } from '#/tui/runtime/legacy-session-events-adapter';
 import type { TUIAgentEvent } from '#/tui/runtime/agent-events-port';
 import type {
   TUIApprovalResponse,
   TUIQuestionResult,
-  TUISessionEvent,
   TUISessionScopedEvent,
 } from '#/tui/runtime/session-events-port';
 
@@ -117,19 +113,13 @@ describe('legacy event ports (shared session broker)', () => {
     ]);
   });
 
-  it('keeps the legacy combined compatibility factory on the shared broker', () => {
+  it('routes descendant events through the interactive legacy agent chain', () => {
     const runtime = legacyRuntime();
-    const events: TUISessionEvent[] = [];
-    createLegacySessionEventsPort(runtime.session).subscribe((event) =>
+    const events: TUIAgentEvent[] = [];
+    createLegacySessionAgentEventsPort(runtime.session, 'main').subscribe((event) =>
       events.push(event),
     );
 
-    runtime.emit({
-      type: 'session.meta.updated',
-      sessionId: 'session-1',
-      agentId: 'main',
-      title: 'Combined session',
-    });
     runtime.emit({
       type: 'assistant.delta',
       sessionId: 'session-1',
@@ -139,9 +129,14 @@ describe('legacy event ports (shared session broker)', () => {
     });
 
     expect(runtime.session.onEvent).toHaveBeenCalledOnce();
-    expect(events.map((event) => event.type)).toEqual([
-      'session.metadata.changed',
-      'assistant.delta',
+    expect(events).toEqual([
+      {
+        type: 'assistant.delta',
+        sessionId: 'session-1',
+        agentId: 'worker',
+        turnId: 2,
+        delta: 'combined reply',
+      },
     ]);
   });
 
@@ -446,30 +441,6 @@ describe('Klient event ports (independent scoped streams)', () => {
       throw new Error('expected expert-team event');
     }
     expect(events[0].snapshot?.members?.[0]).not.toBe(member);
-  });
-
-  it('keeps the Klient combined compatibility factory on one session stream', () => {
-    const runtime = klientRuntime();
-    const events: TUISessionEvent[] = [];
-    createKlientSessionEventsPort(
-      runtime.sessionFacade,
-      'session-2',
-      'worker',
-    ).subscribe((event) => events.push(event));
-
-    runtime.sessionEvents.emit('metadata.changed', { changed: ['updatedAt'] });
-    runtime.agentEvents('worker').emit('assistant.delta', {
-      type: 'assistant.delta',
-      turnId: 3,
-      delta: 'combined reply',
-    });
-
-    expect(runtime.sessionEvents.listenerCount('metadata.changed')).toBe(1);
-    expect(runtime.listInteractions).toHaveBeenCalledOnce();
-    expect(events.map((event) => event.type)).toEqual([
-      'session.metadata.changed',
-      'assistant.delta',
-    ]);
   });
 
   it('routes two Klient agent streams independently without session subscriptions', () => {
@@ -886,7 +857,7 @@ function klientRuntime(
       list: listInteractions,
       respond: vi.fn(async () => undefined),
     },
-  } as unknown as Parameters<typeof createKlientSessionEventsPort>[0];
+  } as unknown as Parameters<typeof createKlientSessionScopedEventsPort>[0];
 
   return {
     sessionFacade,

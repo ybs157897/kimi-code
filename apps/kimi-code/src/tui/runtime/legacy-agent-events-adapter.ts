@@ -17,3 +17,21 @@ export function createLegacyAgentEventsPort(
     readReplay: () => broker.readReplay(agentId),
   };
 }
+
+/**
+ * Bind the interactive legacy agent chain. Live events include descendants so
+ * the TUI can render child-agent progress, while replay remains rooted at the
+ * interactive agent.
+ */
+export function createLegacySessionAgentEventsPort(
+  session: LegacySessionEventsSource,
+  agentId = 'main',
+): AgentEventsPort {
+  const broker = getLegacySessionEventsBroker(session);
+  return {
+    sessionId: session.id,
+    agentId,
+    subscribe: (listener) => broker.subscribeAllAgents(listener),
+    readReplay: () => broker.readReplay(agentId),
+  };
+}

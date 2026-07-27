@@ -1,7 +1,6 @@
 import type { KimiV2Runtime } from '@moonshot-ai/kimi-code-sdk/v2';
 
 import type {
-  SessionEventsPort,
   SessionScopedEventsPort,
   TUIApprovalDisplay,
   TUIApprovalInteraction,
@@ -14,7 +13,6 @@ import type {
   TUISessionScopedEventListener,
   TUIWireValue,
 } from './session-events-port';
-import { createKlientAgentEventsPort } from './klient-agent-events-adapter';
 import { projectKlientExpertTeamSnapshot } from './klient-session-expert-team-adapter';
 
 type KlientFacade = KimiV2Runtime['klient'];
@@ -153,35 +151,6 @@ export function createKlientSessionScopedEventsPort(
       session.approvals.decide(id, copyApprovalResponse(response)),
     respondToQuestion: (id, result) =>
       session.questions.answer(id, copyQuestionResult(result)),
-  };
-}
-
-/**
- * @deprecated Combined compatibility port for the pre-split TUI controller.
- * Its session side is the same scoped adapter used by new consumers.
- */
-export function createKlientSessionEventsPort(
-  session: KlientSessionFacade,
-  sessionId: string,
-  agentId = 'main',
-): SessionEventsPort {
-  const sessionEvents = createKlientSessionScopedEventsPort(session, sessionId, agentId);
-  const agentEvents = createKlientAgentEventsPort(session, sessionId, agentId);
-  return {
-    subscribe(listener) {
-      const unsubscribeSession = sessionEvents.subscribe(listener);
-      const unsubscribeAgent = agentEvents.subscribe(listener);
-      return () => {
-        unsubscribeSession();
-        unsubscribeAgent();
-      };
-    },
-    readReplay(requestedAgentId = agentId) {
-      if (requestedAgentId === agentId) return agentEvents.readReplay();
-      return createKlientAgentEventsPort(session, sessionId, requestedAgentId).readReplay();
-    },
-    respondToApproval: (id, response) => sessionEvents.respondToApproval(id, response),
-    respondToQuestion: (id, result) => sessionEvents.respondToQuestion(id, result),
   };
 }
 

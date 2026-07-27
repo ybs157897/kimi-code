@@ -64,9 +64,13 @@ import type {
 } from '#/tui/runtime/session-control-port';
 import type { ExtensionCommandPort } from '#/tui/runtime/extension-command-port';
 import type {
-  TUISessionEvent,
-  TUISessionEventListener,
+  TUISessionScopedEvent,
+  TUISessionScopedEventListener,
 } from '#/tui/runtime/session-events-port';
+import type {
+  TUIAgentEvent,
+  TUIAgentEventListener,
+} from '#/tui/runtime/agent-events-port';
 import type { McpServerView, SessionMcpPort } from '#/tui/runtime/session-mcp-port';
 import type { SessionSkillsPort } from '#/tui/runtime/session-skills-port';
 import type {
@@ -584,19 +588,32 @@ function makeEventRuntime(
     sessionExport?: RuntimeSessionExportPort;
   } = {},
 ) {
-  let listener: TUISessionEventListener | undefined;
-  const listeners: TUISessionEventListener[] = [];
-  const events = {
-    subscribe: vi.fn((nextListener: TUISessionEventListener) => {
-      listener = nextListener;
-      listeners.push(nextListener);
+  let sessionListener: TUISessionScopedEventListener | undefined;
+  let agentListener: TUIAgentEventListener | undefined;
+  const sessionListeners: TUISessionScopedEventListener[] = [];
+  const agentListeners: TUIAgentEventListener[] = [];
+  const sessionEvents = {
+    subscribe: vi.fn((nextListener: TUISessionScopedEventListener) => {
+      sessionListener = nextListener;
+      sessionListeners.push(nextListener);
       return vi.fn(() => {
-        if (listener === nextListener) listener = undefined;
+        if (sessionListener === nextListener) sessionListener = undefined;
+      });
+    }),
+    respondToApproval: vi.fn(async () => {}),
+    respondToQuestion: vi.fn(async () => {}),
+  };
+  const agentEvents = {
+    sessionId: 'ses-1',
+    agentId: 'main',
+    subscribe: vi.fn((nextListener: TUIAgentEventListener) => {
+      agentListener = nextListener;
+      agentListeners.push(nextListener);
+      return vi.fn(() => {
+        if (agentListener === nextListener) agentListener = undefined;
       });
     }),
     readReplay: vi.fn(async () => undefined),
-    respondToApproval: vi.fn(async () => {}),
-    respondToQuestion: vi.fn(async () => {}),
   };
   const agent = input.agent ?? makeMessageAgentControl();
   const sessionControl =
@@ -768,7 +785,8 @@ function makeEventRuntime(
         btw,
         context,
         contextView,
-        events,
+        sessionEvents,
+        agentEvents: { ...agentEvents, sessionId, agentId },
         goalQueue,
         mcp,
         pluginCommands,
@@ -785,7 +803,8 @@ function makeEventRuntime(
   return {
     runtime,
     agent,
-    events,
+    sessionEvents,
+    agentEvents,
     mcp,
     pluginCommands,
     refresh,
@@ -793,10 +812,19 @@ function makeEventRuntime(
     plugins,
     workspace,
     sessionExport,
-    listeners,
-    emit(event: TUISessionEvent): void {
-      if (listener === undefined) throw new Error('Expected an active runtime event subscription.');
-      listener(event);
+    sessionListeners,
+    agentListeners,
+    emitSession(event: TUISessionScopedEvent): void {
+      if (sessionListener === undefined) {
+        throw new Error('Expected an active session event subscription.');
+      }
+      sessionListener(event);
+    },
+    emitAgent(event: TUIAgentEvent): void {
+      if (agentListener === undefined) {
+        throw new Error('Expected an active agent event subscription.');
+      }
+      agentListener(event);
     },
   };
 }
@@ -1661,15 +1689,24 @@ command = "vim"
     driver.sessionEventHandler.startSubscription();
     await Promise.resolve();
 
-    expect(eventRuntime.events.subscribe).toHaveBeenCalledOnce();
+    expect(eventRuntime.sessionEvents.subscribe).toHaveBeenCalledOnce();
+    expect(eventRuntime.agentEvents.subscribe).toHaveBeenCalledOnce();
     expect(mcp.list).toHaveBeenCalledOnce();
     expect(session.listMcpServers).not.toHaveBeenCalled();
-    const subscribeOrder = eventRuntime.events.subscribe.mock.invocationCallOrder[0];
+    const sessionSubscribeOrder =
+      eventRuntime.sessionEvents.subscribe.mock.invocationCallOrder[0];
+    const agentSubscribeOrder =
+      eventRuntime.agentEvents.subscribe.mock.invocationCallOrder[0];
     const snapshotOrder = mcp.list.mock.invocationCallOrder[0];
-    if (subscribeOrder === undefined || snapshotOrder === undefined) {
+    if (
+      sessionSubscribeOrder === undefined ||
+      agentSubscribeOrder === undefined ||
+      snapshotOrder === undefined
+    ) {
       throw new Error('Expected MCP status sync to subscribe and fetch a snapshot.');
     }
-    expect(subscribeOrder).toBeLessThan(snapshotOrder);
+    expect(sessionSubscribeOrder).toBeLessThan(snapshotOrder);
+    expect(agentSubscribeOrder).toBeLessThan(snapshotOrder);
     const transcript = renderTranscript(driver);
     expect(transcript).toContain('MCP server "local-tools" connected');
     expect(transcript).toContain('2 tools (stdio)');
@@ -2155,7 +2192,7 @@ command = "vim"
     const { driver } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
     driver.sessionEventHandler.startSubscription();
 
-    eventRuntime.emit({
+    eventRuntime.emitSession({
       type: 'session.metadata.changed',
       sessionId: 'ses-other',
       changed: ['title'],
@@ -2163,13 +2200,30 @@ command = "vim"
     });
     expect(driver.state.appState.sessionTitle).not.toBe('Wrong session');
 
-    eventRuntime.emit({
+    eventRuntime.emitSession({
       type: 'session.metadata.changed',
       sessionId: 'ses-1',
       changed: ['title'],
       title: 'Active session',
     });
     expect(driver.state.appState.sessionTitle).toBe('Active session');
+  });
+
+  it('routes active agent events through the agent event chain', async () => {
+    const eventRuntime = makeEventRuntime();
+    const { driver } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
+    driver.sessionEventHandler.startSubscription();
+    driver.state.appState.streamingPhase = 'idle';
+
+    eventRuntime.emitAgent({
+      type: 'turn.started',
+      sessionId: 'ses-1',
+      agentId: 'main',
+      turnId: 1,
+      origin: { kind: 'user' },
+    });
+
+    expect(driver.state.appState.streamingPhase).toBe('waiting');
   });
 
   it('ignores queued dispatch from a stale session binding after switching', async () => {
@@ -2182,7 +2236,7 @@ command = "vim"
       eventRuntime.runtime,
     );
     driver.sessionEventHandler.startSubscription();
-    const staleListener = eventRuntime.listeners[0];
+    const staleListener = eventRuntime.agentListeners[0];
     if (staleListener === undefined) throw new Error('Expected the initial event listener.');
 
     await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
@@ -2195,7 +2249,7 @@ command = "vim"
       sessionId: 'ses-1',
       turnId: 1,
       reason: 'completed',
-    } as unknown as TUISessionEvent);
+    });
 
     expect(mainAgent.prompt).not.toHaveBeenCalled();
     expect(driver.state.queuedMessages).toEqual([
@@ -2214,7 +2268,7 @@ command = "vim"
     );
     driver.sessionEventHandler.startSubscription();
 
-    eventRuntime.emit({
+    eventRuntime.emitSession({
       type: 'interaction.requested',
       interaction: {
         id: 'approval-envelope',
@@ -2241,12 +2295,12 @@ command = "vim"
     (driver.state.editorContainer.children[0] as ApprovalPanelComponent).handleInput('1');
 
     await vi.waitFor(() => {
-      expect(eventRuntime.events.respondToApproval).toHaveBeenCalledWith(
+      expect(eventRuntime.sessionEvents.respondToApproval).toHaveBeenCalledWith(
         'approval-envelope',
         expect.objectContaining({ decision: 'approved' }),
       );
     });
-    expect(eventRuntime.events.respondToApproval).not.toHaveBeenCalledWith(
+    expect(eventRuntime.sessionEvents.respondToApproval).not.toHaveBeenCalledWith(
       'tool-call-id',
       expect.anything(),
     );
@@ -2258,7 +2312,7 @@ command = "vim"
     const { driver } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
     driver.sessionEventHandler.startSubscription();
 
-    eventRuntime.emit({
+    eventRuntime.emitSession({
       type: 'interaction.requested',
       interaction: {
         id: 'question-envelope',
@@ -2290,14 +2344,14 @@ command = "vim"
     dialog.handleInput('1');
 
     await vi.waitFor(() => {
-      expect(eventRuntime.events.respondToQuestion).toHaveBeenCalledWith(
+      expect(eventRuntime.sessionEvents.respondToQuestion).toHaveBeenCalledWith(
         'question-envelope',
         expect.objectContaining({
           answers: { 'Deploy now?': 'Yes' },
         }),
       );
     });
-    expect(eventRuntime.events.respondToQuestion).not.toHaveBeenCalledWith(
+    expect(eventRuntime.sessionEvents.respondToQuestion).not.toHaveBeenCalledWith(
       'question-tool-call',
       expect.anything(),
     );
@@ -2318,7 +2372,7 @@ command = "vim"
       },
     };
 
-    eventRuntime.emit({
+    eventRuntime.emitSession({
       type: 'interaction.requested',
       interaction: {
         id: 'approval-first',
@@ -2328,7 +2382,7 @@ command = "vim"
         request: { ...request, toolCallId: 'tool-first' },
       },
     });
-    eventRuntime.emit({
+    eventRuntime.emitSession({
       type: 'interaction.requested',
       interaction: {
         id: 'approval-second',
@@ -2344,7 +2398,7 @@ command = "vim"
     });
     const firstPanel = driver.state.editorContainer.children[0];
 
-    eventRuntime.emit({
+    eventRuntime.emitSession({
       type: 'interaction.resolved',
       id: 'approval-first',
       sessionId: 'ses-1',
@@ -2354,11 +2408,11 @@ command = "vim"
     await Promise.resolve();
 
     expect(driver.state.editorContainer.children[0]).toBe(firstPanel);
-    expect(eventRuntime.events.respondToApproval).not.toHaveBeenCalled();
+    expect(eventRuntime.sessionEvents.respondToApproval).not.toHaveBeenCalled();
 
     (firstPanel as ApprovalPanelComponent).handleInput('3');
     await vi.waitFor(() => {
-      expect(eventRuntime.events.respondToApproval).toHaveBeenCalledWith(
+      expect(eventRuntime.sessionEvents.respondToApproval).toHaveBeenCalledWith(
         'approval-first',
         expect.objectContaining({ decision: 'rejected' }),
       );
@@ -2367,7 +2421,7 @@ command = "vim"
 
     (driver.state.editorContainer.children[0] as ApprovalPanelComponent).handleInput('3');
     await vi.waitFor(() => {
-      expect(eventRuntime.events.respondToApproval).toHaveBeenCalledWith(
+      expect(eventRuntime.sessionEvents.respondToApproval).toHaveBeenCalledWith(
         'approval-second',
         expect.objectContaining({ decision: 'rejected' }),
       );
@@ -6384,7 +6438,7 @@ command = "vim"
     try {
       process.title = 'kimi-test-runner';
       driver.sessionEventHandler.startSubscription();
-      eventRuntime.emit({
+      eventRuntime.emitSession({
         type: 'session.metadata.changed',
         sessionId: 'ses-1',
         changed: ['title'],
