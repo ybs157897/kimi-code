@@ -9,10 +9,10 @@
 import type { Component } from '@moonshot-ai/pi-tui';
 import { truncateToWidth, visibleWidth } from '@moonshot-ai/pi-tui';
 import chalk from 'chalk';
-import { effectiveModelAlias } from '@moonshot-ai/kimi-code-sdk';
 
 import { ALL_TIPS, type ToolbarTip } from '#/tui/constant/tips';
 import { isRainbowDancing, renderDanceFooterModel } from '#/tui/easter-eggs/dance';
+import { effectiveRuntimeModelCatalogModel } from '#/tui/runtime/runtime-model-catalog-port';
 import { currentTheme } from '#/tui/theme';
 import type { ColorPalette } from '#/tui/theme/colors';
 import type { AppState } from '#/tui/types';
@@ -137,7 +137,8 @@ function formatBadgeElapsed(ms: number): string {
 
 function modelDisplayName(state: AppState): string {
   const model = state.availableModels[state.model];
-  const effective = model === undefined ? undefined : effectiveModelAlias(model);
+  const effective =
+    model === undefined ? undefined : effectiveRuntimeModelCatalogModel(model);
   return effective?.displayName ?? effective?.model ?? state.model;
 }
 
@@ -274,7 +275,10 @@ export class FooterComponent implements Component {
     if (model) {
       const effort = state.thinkingEffort;
       const rawCurrentModel = state.availableModels[state.model];
-      const currentModel = rawCurrentModel === undefined ? undefined : effectiveModelAlias(rawCurrentModel);
+      const currentModel =
+        rawCurrentModel === undefined
+          ? undefined
+          : effectiveRuntimeModelCatalogModel(rawCurrentModel);
       // Only effort-capable models (those declaring support_efforts) show the
       // concrete effort; legacy boolean models keep the plain "thinking" suffix.
       const hasEfforts = (currentModel?.supportEfforts?.length ?? 0) > 0;

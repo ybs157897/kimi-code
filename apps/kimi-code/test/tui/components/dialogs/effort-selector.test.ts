@@ -1,6 +1,14 @@
+/**
+ * Scenario: a runtime-neutral thinking effort is selected through the
+ * segmented picker. Responsibilities: declared segments, navigation, and
+ * persistent/session-only callbacks preserve concrete effort strings.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/dialogs/effort-selector.test.ts
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { EffortSelectorComponent } from '#/tui/components/dialogs/effort-selector';
+import type { ThinkingEffort } from '#/tui/components/dialogs/model-selector';
 
 const ANSI = /\[[0-9;]*m/g;
 const strip = (s: string): string => s.replaceAll(ANSI, '');
@@ -33,15 +41,17 @@ describe('EffortSelectorComponent', () => {
   });
 
   it('invokes onSelect with the chosen effort on Enter', () => {
-    const onSelect = vi.fn();
+    const selected: ThinkingEffort[] = [];
     const picker = new EffortSelectorComponent({
-      efforts: ['off', 'low', 'high', 'max'],
-      currentValue: 'high',
-      onSelect,
+      efforts: ['off', 'low', 'xhigh'],
+      currentValue: 'xhigh',
+      onSelect: (effort) => {
+        selected.push(effort);
+      },
       onCancel: vi.fn(),
     });
     picker.handleInput('\r');
-    expect(onSelect).toHaveBeenCalledWith('high');
+    expect(selected).toEqual(['xhigh']);
   });
 
   it('moves the active segment with Left/Right and stops at the edges', () => {

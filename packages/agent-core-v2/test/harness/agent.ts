@@ -709,6 +709,7 @@ function createSessionSkillCatalog(catalog: SkillCatalog): ISessionSkillCatalog 
     catalog,
     ready: Promise.resolve(),
     onDidChange: Event.None as Event<string>,
+    listSkills: async () => [],
     load: async () => { },
     reload: async () => { },
   };
@@ -1342,6 +1343,7 @@ export class AgentTestContext {
     // registry, matching the harness's historical all-tools behavior.
     void this.get(IAgentToolActivationService).activate();
     this.get(IAgentToolDedupeService);
+    this.get(IAgentUserToolService);
     this.get(IAgentExternalHooksService);
     this.get(IAgentStepRetryService);
     this.get(IAgentLoopContinuationService);

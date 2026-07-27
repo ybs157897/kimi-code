@@ -1,7 +1,16 @@
+/**
+ * Scenario: /add-dir reads and mutates the active session workspace.
+ * Responsibilities: the command routes through TUISessionRuntime, preserves
+ * persistence and cancellation semantics, and rejects stale selector actions.
+ * Wiring: the session runtime workspace port is the only stubbed boundary.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/commands/add-dir.test.ts
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { handleAddDirCommand } from '#/tui/commands/add-dir';
 import { dispatchInput, type SlashCommandHost } from '#/tui/commands/dispatch';
+import type { TUISessionRuntime } from '#/tui/runtime/tui-session-runtime';
 
 type MountedPanel = {
   handleInput: (data: string) => void;
@@ -18,16 +27,17 @@ function makeHost(additionalDirs: readonly string[] = []) {
   const state = {
     appState: {
       additionalDirs,
+      sessionId: 'session-1',
       streamingPhase: 'idle',
       isCompacting: false,
     },
   };
   let mountedPanel: MountedPanel | null = null;
-  const session = {
-    id: 'session-1',
-    summary: {
+  const workspace = {
+    get: vi.fn(async () => ({
+      workDir: '/repo',
       additionalDirs,
-    },
+    })),
     addAdditionalDir: vi.fn(async (path: string, options: { persist: boolean }) => ({
       additionalDirs: [...additionalDirs, path],
       projectRoot: '/repo',
@@ -35,9 +45,14 @@ function makeHost(additionalDirs: readonly string[] = []) {
       persisted: options.persist,
     })),
   };
+  const runtime = {
+    sessionId: 'session-1',
+    workspace,
+  } as unknown as TUISessionRuntime;
   const host = {
     state,
-    session,
+    session: undefined,
+    requireSessionRuntime: vi.fn(() => runtime),
     skillCommandMap: new Map<string, string>(),
     setAppState: vi.fn((patch: Record<string, unknown>) => Object.assign(state.appState, patch)),
     refreshSlashCommandAutocomplete: vi.fn(),
@@ -53,8 +68,8 @@ function makeHost(additionalDirs: readonly string[] = []) {
       mountedPanel = null;
     }),
   } as unknown as SlashCommandHost & {
-    session: typeof session;
     state: typeof state;
+    requireSessionRuntime: ReturnType<typeof vi.fn>;
     setAppState: ReturnType<typeof vi.fn>;
     refreshSlashCommandAutocomplete: ReturnType<typeof vi.fn>;
     appendTranscriptEntry: ReturnType<typeof vi.fn>;
@@ -66,17 +81,18 @@ function makeHost(additionalDirs: readonly string[] = []) {
   };
   return {
     host,
-    session,
+    workspace,
     getMountedPanel: () => mountedPanel,
   };
 }
 
 describe('handleAddDirCommand', () => {
   it('shows the empty message when no additional dirs are configured', async () => {
-    const { host } = makeHost();
+    const { host, workspace } = makeHost();
 
     await handleAddDirCommand(host, '');
 
+    expect(workspace.get).toHaveBeenCalledOnce();
     expect(host.showStatus).toHaveBeenCalledWith('No additional directories configured.');
   });
 
@@ -114,13 +130,15 @@ describe('handleAddDirCommand', () => {
   });
 
   it('adds a workspace dir for this session only after confirmation', async () => {
-    const { host, session, getMountedPanel } = makeHost();
+    const { host, workspace, getMountedPanel } = makeHost();
 
     await handleAddDirCommand(host, '../shared');
     getMountedPanel()?.handleInput(' ');
 
     await vi.waitFor(() => {
-      expect(session.addAdditionalDir).toHaveBeenCalledWith('../shared', { persist: false });
+      expect(workspace.addAdditionalDir).toHaveBeenCalledWith('../shared', {
+        persist: false,
+      });
     });
     expect(host.restoreEditor).toHaveBeenCalledOnce();
     expect(host.setAppState).toHaveBeenCalledWith({
@@ -137,14 +155,16 @@ describe('handleAddDirCommand', () => {
   });
 
   it('adds a remembered workspace dir after confirmation', async () => {
-    const { host, session, getMountedPanel } = makeHost();
+    const { host, workspace, getMountedPanel } = makeHost();
 
     await handleAddDirCommand(host, '../shared');
     getMountedPanel()?.handleInput('\u001B[B');
     getMountedPanel()?.handleInput(' ');
 
     await vi.waitFor(() => {
-      expect(session.addAdditionalDir).toHaveBeenCalledWith('../shared', { persist: true });
+      expect(workspace.addAdditionalDir).toHaveBeenCalledWith('../shared', {
+        persist: true,
+      });
     });
     await vi.waitFor(() => {
       expect(host.showStatus).toHaveBeenCalledWith(
@@ -156,20 +176,37 @@ describe('handleAddDirCommand', () => {
   });
 
   it('does not add a workspace dir when the confirmation is cancelled', async () => {
-    const { host, session, getMountedPanel } = makeHost();
+    const { host, workspace, getMountedPanel } = makeHost();
 
     await handleAddDirCommand(host, '../shared');
     getMountedPanel()?.handleInput('\u001B[B');
     getMountedPanel()?.handleInput('\u001B[B');
     getMountedPanel()?.handleInput(' ');
 
-    expect(session.addAdditionalDir).not.toHaveBeenCalled();
+    expect(workspace.addAdditionalDir).not.toHaveBeenCalled();
     expect(host.showStatus).toHaveBeenCalledWith('Did not add ../shared as a working directory.');
   });
 
-  it('routes /add-dir errors through the slash-command dispatcher error handler', async () => {
-    const { host, session, getMountedPanel } = makeHost();
-    session.addAdditionalDir.mockRejectedValueOnce(new Error('workspace.additional_dir must exist and be a directory'));
+  it('rejects a stale selection when the active session changes', async () => {
+    const { host, workspace, getMountedPanel } = makeHost();
+
+    await handleAddDirCommand(host, '../shared');
+    host.state.appState.sessionId = 'session-2';
+    getMountedPanel()?.handleInput(' ');
+
+    expect(workspace.addAdditionalDir).not.toHaveBeenCalled();
+    expect(host.showError).toHaveBeenCalledWith(
+      'No active session. Send /login to login.',
+    );
+    expect(host.setAppState).not.toHaveBeenCalled();
+    expect(host.refreshSlashCommandAutocomplete).not.toHaveBeenCalled();
+  });
+
+  it('shows workspace errors without mutating TUI state', async () => {
+    const { host, workspace, getMountedPanel } = makeHost();
+    workspace.addAdditionalDir.mockRejectedValueOnce(
+      new Error('workspace.additional_dir must exist and be a directory'),
+    );
 
     dispatchInput(host, '/add-dir ../other');
     await vi.waitFor(() => {

@@ -1,9 +1,15 @@
+/**
+ * Scenarios: full-screen task output rendering, navigation, and live-tail updates.
+ * Responsibilities: display a neutral AgentTask, preserve scroll position, and
+ * route keyboard close/scroll actions. Run with:
+ * pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/task-output-viewer.test.ts
+ */
+
 import type { Terminal } from '@moonshot-ai/pi-tui';
-import type { BackgroundTaskInfo } from '@moonshot-ai/kimi-code-sdk';
 import { describe, expect, it, vi } from 'vitest';
 
 import { TaskOutputViewer } from '@/tui/components/dialogs/task-output-viewer';
-import { darkColors } from '@/tui/theme/colors';
+import type { AgentTask } from '@/tui/runtime/session-control-port';
 
 const ANSI_SGR = /\[[0-9;]*m/g;
 function strip(text: string): string {
@@ -36,7 +42,7 @@ function fakeTerminal(rows: number, columns = 120): Terminal {
   };
 }
 
-function info(overrides: Partial<BackgroundTaskInfo> = {}): BackgroundTaskInfo {
+function info(overrides: Partial<AgentTask> = {}): AgentTask {
   return {
     taskId: 'bash-aaaaaaaa',
     kind: 'process',
@@ -48,12 +54,12 @@ function info(overrides: Partial<BackgroundTaskInfo> = {}): BackgroundTaskInfo {
     startedAt: Date.now() - 60_000,
     endedAt: null,
     ...overrides,
-  } as BackgroundTaskInfo;
+  };
 }
 
 function makeViewer(opts: {
   output: string;
-  taskInfo?: BackgroundTaskInfo;
+  taskInfo?: AgentTask;
   rows?: number;
   columns?: number;
   onClose?: () => void;

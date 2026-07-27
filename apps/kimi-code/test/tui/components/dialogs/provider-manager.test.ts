@@ -1,4 +1,10 @@
-import type { ProviderConfig } from '@moonshot-ai/kimi-code-sdk';
+/**
+ * Scenario: Provider configuration sources are rendered and deleted through the pure-view dialog.
+ * Responsibility: Preserve source grouping, active markers, base URLs, and callback-only actions.
+ * Wiring: Runtime-neutral provider fixtures drive the real component; only host callbacks are mocked.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/dialogs/provider-manager.test.ts
+ */
+
 import chalk from 'chalk';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
@@ -6,6 +12,7 @@ import {
   ProviderManagerComponent,
   type ProviderManagerOptions,
 } from '#/tui/components/dialogs/provider-manager';
+import type { RuntimeProviderConfigView } from '#/tui/runtime/runtime-model-config-port';
 import { darkColors } from '#/tui/theme/colors';
 
 // Truecolor SGR fragments for the darkColors tokens we assert on
@@ -23,7 +30,7 @@ function rendered(component: ProviderManagerComponent, width = 120): string {
 
 function makeComponent(overrides: Partial<ProviderManagerOptions> = {}): ProviderManagerComponent {
   return new ProviderManagerComponent({
-    providers: {} as Record<string, ProviderConfig>,
+    providers: {},
     onAdd: vi.fn(),
     onDeleteSource: vi.fn(),
     onClose: vi.fn(),
@@ -51,7 +58,7 @@ describe('ProviderManagerComponent', () => {
     const component = makeComponent({
       providers: {
         acme: { baseUrl: 'https://acme.test' },
-      } as unknown as Record<string, ProviderConfig>,
+      },
       activeProviderId: 'acme',
     });
     const line = addRowLine(component);
@@ -74,7 +81,7 @@ describe('ProviderManagerComponent', () => {
     const component = makeComponent({
       providers: {
         acme: { baseUrl: 'https://acme.test' },
-      } as unknown as Record<string, ProviderConfig>,
+      },
       activeProviderId: 'acme',
     });
     const plain = component
@@ -85,11 +92,59 @@ describe('ProviderManagerComponent', () => {
     expect(plain).not.toContain('●');
   });
 
+  it('uses the Open Platform label when the provider id is registered', () => {
+    const component = makeComponent({
+      providers: {
+        'moonshot-cn': { baseUrl: 'https://api.example.test/v1' },
+      },
+    });
+
+    expect(rendered(component)).toContain('Kimi Platform (API key · platform.kimi.com)');
+  });
+
+  it('shows a standalone provider base URL beneath its source row', () => {
+    const component = makeComponent({
+      providers: {
+        acme: { baseUrl: 'https://api.example.test/v1' },
+      },
+    });
+
+    expect(rendered(component)).toContain('https://api.example.test/v1');
+  });
+
+  it('deletes providers sharing an apiJson source as one group', () => {
+    const onDeleteSource = vi.fn();
+    const providers: Readonly<Record<string, RuntimeProviderConfigView>> = {
+      'acme-chat': {
+        baseUrl: 'https://gateway.example.test/v1',
+        source: {
+          kind: 'apiJson',
+          url: 'https://catalog.example.test/api.json',
+          apiKey: 'YOUR_API_KEY',
+        },
+      },
+      'acme-reasoning': {
+        baseUrl: 'https://gateway.example.test/v1',
+        source: {
+          kind: 'apiJson',
+          url: 'https://catalog.example.test/api.json',
+          apiKey: 'YOUR_API_KEY',
+        },
+      },
+    };
+    const component = makeComponent({ providers, onDeleteSource });
+
+    component.handleInput('D');
+    component.handleInput('y');
+
+    expect(onDeleteSource).toHaveBeenCalledWith(['acme-chat', 'acme-reasoning']);
+  });
+
   it('uses the same header shape as the model dialog (one top border, title, hint, no inner border)', () => {
     const component = makeComponent({
       providers: {
         acme: { baseUrl: 'https://acme.test' },
-      } as unknown as Record<string, ProviderConfig>,
+      },
       activeProviderId: 'acme',
     });
     const lines = component.render(120).map((l) => l.replaceAll(SGR, ''));
@@ -113,7 +168,7 @@ describe('ProviderManagerComponent', () => {
     const component = makeComponent({
       providers: {
         acme: { baseUrl: 'https://acme.test' },
-      } as unknown as Record<string, ProviderConfig>,
+      },
       activeProviderId: 'acme',
       onDeleteSource,
     });
@@ -128,7 +183,7 @@ describe('ProviderManagerComponent', () => {
     const component = makeComponent({
       providers: {
         acme: { baseUrl: 'https://acme.test' },
-      } as unknown as Record<string, ProviderConfig>,
+      },
       onClose,
     });
     component.handleInput(ESC);

@@ -1,15 +1,16 @@
-import type { Session, SkillSummary } from '@moonshot-ai/kimi-code-sdk';
-
 import type { KimiSlashCommand } from './types';
+import type { SkillSummaryView } from '../runtime/session-skills-port';
 
-export type SkillListSession = Pick<Session, 'listSkills'>;
+export interface SkillListSession {
+  listSkills(): Promise<readonly SkillSummaryView[]>;
+}
 
 export interface SkillSlashCommands {
   readonly commands: readonly KimiSlashCommand[];
   readonly commandMap: ReadonlyMap<string, string>;
 }
 
-export function isUserActivatableSkill(skill: SkillSummary): boolean {
+export function isUserActivatableSkill(skill: SkillSummaryView): boolean {
   return (
     skill.type === undefined ||
     skill.type === 'prompt' ||
@@ -18,18 +19,18 @@ export function isUserActivatableSkill(skill: SkillSummary): boolean {
   );
 }
 
-function compareSkillSlashCommands(a: SkillSummary, b: SkillSummary): number {
+function compareSkillSlashCommands(a: SkillSummaryView, b: SkillSummaryView): number {
   return (
     getSkillSlashCommandGroup(a.source) - getSkillSlashCommandGroup(b.source) ||
     a.name.localeCompare(b.name)
   );
 }
 
-function getSkillSlashCommandGroup(source: SkillSummary['source']): number {
+function getSkillSlashCommandGroup(source: SkillSummaryView['source']): number {
   return source === 'builtin' ? 0 : 1;
 }
 
-export function buildSkillSlashCommands(skills: readonly SkillSummary[]): SkillSlashCommands {
+export function buildSkillSlashCommands(skills: readonly SkillSummaryView[]): SkillSlashCommands {
   const commandMap = new Map<string, string>();
   const sortedSkills = [...skills].toSorted(compareSkillSlashCommands);
   const commands = sortedSkills.filter(isUserActivatableSkill).map((skill) => {

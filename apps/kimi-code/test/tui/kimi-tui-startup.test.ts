@@ -13,6 +13,25 @@ import { promptPlatformSelection, promptLogoutProviderSelection } from '#/tui/co
 import { BannerComponent } from '#/tui/components/chrome/banner';
 import { WelcomeComponent } from '#/tui/components/chrome/welcome';
 import { KimiTUI, type KimiTUIStartupInput, type TUIState } from '#/tui/kimi-tui';
+import type { ExtensionCommandPort } from '#/tui/runtime/extension-command-port';
+import type { RuntimeEnvironmentPort } from '#/tui/runtime/runtime-environment-port';
+import type { RuntimeModelCatalogPort } from '#/tui/runtime/runtime-model-catalog-port';
+import type { RuntimeSessionExportPort } from '#/tui/runtime/runtime-session-export-port';
+import type {
+  RuntimeTelemetryPort,
+  RuntimeTelemetryProperties,
+} from '#/tui/runtime/runtime-telemetry-port';
+import type { SessionEventsPort } from '#/tui/runtime/session-events-port';
+import type { SessionControlPort } from '#/tui/runtime/session-control-port';
+import type { SessionMcpPort } from '#/tui/runtime/session-mcp-port';
+import type { SessionSkillsPort } from '#/tui/runtime/session-skills-port';
+import type {
+  SessionWarningsPort,
+  SessionWarningView,
+} from '#/tui/runtime/session-warnings-port';
+import type { SessionWorkspacePort } from '#/tui/runtime/session-workspace-port';
+import type { TUIRuntime } from '#/tui/runtime/tui-runtime';
+import type { TUISessionRuntime } from '#/tui/runtime/tui-session-runtime';
 import { REPLAY_TURN_LIMIT } from '#/tui/utils/message-replay';
 import { copyTextToClipboard } from '#/utils/clipboard/clipboard-text';
 import { quoteShellArg } from '#/utils/shell-quote';
@@ -35,15 +54,42 @@ vi.mock('#/utils/clipboard/clipboard-text', () => ({
 const copyTextToClipboardMock = vi.mocked(copyTextToClipboard);
 
 interface StartupDriver {
+  readonly authFlow: {
+    refreshAvailableModels(): Promise<void>;
+    refreshConfigAfterLogin(): Promise<void>;
+    refreshConfigAfterLogout(): Promise<void>;
+  };
+  readonly runtime: TUIRuntime;
+  readonly runtimeEnvironment: RuntimeEnvironmentPort;
+  readonly runtimeTelemetry: RuntimeTelemetryPort;
+  readonly sessionControl: SessionControlPort;
+  readonly extensionCommandNames: ReadonlySet<string>;
+  readonly skillCommandMap: ReadonlyMap<string, string>;
+  readonly sessionEventHandler: {
+    startSubscription(): void;
+  };
   state: TUIState;
+  session: unknown | undefined;
   init(): Promise<boolean>;
   handleLoginCommand(): Promise<void>;
   handleLogoutCommand(): Promise<void>;
+  refreshExtensionCommands(): Promise<void>;
+  refreshSkillCommands(): Promise<void>;
+  getStartupMcpMs(): Promise<number>;
+  requireSessionRuntime(): TUISessionRuntime;
   stop(exitCode?: number): Promise<void>;
+  track(event: string, properties?: RuntimeTelemetryProperties): void;
 }
 
 interface RuntimeStateDriver extends StartupDriver {
   closeSession(reason: string): Promise<void>;
+  reloadCurrentSessionView(statusMessage: string): Promise<void>;
+  setSession(session: unknown): Promise<void>;
+  switchToSession(session: unknown, statusMessage: string): Promise<void>;
+}
+
+interface FinishStartupDriver extends StartupDriver {
+  finishStartup(shouldReplayHistory: boolean): Promise<void>;
 }
 
 interface ThemeTrackingDriver extends StartupDriver {
@@ -123,9 +169,15 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     setPermission: vi.fn(async () => {}),
     setPlanMode: vi.fn(async () => {}),
     getGoal: vi.fn(async () => ({ goal: null })),
+    getSessionWarnings: vi.fn(async () => []),
     onEvent: vi.fn(() => () => {}),
     getResumeState: vi.fn(() => null),
+    listMcpServers: vi.fn(async () => []),
     listSkills: vi.fn(async () => []),
+    listExpertTeams: vi.fn(async () => []),
+    getExpertTeamStatus: vi.fn(async () => null),
+    activateExpertTeam: vi.fn(),
+    deactivateExpertTeam: vi.fn(async () => {}),
     close: vi.fn(async () => {}),
     ...overrides,
   };
@@ -195,11 +247,14 @@ function makeHarness(session = makeSession(), overrides: Record<string, unknown>
   return {
     getConfig: vi.fn(async () => ({
       models: {
-        k2: { model: 'moonshot-v1', maxContextSize: 100 },
+        k2: { provider: 'test', model: 'moonshot-v1', maxContextSize: 100 },
       },
+      providers: {},
     })),
     createSession: vi.fn(async () => session),
     resumeSession: vi.fn(async () => session),
+    getSession: vi.fn((id: string) => (id === session.id ? session : { ...session, id })),
+    withInteractiveAgent: vi.fn((_agentId: string, operation: () => unknown) => operation()),
     listSessions: vi.fn(async () => []),
     close: vi.fn(async () => {}),
     track: vi.fn(),
@@ -212,6 +267,227 @@ function makeHarness(session = makeSession(), overrides: Record<string, unknown>
       getManagedUsage: vi.fn(),
     },
     ...overrides,
+  };
+}
+
+function makeTUIRuntime(
+  input: {
+    environment?: RuntimeEnvironmentPort;
+    telemetry?: RuntimeTelemetryPort;
+    sessionControl?: SessionControlPort;
+    models?: RuntimeModelCatalogPort;
+    sessionExport?: RuntimeSessionExportPort;
+    extensionCommands?: ExtensionCommandPort;
+    events?: SessionEventsPort;
+    mcp?: SessionMcpPort;
+    skills?: SessionSkillsPort;
+    warnings?: SessionWarningsPort;
+    workspace?: SessionWorkspacePort;
+  } = {},
+) {
+  const environment =
+    input.environment ??
+    ({
+      homeDir: '/tmp/runtime-home',
+      getExperimentalFeatures: vi.fn(async () => []),
+      getConfigDiagnostics: vi.fn(async () => []),
+      close: vi.fn(async () => {}),
+    } satisfies RuntimeEnvironmentPort);
+  const telemetry =
+    input.telemetry ??
+    ({
+      track: vi.fn(),
+      setContext: vi.fn(),
+    } satisfies RuntimeTelemetryPort);
+  const sessionIdentity = (id: string) => ({
+    id,
+    workDir: '/tmp/proj-a',
+    title: 'Session title',
+    createdAt: 1,
+    updatedAt: 1,
+    archived: false,
+  });
+  const agent = {
+    getStatus: vi.fn(async () => ({
+      model: 'k2',
+      thinkingEffort: 'off',
+      permission: 'manual' as const,
+      planMode: false,
+      contextTokens: 10,
+      maxContextTokens: 100,
+      contextUsage: 0.1,
+    })),
+    getGoal: vi.fn(async () => null),
+    setModel: vi.fn(async () => {}),
+    setThinking: vi.fn(async () => {}),
+    setPermission: vi.fn(async () => {}),
+    setPlanMode: vi.fn(async () => {}),
+  } as unknown as TUISessionRuntime['agent'];
+  const sessionControl =
+    input.sessionControl ??
+    ({
+      sessions: {
+        list: vi.fn(async () => []),
+        create: vi.fn(async () => sessionIdentity('ses-1')),
+        resume: vi.fn(async ({ id }: { id: string }) => sessionIdentity(id)),
+      },
+      session: vi.fn((sessionId: string) => ({
+        getIdentity: vi.fn(async () => sessionIdentity(sessionId)),
+        close: vi.fn(async () => {}),
+        setTitle: vi.fn(async () => {}),
+        fork: vi.fn(async () => sessionIdentity(`${sessionId}-fork`)),
+      })),
+      agent: vi.fn(() => agent),
+    } satisfies SessionControlPort);
+  const models =
+    input.models ??
+    ({
+      load: vi.fn(async () => ({ models: {}, providers: {} })),
+    } satisfies RuntimeModelCatalogPort);
+  const modelConfig = {
+    apply: vi.fn(async () => {}),
+    removeProvider: vi.fn(async () => {}),
+  };
+  const sessionExport =
+    input.sessionExport ??
+    ({
+      export: vi.fn(async () => ({
+        zipPath: '/tmp/example-session.zip',
+        entries: ['manifest.json'],
+        manifest: {
+          sessionId: 'ses-1',
+          exportedAt: '2026-07-27T00:00:00.000Z',
+          kimiCodeVersion: '1.2.3',
+          wireProtocolVersion: '1',
+          os: 'example-os',
+          nodejsVersion: 'v24.15.0',
+        },
+      })),
+    } satisfies RuntimeSessionExportPort);
+  const extensionCommands =
+    input.extensionCommands ??
+    ({
+      list: vi.fn(async () => []),
+      reload: vi.fn(async () => {}),
+      activate: vi.fn(async () => undefined),
+    } satisfies ExtensionCommandPort);
+  const events =
+    input.events ??
+    ({
+      subscribe: vi.fn(() => vi.fn()),
+      readReplay: vi.fn(async () => undefined),
+      respondToApproval: vi.fn(async () => {}),
+      respondToQuestion: vi.fn(async () => {}),
+    } satisfies SessionEventsPort);
+  const mcp =
+    input.mcp ??
+    ({
+      list: vi.fn(async () => []),
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => 0),
+    } satisfies SessionMcpPort);
+  const skills =
+    input.skills ??
+    ({
+      list: vi.fn(async () => []),
+      reload: vi.fn(async () => {}),
+      activate: vi.fn(async () => {}),
+    } satisfies SessionSkillsPort);
+  const warnings =
+    input.warnings ??
+    ({
+      list: vi.fn(async () => []),
+    } satisfies SessionWarningsPort);
+  const workspace =
+    input.workspace ??
+    ({
+      get: vi.fn(async () => ({ workDir: '/tmp/proj-a', additionalDirs: [] })),
+      addAdditionalDir: vi.fn(async () => ({
+        projectRoot: '/tmp/proj-a',
+        configPath: '/tmp/proj-a/.kimi/config.toml',
+        additionalDirs: [],
+        persisted: true,
+      })),
+    } satisfies SessionWorkspacePort);
+  const lifecycle = sessionControl.session('ses-1');
+  const expertTeam = {
+    list: vi.fn(async () => []),
+    get: vi.fn(async () => null),
+    activate: vi.fn(),
+    deactivate: vi.fn(async () => {}),
+  } as unknown as TUISessionRuntime['expertTeam'];
+  const sessionRuntime = {
+    sessionId: 'ses-1',
+    agentId: 'main',
+    lifecycle,
+    agent,
+    expertTeam,
+    events,
+    mcp,
+    extensionCommands,
+    skills,
+    warnings,
+    workspace,
+  } as TUISessionRuntime;
+  const bindSession = vi.fn((sessionId: string, _agentId?: string) =>
+    sessionId === sessionRuntime.sessionId
+      ? sessionRuntime
+      : ({
+          ...sessionRuntime,
+          sessionId,
+          lifecycle: sessionControl.session(sessionId),
+          agent: sessionControl.agent(sessionId, 'main'),
+        } as TUISessionRuntime),
+  );
+  const runtime = {
+    auth: {
+      status: vi.fn(async () => ({ loggedIn: false })),
+      login: vi.fn(async () => {}),
+      logout: vi.fn(async () => {}),
+      ensureReady: vi.fn(async () => {}),
+      getManagedUsage: vi.fn(async () => ({
+        kind: 'error' as const,
+        message: 'Not configured in this test.',
+      })),
+      submitFeedback: vi.fn(async () => ({ kind: 'ok' as const, feedbackId: 3 })),
+      createFeedbackUploadUrl: vi.fn(async () => ({
+        kind: 'error' as const,
+        message: 'Not configured in this test.',
+      })),
+      completeFeedbackUpload: vi.fn(async () => ({
+        kind: 'error' as const,
+        message: 'Not configured in this test.',
+      })),
+    },
+    environment,
+    featureFlags: {
+      list: vi.fn(async () => []),
+      apply: vi.fn(async () => []),
+    },
+    models,
+    modelConfig,
+    providerRefresh: {
+      refresh: vi.fn(async () => ({ changed: [], unchanged: [], failed: [] })),
+    },
+    sessionExport,
+    telemetry,
+    sessionControl,
+    bindSession,
+  } satisfies TUIRuntime;
+  return {
+    runtime,
+    environment,
+    telemetry,
+    sessionControl,
+    models,
+    sessionRuntime,
+    events,
+    mcp,
+    extensionCommands,
+    skills,
+    warnings,
+    workspace,
+    bindSession,
   };
 }
 
@@ -241,6 +517,619 @@ function captureInputListeners(driver: StartupDriver) {
 }
 
 describe('KimiTUI startup', () => {
+  it('selects process ports from an injected runtime when overrides are absent', () => {
+    const harness = makeHarness();
+    const { runtime, environment, telemetry, sessionControl } = makeTUIRuntime();
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtime,
+    });
+
+    expect(driver.runtime).toBe(runtime);
+    expect(driver.runtimeEnvironment).toBe(environment);
+    expect(driver.runtimeTelemetry).toBe(telemetry);
+    expect(driver.sessionControl).toBe(sessionControl);
+  });
+
+  it('prefers explicit process port overrides to the injected runtime', () => {
+    const harness = makeHarness();
+    const { runtime } = makeTUIRuntime();
+    const runtimeEnvironment = {
+      homeDir: '/tmp/override-home',
+      getExperimentalFeatures: vi.fn(async () => []),
+      getConfigDiagnostics: vi.fn(async () => []),
+      close: vi.fn(async () => {}),
+    } satisfies RuntimeEnvironmentPort;
+    const runtimeTelemetry = {
+      track: vi.fn(),
+      setContext: vi.fn(),
+    } satisfies RuntimeTelemetryPort;
+    const sessionControl = {} as SessionControlPort;
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtime,
+      runtimeEnvironment,
+      runtimeTelemetry,
+      sessionControl,
+    });
+
+    expect(driver.runtimeEnvironment).toBe(runtimeEnvironment);
+    expect(driver.runtimeTelemetry).toBe(runtimeTelemetry);
+    expect(driver.sessionControl).toBe(sessionControl);
+  });
+
+  it('loads the available model catalog through an injected runtime', async () => {
+    const models = {
+      load: vi.fn(async () => ({
+        models: {
+          k2: {
+            provider: 'managed:kimi-code',
+            model: 'moonshot-v1',
+            maxContextSize: 128_000,
+          },
+        },
+        providers: {
+          'managed:kimi-code': {
+            type: 'kimi',
+            status: 'connected' as const,
+            hasApiKey: true,
+          },
+        },
+      })),
+    } satisfies RuntimeModelCatalogPort;
+    const { runtime } = makeTUIRuntime({ models });
+    const driver = makeDriver(makeHarness(), {
+      ...makeStartupInput(),
+      runtime,
+    });
+
+    await driver.authFlow.refreshAvailableModels();
+
+    expect(models.load).toHaveBeenCalledWith({ reload: true });
+    expect(driver.state.appState).toMatchObject({
+      availableModels: {
+        k2: {
+          provider: 'managed:kimi-code',
+          model: 'moonshot-v1',
+          maxContextSize: 128_000,
+        },
+      },
+      availableProviders: {
+        'managed:kimi-code': {
+          type: 'kimi',
+        },
+      },
+    });
+  });
+
+  it('binds the startup session through an injected runtime', async () => {
+    const session = makeSession();
+    const harness = makeHarness(session);
+    const { runtime, sessionRuntime, bindSession } = makeTUIRuntime();
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtime,
+    });
+
+    await expect(driver.init()).resolves.toBe(false);
+
+    expect(bindSession).toHaveBeenCalledWith('ses-1', 'main');
+    expect(driver.requireSessionRuntime()).toBe(sessionRuntime);
+  });
+
+  it('reads startup MCP duration through the active session runtime', async () => {
+    const legacyMetrics = vi.fn(async () => ({ durationMs: 999 }));
+    const session = makeSession({ getMcpStartupMetrics: legacyMetrics });
+    const mcp = {
+      list: vi.fn(async () => []),
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => 37),
+    } satisfies SessionMcpPort;
+    const { runtime } = makeTUIRuntime({ mcp });
+    const driver = makeDriver(makeHarness(session), {
+      ...makeStartupInput(),
+      runtime,
+    });
+    await driver.init();
+
+    await expect(driver.getStartupMcpMs()).resolves.toBe(37);
+
+    expect(mcp.initialLoadDurationMs).toHaveBeenCalledOnce();
+    expect(legacyMetrics).not.toHaveBeenCalled();
+  });
+
+  it('reports zero startup MCP duration without an active session binding', async () => {
+    const mcp = {
+      list: vi.fn(async () => []),
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => 37),
+    } satisfies SessionMcpPort;
+    const { runtime } = makeTUIRuntime({ mcp });
+    const driver = makeDriver(makeHarness(), {
+      ...makeStartupInput(),
+      runtime,
+    });
+
+    await expect(driver.getStartupMcpMs()).resolves.toBe(0);
+
+    expect(mcp.initialLoadDurationMs).not.toHaveBeenCalled();
+  });
+
+  it('reports zero startup MCP duration when the active runtime cannot load metrics', async () => {
+    const mcp = {
+      list: vi.fn(async () => []),
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => {
+        throw new Error('metrics unavailable');
+      }),
+    } satisfies SessionMcpPort;
+    const { runtime } = makeTUIRuntime({ mcp });
+    const driver = makeDriver(makeHarness(), {
+      ...makeStartupInput(),
+      runtime,
+    });
+    await driver.init();
+
+    await expect(driver.getStartupMcpMs()).resolves.toBe(0);
+  });
+
+  it('refreshes skill commands through the active binding when the raw session is absent', async () => {
+    const skills = {
+      list: vi.fn(async () => [
+        {
+          name: 'review',
+          description: 'Review the current changes',
+          path: '/skills/review/SKILL.md',
+          source: 'user' as const,
+        },
+      ]),
+      reload: vi.fn(async () => {}),
+      activate: vi.fn(async () => {}),
+    } satisfies SessionSkillsPort;
+    const harness = makeHarness();
+    const { runtime } = makeTUIRuntime({ skills });
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtime,
+    });
+    await driver.init();
+    driver.session = undefined;
+
+    await driver.refreshSkillCommands();
+
+    expect(driver.skillCommandMap.get('skill:review')).toBe('review');
+  });
+
+  it('bootstraps additional directories when only the active binding remains', async () => {
+    let resolveWorkspace:
+      | ((snapshot: { workDir: string; additionalDirs: readonly string[] }) => void)
+      | undefined;
+    const workspaceSnapshot = new Promise<{
+      workDir: string;
+      additionalDirs: readonly string[];
+    }>((resolve) => {
+      resolveWorkspace = resolve;
+    });
+    const workspace = {
+      get: vi.fn(() => workspaceSnapshot),
+      addAdditionalDir: vi.fn(async () => ({
+        projectRoot: '/tmp/proj-a',
+        configPath: '/tmp/proj-a/.kimi/config.toml',
+        additionalDirs: [],
+        persisted: true,
+      })),
+    } satisfies SessionWorkspacePort;
+    const session = makeSession();
+    const { runtime } = makeTUIRuntime({ workspace });
+    const driver = makeDriver(makeHarness(session), {
+      ...makeStartupInput(),
+      runtime,
+    }) as unknown as RuntimeStateDriver;
+
+    const binding = driver.setSession(session);
+    await vi.waitFor(() => {
+      expect(workspace.get).toHaveBeenCalledOnce();
+    });
+    driver.session = undefined;
+    resolveWorkspace?.({
+      workDir: '/tmp/proj-a',
+      additionalDirs: ['/tmp/shared'],
+    });
+    await binding;
+
+    expect(driver.state.appState.additionalDirs).toEqual(['/tmp/shared']);
+  });
+
+  it('ignores an old workspace snapshot after the active binding switches', async () => {
+    let resolveOldWorkspace:
+      | ((snapshot: { workDir: string; additionalDirs: readonly string[] }) => void)
+      | undefined;
+    const oldWorkspace = new Promise<{
+      workDir: string;
+      additionalDirs: readonly string[];
+    }>((resolve) => {
+      resolveOldWorkspace = resolve;
+    });
+    const workspace = {
+      get: vi
+        .fn()
+        .mockReturnValueOnce(oldWorkspace)
+        .mockResolvedValueOnce({
+          workDir: '/tmp/proj-b',
+          additionalDirs: ['/tmp/current'],
+        }),
+      addAdditionalDir: vi.fn(async () => ({
+        projectRoot: '/tmp/proj-a',
+        configPath: '/tmp/proj-a/.kimi/config.toml',
+        additionalDirs: [],
+        persisted: true,
+      })),
+    } satisfies SessionWorkspacePort;
+    const firstSession = makeSession({ id: 'ses-1' });
+    const secondSession = makeSession({ id: 'ses-2' });
+    const { runtime } = makeTUIRuntime({ workspace });
+    const driver = makeDriver(makeHarness(firstSession), {
+      ...makeStartupInput(),
+      runtime,
+    }) as unknown as RuntimeStateDriver;
+
+    const firstBinding = driver.setSession(firstSession);
+    await vi.waitFor(() => {
+      expect(workspace.get).toHaveBeenCalledOnce();
+    });
+    await driver.setSession(secondSession);
+    resolveOldWorkspace?.({
+      workDir: '/tmp/proj-a',
+      additionalDirs: ['/tmp/stale'],
+    });
+    await firstBinding;
+
+    expect(driver.state.appState.additionalDirs).toEqual(['/tmp/current']);
+  });
+
+  it('ignores an old skill list after the active binding switches', async () => {
+    let resolveOldSkills:
+      | ((skills: readonly {
+          name: string;
+          description: string;
+          path: string;
+          source: 'user';
+        }[]) => void)
+      | undefined;
+    const oldSkills = new Promise<
+      readonly {
+        name: string;
+        description: string;
+        path: string;
+        source: 'user';
+      }[]
+    >((resolve) => {
+      resolveOldSkills = resolve;
+    });
+    const skills = {
+      list: vi
+        .fn()
+        .mockReturnValueOnce(oldSkills)
+        .mockResolvedValueOnce([
+          {
+            name: 'current',
+            description: 'Current session skill',
+            path: '/skills/current/SKILL.md',
+            source: 'user' as const,
+          },
+        ]),
+      reload: vi.fn(async () => {}),
+      activate: vi.fn(async () => {}),
+    } satisfies SessionSkillsPort;
+    const session = makeSession({ id: 'ses-1' });
+    const { runtime } = makeTUIRuntime({ skills });
+    const driver = makeDriver(makeHarness(session), {
+      ...makeStartupInput(),
+      runtime,
+    }) as unknown as RuntimeStateDriver;
+    await driver.init();
+
+    const staleRefresh = driver.refreshSkillCommands();
+    await vi.waitFor(() => {
+      expect(skills.list).toHaveBeenCalledOnce();
+    });
+    await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
+    resolveOldSkills?.([
+      {
+        name: 'stale',
+        description: 'Old session skill',
+        path: '/skills/stale/SKILL.md',
+        source: 'user',
+      },
+    ]);
+    await staleRefresh;
+
+    expect(driver.skillCommandMap.has('skill:stale')).toBe(false);
+    expect(driver.skillCommandMap.get('skill:current')).toBe('current');
+  });
+
+  it('owns event subscriptions through the active session runtime across switching and close', async () => {
+    const session = makeSession();
+    const nextSession = makeSession({ id: 'ses-2' });
+    const firstUnsubscribe = vi.fn();
+    const secondUnsubscribe = vi.fn();
+    const events = {
+      subscribe: vi
+        .fn()
+        .mockReturnValueOnce(firstUnsubscribe)
+        .mockReturnValueOnce(secondUnsubscribe),
+      readReplay: vi.fn(async () => undefined),
+      respondToApproval: vi.fn(async () => {}),
+      respondToQuestion: vi.fn(async () => {}),
+    } satisfies SessionEventsPort;
+    const harness = makeHarness(session);
+    const { runtime } = makeTUIRuntime({ events });
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtime,
+    }) as unknown as RuntimeStateDriver;
+
+    await driver.init();
+    driver.sessionEventHandler.startSubscription();
+    await driver.switchToSession(nextSession, 'Session switched.');
+
+    expect(firstUnsubscribe).toHaveBeenCalledOnce();
+    expect(events.subscribe).toHaveBeenCalledTimes(2);
+    expect(session.onEvent).not.toHaveBeenCalled();
+    expect(session.setApprovalHandler).not.toHaveBeenCalled();
+    expect(session.setQuestionHandler).not.toHaveBeenCalled();
+
+    await driver.closeSession('test close');
+
+    expect(firstUnsubscribe).toHaveBeenCalledOnce();
+    expect(secondUnsubscribe).toHaveBeenCalledOnce();
+  });
+
+  it('maps runtime warning severities after startup when the raw session is unavailable', async () => {
+    const warnings = {
+      list: vi.fn(async () => [
+        {
+          code: 'runtime.notice',
+          message: 'Runtime notice',
+          severity: 'info' as const,
+        },
+        {
+          code: 'runtime.failure',
+          message: 'Runtime failure',
+          severity: 'error' as const,
+        },
+      ]),
+    } satisfies SessionWarningsPort;
+    const session = makeSession();
+    const { runtime } = makeTUIRuntime({ warnings });
+    const driver = makeDriver(makeHarness(session), {
+      ...makeStartupInput(),
+      runtime,
+    }) as unknown as FinishStartupDriver;
+    const showStatus = vi.spyOn(driver as any, 'showStatus');
+
+    await driver.init();
+    driver.session = undefined;
+    await driver.finishStartup(false);
+
+    await vi.waitFor(() => {
+      expect(warnings.list).toHaveBeenCalledOnce();
+    });
+    expect(session.getSessionWarnings).not.toHaveBeenCalled();
+    expect(showStatus).toHaveBeenCalledWith('Warning: Runtime notice', 'warning');
+    expect(showStatus).toHaveBeenCalledWith('Warning: Runtime failure', 'error');
+  });
+
+  it('shows legacy warnings through the default session runtime composition', async () => {
+    const getSessionWarnings = vi.fn(async () => [
+      {
+        code: 'legacy.notice',
+        message: 'Legacy notice',
+        severity: 'warning' as const,
+      },
+    ]);
+    const session = makeSession({ getSessionWarnings });
+    const driver = makeDriver(makeHarness(session), makeStartupInput()) as unknown as FinishStartupDriver;
+    const showStatus = vi.spyOn(driver as any, 'showStatus');
+
+    await driver.init();
+    await driver.finishStartup(false);
+
+    await vi.waitFor(() => {
+      expect(getSessionWarnings).toHaveBeenCalledOnce();
+    });
+    expect(showStatus).toHaveBeenCalledWith('Warning: Legacy notice', 'warning');
+  });
+
+  it('ignores a warning result from a stale session binding after switching', async () => {
+    let resolveOldWarnings:
+      | ((warnings: readonly SessionWarningView[]) => void)
+      | undefined;
+    const oldWarnings = new Promise<readonly SessionWarningView[]>((resolve) => {
+      resolveOldWarnings = resolve;
+    });
+    const warnings = {
+      list: vi
+        .fn()
+        .mockReturnValueOnce(oldWarnings)
+        .mockResolvedValueOnce([
+          {
+            code: 'current.notice',
+            message: 'Current warning',
+            severity: 'warning' as const,
+          },
+        ]),
+    } satisfies SessionWarningsPort;
+    const firstSession = makeSession({ id: 'ses-1' });
+    const secondSession = makeSession({ id: 'ses-2' });
+    const { runtime } = makeTUIRuntime({ warnings });
+    const driver = makeDriver(makeHarness(firstSession), {
+      ...makeStartupInput(),
+      runtime,
+    }) as unknown as RuntimeStateDriver;
+    const showStatus = vi.spyOn(driver as any, 'showStatus');
+
+    await driver.switchToSession(firstSession, 'First session.');
+    await vi.waitFor(() => {
+      expect(warnings.list).toHaveBeenCalledOnce();
+    });
+    await driver.switchToSession(secondSession, 'Second session.');
+    await vi.waitFor(() => {
+      expect(showStatus).toHaveBeenCalledWith('Warning: Current warning', 'warning');
+    });
+    resolveOldWarnings?.([
+      {
+        code: 'stale.notice',
+        message: 'Stale warning',
+        severity: 'warning',
+      },
+    ]);
+    await Promise.resolve();
+
+    expect(showStatus).not.toHaveBeenCalledWith('Warning: Stale warning', 'warning');
+  });
+
+  it('ignores runtime warning failures while reloading the session view', async () => {
+    const warnings = {
+      list: vi.fn(async () => {
+        throw new Error('warnings unavailable');
+      }),
+    } satisfies SessionWarningsPort;
+    const getSessionWarnings = vi.fn(async () => [
+      {
+        code: 'legacy.notice',
+        message: 'Legacy warning',
+        severity: 'warning' as const,
+      },
+    ]);
+    const session = makeSession({ getSessionWarnings });
+    const { runtime } = makeTUIRuntime({ warnings });
+    const driver = makeDriver(makeHarness(session), {
+      ...makeStartupInput(),
+      runtime,
+    }) as unknown as RuntimeStateDriver;
+    const showStatus = vi.spyOn(driver as any, 'showStatus');
+    await driver.init();
+
+    await expect(
+      driver.reloadCurrentSessionView('Session reloaded.'),
+    ).resolves.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(warnings.list).toHaveBeenCalledOnce();
+    });
+
+    expect(getSessionWarnings).not.toHaveBeenCalled();
+    expect(showStatus).toHaveBeenCalledWith('Session reloaded.');
+    expect(showStatus).not.toHaveBeenCalledWith('Warning: Legacy warning', 'warning');
+  });
+
+  it('reads extension commands from the active session runtime', async () => {
+    const session = makeSession();
+    const harness = makeHarness(session);
+    const list = vi.fn(async () => [
+      { extensionId: 'review', name: 'check', description: 'Review changes' },
+    ]);
+    const extensionCommands = {
+      list,
+      reload: vi.fn(async () => {}),
+      activate: vi.fn(async () => undefined),
+    } satisfies ExtensionCommandPort;
+    const { runtime } = makeTUIRuntime({ extensionCommands });
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtime,
+    });
+
+    await expect(driver.init()).resolves.toBe(false);
+    await driver.refreshExtensionCommands();
+
+    expect(list).toHaveBeenCalled();
+    expect(driver.extensionCommandNames).toContain('review:check');
+  });
+
+  it('clears the active session runtime when the session closes', async () => {
+    const session = makeSession();
+    const harness = makeHarness(session);
+    const { runtime } = makeTUIRuntime();
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtime,
+    }) as unknown as RuntimeStateDriver;
+
+    await expect(driver.init()).resolves.toBe(false);
+    await driver.closeSession('test close');
+
+    expect(() => driver.requireSessionRuntime()).toThrow(
+      'No active session. Send /login to login.',
+    );
+  });
+
+  it('reads process capabilities from an injected runtime environment', async () => {
+    const harness = makeHarness();
+    const runtimeEnvironment = {
+      homeDir: '/tmp/runtime-home',
+      getExperimentalFeatures: vi.fn(async () => []),
+      getConfigDiagnostics: vi.fn(async () => []),
+      close: vi.fn(async () => {}),
+    } satisfies RuntimeEnvironmentPort;
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtimeEnvironment,
+    });
+
+    await expect(driver.init()).resolves.toBe(false);
+
+    expect(runtimeEnvironment.getExperimentalFeatures).toHaveBeenCalledOnce();
+    expect(harness.getExperimentalFeatures).not.toHaveBeenCalled();
+  });
+
+  it('delegates event tracking to an injected runtime telemetry port', () => {
+    const harness = makeHarness();
+    const runtimeTelemetry = {
+      track: vi.fn(),
+      setContext: vi.fn(),
+    } satisfies RuntimeTelemetryPort;
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtimeTelemetry,
+    });
+
+    driver.track('startup_test', { source: 'test' });
+
+    expect(runtimeTelemetry.track).toHaveBeenCalledWith('startup_test', { source: 'test' });
+    expect(harness.track).not.toHaveBeenCalled();
+  });
+
+  it('publishes each session context transition through injected runtime telemetry', async () => {
+    const session = makeSession();
+    const harness = makeHarness(session);
+    const runtimeTelemetry = {
+      track: vi.fn(),
+      setContext: vi.fn(),
+    } satisfies RuntimeTelemetryPort;
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtimeTelemetry,
+    }) as unknown as RuntimeStateDriver;
+
+    await expect(driver.init()).resolves.toBe(false);
+
+    expect(runtimeTelemetry.setContext.mock.calls).toEqual([
+      [{ sessionId: null }],
+      [{ sessionId: 'ses-1' }],
+    ]);
+
+    runtimeTelemetry.setContext.mockClear();
+    await driver.reloadCurrentSessionView('Session reloaded.');
+    await driver.closeSession('test close');
+
+    expect(runtimeTelemetry.setContext.mock.calls).toEqual([
+      [{ sessionId: 'ses-1' }],
+      [{ sessionId: null }],
+    ]);
+    expect(harness.setTelemetryContext).not.toHaveBeenCalled();
+  });
+
   it('creates a fresh session from startup flags and syncs runtime state', async () => {
     const session = makeSession({
       getStatus: vi.fn(async () => ({
@@ -263,8 +1152,8 @@ describe('KimiTUI startup', () => {
       permission: 'yolo',
       planMode: true,
     });
-    expect(session.setApprovalHandler).toHaveBeenCalledOnce();
-    expect(session.setQuestionHandler).toHaveBeenCalledOnce();
+    expect(session.setApprovalHandler).not.toHaveBeenCalled();
+    expect(session.setQuestionHandler).not.toHaveBeenCalled();
     expect(harness.setTelemetryContext).toHaveBeenCalledWith({ sessionId: null });
     expect(harness.setTelemetryContext).toHaveBeenLastCalledWith({ sessionId: 'ses-1' });
     expect(driver.state.startupState).toBe('ready');
@@ -1165,8 +2054,9 @@ describe('KimiTUI startup', () => {
         defaultModel: 'k2',
         thinking: { enabled: false },
         models: {
-          k2: { model: 'moonshot-v1', maxContextSize: 100 },
+          k2: { provider: 'test', model: 'moonshot-v1', maxContextSize: 100 },
         },
+        providers: {},
       })),
       createSession,
     });
@@ -1225,8 +2115,9 @@ describe('KimiTUI startup', () => {
         defaultModel: 'k2',
         thinking: { enabled: false },
         models: {
-          k2: { model: 'moonshot-v1', maxContextSize: 100 },
+          k2: { provider: 'test', model: 'moonshot-v1', maxContextSize: 100 },
         },
+        providers: {},
       })),
       createSession,
     });
@@ -1250,16 +2141,32 @@ describe('KimiTUI startup', () => {
 
   it('does not override active session thinking when configured thinking is enabled after OAuth login', async () => {
     const session = makeSession();
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
+    const harness = makeHarness(session);
+    const models = {
+      load: vi.fn(async () => ({
         defaultModel: 'k2',
         thinking: { enabled: true },
         models: {
-          k2: { model: 'moonshot-v1', maxContextSize: 100 },
+          k2: {
+            provider: 'managed:kimi-code',
+            model: 'moonshot-v1',
+            maxContextSize: 100,
+          },
+        },
+        providers: {
+          'managed:kimi-code': {
+            type: 'kimi',
+            status: 'connected' as const,
+            hasApiKey: true,
+          },
         },
       })),
+    } satisfies RuntimeModelCatalogPort;
+    const { runtime, telemetry, sessionRuntime } = makeTUIRuntime({ models });
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtime,
     });
-    const driver = makeDriver(harness, makeStartupInput());
 
     await expect(driver.init()).resolves.toBe(false);
     expect(driver.state.appState.thinkingEffort).toBe('off');
@@ -1267,16 +2174,18 @@ describe('KimiTUI startup', () => {
     vi.mocked(promptPlatformSelection).mockResolvedValue('kimi-code');
     await handleLoginCommand(driver as any);
 
-    expect(session.setModel).toHaveBeenCalledWith('k2');
+    expect(sessionRuntime.agent.setModel).toHaveBeenCalledWith('k2');
     // `thinking.enabled === true` means "leave the session's current thinking
     // level alone" — only an explicit `enabled === false` forces `'off'`.
-    expect(session.setThinking).not.toHaveBeenCalled();
+    expect(sessionRuntime.agent.setThinking).not.toHaveBeenCalled();
     expect(driver.state.appState).toMatchObject({
       model: 'k2',
       thinkingEffort: 'off',
       maxContextTokens: 100,
     });
-    expect(harness.track).toHaveBeenCalledWith('login', {
+    expect(models.load).toHaveBeenCalledTimes(2);
+    expect(models.load).toHaveBeenNthCalledWith(2, { reload: true });
+    expect(telemetry.track).toHaveBeenCalledWith('login', {
       provider: 'managed:kimi-code',
       method: 'oauth',
       already_logged_in: false,
@@ -1364,6 +2273,29 @@ describe('KimiTUI startup', () => {
 
   it('tracks logout after managed credentials and session state are cleared', async () => {
     const session = makeSession();
+    const configuredCatalog = {
+      models: {
+        k2: {
+          provider: 'managed:kimi-code',
+          model: 'moonshot-v1',
+          maxContextSize: 100,
+        },
+      },
+      providers: {
+        'managed:kimi-code': {
+          type: 'kimi',
+          status: 'connected' as const,
+          hasApiKey: true,
+        },
+      },
+    };
+    const models = {
+      load: vi
+        .fn()
+        .mockResolvedValueOnce(configuredCatalog)
+        .mockResolvedValueOnce(configuredCatalog)
+        .mockResolvedValueOnce({ models: {}, providers: {} }),
+    } satisfies RuntimeModelCatalogPort;
     const harness = makeHarness(session, {
       getConfig: vi.fn(async () => ({
         models: {
@@ -1380,7 +2312,11 @@ describe('KimiTUI startup', () => {
         getManagedUsage: vi.fn(),
       },
     });
-    const driver = makeDriver(harness, makeStartupInput());
+    const { runtime, telemetry, sessionRuntime } = makeTUIRuntime({ models });
+    const driver = makeDriver(harness, {
+      ...makeStartupInput(),
+      runtime,
+    });
 
     await expect(driver.init()).resolves.toBe(false);
     harness.track.mockClear();
@@ -1388,14 +2324,20 @@ describe('KimiTUI startup', () => {
     vi.mocked(promptLogoutProviderSelection).mockResolvedValue('managed:kimi-code');
     await handleLogoutCommand(driver as any);
 
-    expect(harness.auth.logout).toHaveBeenCalledWith('managed:kimi-code');
-    expect(session.close).toHaveBeenCalledOnce();
+    expect(runtime.auth.logout).toHaveBeenCalledWith('managed:kimi-code');
+    expect(sessionRuntime.lifecycle.close).toHaveBeenCalledOnce();
     expect(driver.state.appState).toMatchObject({
       sessionId: '',
       model: '',
       sessionTitle: null,
+      availableModels: {},
+      availableProviders: {},
     });
-    expect(harness.track).toHaveBeenCalledWith('logout', { provider: 'managed:kimi-code' });
+    expect(models.load).toHaveBeenCalledTimes(3);
+    expect(models.load).toHaveBeenNthCalledWith(3, { reload: true });
+    expect(telemetry.track).toHaveBeenCalledWith('logout', {
+      provider: 'managed:kimi-code',
+    });
   });
 
   it('keeps the active session when logging out a different provider', async () => {

@@ -1,8 +1,6 @@
 import { homedir as osHomedir } from 'node:os';
 import { isAbsolute, join, resolve } from 'node:path';
 
-import type { PluginInfo, PluginSummary } from '@moonshot-ai/kimi-code-sdk';
-
 import {
   PluginInstallTrustConfirmComponent,
   PluginMcpSelectorComponent,
@@ -19,6 +17,10 @@ import {
   buildPluginsListLines,
 } from '../components/messages/plugins-status-panel';
 import { UsagePanelComponent } from '../components/messages/usage-panel';
+import type {
+  PluginInfoView,
+  PluginSummaryView,
+} from '#/tui/runtime/session-plugins-port';
 import { formatErrorMessage } from '../utils/event-payload';
 import {
   formatPluginSourceLabel,
@@ -54,7 +56,7 @@ export async function handlePluginsCommand(host: SlashCommandHost, rawArgs: stri
   const args = rawArgs.trim().split(/\s+/).filter((part) => part.length > 0);
   const sub = args[0];
   const rest = args.slice(1);
-  const session = host.requireSession();
+  const plugins = host.requireSessionRuntime().plugins;
 
   try {
     if (sub === undefined) {
@@ -114,7 +116,7 @@ export async function handlePluginsCommand(host: SlashCommandHost, rawArgs: stri
         host.showError('Usage: /plugins mcp enable|disable <id> <server>');
         return;
       }
-      await session.setPluginMcpServerEnabled(id, server, action === 'enable');
+      await plugins.setMcpServerEnabled(id, server, action === 'enable');
       host.showStatus(
         `${action === 'enable' ? 'Enabled' : 'Disabled'} MCP server ${server} for ${id}. Run /reload or /new to apply.`,
       );
@@ -146,8 +148,8 @@ export async function handlePluginsCommand(host: SlashCommandHost, rawArgs: stri
       await reloadPlugins(host);
       return;
     }
-    const plugins = await session.listPlugins();
-    if (plugins.some((plugin) => plugin.id === sub)) {
+    const installed = await plugins.list();
+    if (installed.some((plugin) => plugin.id === sub)) {
       await renderPluginInfo(host, sub);
       return;
     }
@@ -161,9 +163,9 @@ async function showPluginsPicker(
   host: SlashCommandHost,
   options?: ShowPluginsPickerOptions,
 ): Promise<void> {
-  let plugins: readonly PluginSummary[];
+  let plugins: readonly PluginSummaryView[];
   try {
-    plugins = await host.requireSession().listPlugins();
+    plugins = await host.requireSessionRuntime().plugins.list();
   } catch (error) {
     host.showError(`Failed to load plugins: ${formatErrorMessage(error)}`);
     return;
@@ -228,9 +230,9 @@ async function showPluginMcpPicker(
   id: string,
   options?: ShowPluginMcpPickerOptions,
 ): Promise<void> {
-  let info: PluginInfo;
+  let info: PluginInfoView;
   try {
-    info = await host.requireSession().getPluginInfo(id);
+    info = await host.requireSessionRuntime().plugins.info(id);
   } catch (error) {
     host.showError(`Failed to load plugin MCP servers: ${formatErrorMessage(error)}`);
     return;
@@ -259,7 +261,7 @@ async function showPluginMcpPicker(
 async function confirmRemovePlugin(host: SlashCommandHost, id: string): Promise<boolean> {
   let displayName = id;
   try {
-    displayName = (await host.requireSession().getPluginInfo(id)).displayName;
+    displayName = (await host.requireSessionRuntime().plugins.info(id)).displayName;
   } catch {
     // Keep the confirmation available even when plugin details cannot be loaded.
   }
@@ -345,11 +347,11 @@ async function applyPluginEnabled(
   enabled: boolean,
   showStatus = true,
 ): Promise<string> {
-  const session = host.requireSession();
-  await session.setPluginEnabled(id, enabled);
-  let info: PluginInfo | undefined;
+  const plugins = host.requireSessionRuntime().plugins;
+  await plugins.setEnabled(id, enabled);
+  let info: PluginInfoView | undefined;
   try {
-    info = await session.getPluginInfo(id);
+    info = await plugins.info(id);
   } catch {
     info = undefined;
   }
@@ -432,7 +434,7 @@ async function handlePluginMcpSelection(
 ): Promise<void> {
   switch (selection.kind) {
     case 'toggle':
-      await host.requireSession().setPluginMcpServerEnabled(
+      await host.requireSessionRuntime().plugins.setMcpServerEnabled(
         selection.pluginId,
         selection.server,
         selection.enabled,
@@ -452,16 +454,16 @@ async function handlePluginMcpSelection(
 }
 
 async function removePlugin(host: SlashCommandHost, id: string): Promise<void> {
-  await host.requireSession().removePlugin(id);
+  await host.requireSessionRuntime().plugins.remove(id);
   host.showStatus(`Removed ${id}.`);
   host.showStatus(PLUGIN_RELOAD_HINT, 'warning');
 }
 
 async function renderPluginsList(
   host: SlashCommandHost,
-  plugins?: readonly PluginSummary[],
+  plugins?: readonly PluginSummaryView[],
 ): Promise<void> {
-  const currentPlugins = plugins ?? (await host.requireSession().listPlugins());
+  const currentPlugins = plugins ?? (await host.requireSessionRuntime().plugins.list());
   const title = ` Plugins (${currentPlugins.length}) `;
   const panel = new UsagePanelComponent(
     () => buildPluginsListLines({ plugins: currentPlugins }),
@@ -473,7 +475,7 @@ async function renderPluginsList(
 }
 
 async function renderPluginInfo(host: SlashCommandHost, id: string): Promise<void> {
-  const info = await host.requireSession().getPluginInfo(id);
+  const info = await host.requireSessionRuntime().plugins.info(id);
   const panel = new UsagePanelComponent(
     () => buildPluginsInfoLines({ info }),
     'primary',
@@ -487,9 +489,9 @@ async function installPluginFromSource(
   host: SlashCommandHost,
   source: string,
 ): Promise<void> {
-  const session = host.requireSession();
-  const beforeList = await session.listPlugins();
-  const summary = await session.installPlugin(
+  const plugins = host.requireSessionRuntime().plugins;
+  const beforeList = await plugins.list();
+  const summary = await plugins.install(
     resolvePluginInstallSource(source, host.state.appState.workDir),
   );
   showPluginInstallResult(host, beforeList, summary);
@@ -501,8 +503,8 @@ const PLUGIN_QUOTA_NOTE = 'Note: This plugin consumes your quota.';
 
 function showPluginInstallResult(
   host: SlashCommandHost,
-  beforeList: readonly PluginSummary[],
-  summary: PluginSummary,
+  beforeList: readonly PluginSummaryView[],
+  summary: PluginSummaryView,
 ): void {
   const previous = beforeList.find((entry) => entry.id === summary.id);
   const serverWord = summary.mcpServerCount === 1 ? 'server' : 'servers';
@@ -521,8 +523,8 @@ function showPluginInstallResult(
 }
 
 function describeInstallAction(
-  previous: PluginSummary | undefined,
-  next: PluginSummary,
+  previous: PluginSummaryView | undefined,
+  next: PluginSummaryView,
 ): string {
   const sourceLabel = formatPluginSourceLabel(next);
   const versionFromTo = (prev?: string, cur?: string): string => {
@@ -545,7 +547,7 @@ function sourcePhrase(sourceLabel: string): string {
   return sourceLabel.startsWith('via ') ? sourceLabel : `from ${sourceLabel}`;
 }
 
-function sourceIdentity(plugin: PluginSummary): string {
+function sourceIdentity(plugin: PluginSummaryView): string {
   if (plugin.source === 'github' && plugin.github !== undefined) {
     return `github:${plugin.github.owner}/${plugin.github.repo}`;
   }
@@ -558,7 +560,8 @@ function truncateForStatus(input: string): string {
 }
 
 async function reloadPlugins(host: SlashCommandHost): Promise<void> {
-  const summary = await host.requireSession().reloadPlugins();
+  const summary = await host.requireSessionRuntime().plugins.reload();
+  host.refreshSlashCommandAutocomplete();
   const line = `Reload: +${summary.added.length} -${summary.removed.length}` +
     (summary.errors.length > 0 ? ` (${summary.errors.length} errors)` : '');
   host.showStatus(line);

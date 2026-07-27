@@ -33,6 +33,10 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./v2": {
+      "types": "./src/v2/index.ts",
+      "default": "./src/v2/index.ts"
     }
   },
   "publishConfig": {
@@ -42,13 +46,19 @@
         "types": "./dist/index.d.mts",
         "import": "./dist/index.mjs",
         "default": "./dist/index.mjs"
+      },
+      "./v2": {
+        "types": "./dist/v2/index.d.ts",
+        "import": "./dist/v2/index.mjs",
+        "default": "./dist/v2/index.mjs"
       }
     },
     "provenance": true
   },
   "scripts": {
-    "build": "tsdown && pnpm run build:dts",
+    "build": "tsdown && pnpm run build:dts && pnpm run build:dts:v2",
     "build:dts": "node scripts/build-dts.mjs",
+    "build:dts:v2": "tsc6 --ignoreConfig --target ES2024 --module preserve --moduleResolution bundler --lib ESNext --types node --strict --verbatimModuleSyntax --experimentalDecorators --declaration --emitDeclarationOnly --noEmitOnError --skipLibCheck --rootDir src/v2 --outDir dist/v2 ../agent-core-v2/src/env.d.ts src/v2/index.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "clean": "rm -rf dist .tmp-api-extractor"
   },
@@ -60,8 +70,10 @@
   },
   "devDependencies": {
     "@moonshot-ai/agent-core": "workspace:^",
+    "@moonshot-ai/agent-core-v2": "workspace:^",
     "@moonshot-ai/kaos": "workspace:^",
     "@moonshot-ai/kimi-code-oauth": "workspace:^",
+    "@moonshot-ai/klient": "workspace:^",
     "@moonshot-ai/kosong": "workspace:^",
     "@types/yazl": "^2.4.6",
     "jimp": "^1.6.1"

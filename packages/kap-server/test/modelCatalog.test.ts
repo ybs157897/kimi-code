@@ -320,6 +320,15 @@ describe('server-v2 /api/v1 model/provider catalog', () => {
       status: async () => ({ loggedIn: false }),
       refreshOAuthProviderModels,
       getManagedUsage: async () => ({ kind: 'error' as const, message: 'unused' }),
+      submitFeedback: async () => {
+        throw new Error('unused');
+      },
+      createFeedbackUploadUrl: async () => {
+        throw new Error('unused');
+      },
+      completeFeedbackUpload: async () => {
+        throw new Error('unused');
+      },
       resolveTokenProvider: () => undefined,
       getCachedAccessToken: async () => undefined,
     };

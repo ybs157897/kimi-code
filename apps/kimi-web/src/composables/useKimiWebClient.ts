@@ -41,6 +41,7 @@ import { useAppearance } from './client/useAppearance';
 import { useNotification, shouldNotifyCompletion } from './client/useNotification';
 import { useSoundNotification } from './client/useSoundNotification';
 import { useTaskPoller } from './client/useTaskPoller';
+import { useExtensionState } from './client/useExtensionState';
 import { useModelProviderState } from './client/useModelProviderState';
 import { useSideChat } from './client/useSideChat';
 import {
@@ -59,6 +60,7 @@ import type {
   AppGoal,
   AppNotice,
   AppNoticeDetail,
+  AppExtensionCommand,
   AppMessage,
   AppModel,
   AppProvider,
@@ -1939,6 +1941,13 @@ const skills = computed<AppSkill[]>(() => {
   return wid ? (modelProvider.skillsByWorkspace.value[wid] ?? []) : [];
 });
 
+/** Callback-free code-extension commands for the active v2 session. */
+const extensionCommands = computed<AppExtensionCommand[]>(() => {
+  if (rawState.backend !== 'v2') return [];
+  const sid = rawState.activeSessionId;
+  return sid ? (extensionState.commandsBySession.value[sid] ?? []) : [];
+});
+
 const inFlight = computed<boolean>(() => {
   const sid = rawState.activeSessionId;
   if (!sid) return false;
@@ -2188,6 +2197,10 @@ const modelProvider = useModelProviderState(rawState, {
   activity,
   updateSession,
   updateSessionMessages,
+});
+
+const extensionState = useExtensionState(rawState, {
+  pushOperationFailure,
 });
 
 /** Git info for the active session from the daemon's fs:git_status response */
@@ -2596,6 +2609,7 @@ const workspaceState = useWorkspaceState(rawState, {
   taskPoller,
   sideChat,
   modelProvider,
+  extensionState,
   pushOperationFailure,
   activity,
   sessionsKnownEmpty,
@@ -2961,6 +2975,9 @@ export function useKimiWebClient() {
     loadProviders: modelProvider.loadProviders,
     skills,
     activateSkill: modelProvider.activateSkill,
+    extensionCommands,
+    reloadExtensions: extensionState.reload,
+    activateExtensionCommand: extensionState.activateCommand,
     setModel: modelProvider.setModel,
     toggleStarModel: modelProvider.toggleStarModel,
     saveProvider: modelProvider.saveProvider,

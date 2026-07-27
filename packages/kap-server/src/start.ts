@@ -32,7 +32,6 @@ import { transformOpenApiDocument } from './openapi/transforms';
 import { registerRequestLogging } from './requestLogging';
 import { resolveRequestId } from './request-id';
 import { registerApiV1Routes } from './routes/registerApiV1Routes';
-import { registerApiV2Routes } from './routes/registerApiV2Routes';
 import { registerWebAssetRoutes } from './routes/webAssets';
 import {
   createServerLogger,
@@ -110,6 +109,11 @@ export interface ServerStartOptions {
    * unset unless a second, distinct RPC credential is genuinely needed.
    */
   readonly rpcToken?: string;
+  /**
+   * Host-owned outbound request headers. These override the server's default
+   * product User-Agent; low-level `seeds` are still applied last.
+   */
+  readonly requestHeaders?: Readonly<Record<string, string>>;
   /** Extra scope seeds applied at bootstrap (e.g. a host-provided `ISessionModelResolver`). */
   readonly seeds?: ScopeSeed;
   /**
@@ -230,9 +234,12 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
     ...logSeed(logging),
     // Default host identity so outbound requests (model, WebSearch, registry
     // refresh) carry a product User-Agent even when the embedding host did not
-    // seed its own headers. Hosts like the CLI pass full Kimi identity headers
-    // through `opts.seeds`, which override this entry (last seed wins).
-    ...hostRequestHeadersSeed({ 'User-Agent': `kimi-code-cli/${hostVersion}` }),
+    // seed its own headers. Embedding hosts pass their identity through the
+    // narrow requestHeaders option; low-level seeds remain the final override.
+    ...hostRequestHeadersSeed({
+      'User-Agent': `kimi-code-cli/${hostVersion}`,
+      ...opts.requestHeaders,
+    }),
     ...skillCatalogRuntimeOptionsSeed(opts.skillDirs),
     ...hostIdentitySeed(opts.hostIdentity),
     ...(opts.seeds ?? []),
@@ -428,8 +435,6 @@ export async function startServer(opts: ServerStartOptions = {}): Promise<Runnin
     transcriptService,
     dangerousBypassAuth: opts.disableAuth === true,
   });
-  await registerApiV2Routes(app, core);
-
   const wssV1 = registerWsV1(core, {
     validateCredential,
     registry: connectionRegistry,

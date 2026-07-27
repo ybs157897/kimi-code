@@ -1,10 +1,17 @@
+/**
+ * Scenario: translate runtime-neutral thinking effort values to and from persisted config.
+ * Responsibilities: enabled state, provider-specific efforts, and session-only top tiers.
+ * Wiring: pure functions with no external collaborators.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/utils/thinking-config.test.ts
+ */
 import { describe, expect, it } from 'vitest';
 
 import {
   isThinkingOn,
+  type ThinkingEffortValue,
   thinkingEffortFromConfig,
   thinkingEffortToConfig,
-} from '@/tui/utils/thinking-config';
+} from '#/tui/utils/thinking-config';
 
 describe('thinkingEffortToConfig', () => {
   it.each([
@@ -26,10 +33,17 @@ describe('thinkingEffortToConfig', () => {
     ['low', { enabled: true, effort: 'low' }],
     ['high', { enabled: true, effort: 'high' }],
     ['max', { enabled: true }],
-    // Undeclared values persist as-is (the provider validates them).
-    ['ultra', { enabled: true, effort: 'ultra' }],
   ] as const)('maps %s → %o for [low, high, max]', (effort, expected) => {
     expect(thinkingEffortToConfig(effort, ['low', 'high', 'max'])).toEqual(expected);
+  });
+
+  it('persists an undeclared provider effort unchanged', () => {
+    const effort: ThinkingEffortValue = 'ultra';
+
+    expect(thinkingEffortToConfig(effort, ['low', 'high', 'max'])).toEqual({
+      enabled: true,
+      effort: 'ultra',
+    });
   });
 
   it('treats a single declared level as the top tier', () => {

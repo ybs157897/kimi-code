@@ -1,4 +1,4 @@
-import type { PermissionMode } from '@moonshot-ai/kimi-code-sdk';
+import type { AgentPermissionMode } from '#/tui/runtime/session-control-port';
 
 import { ChoicePickerComponent, type ChoiceOption } from './choice-picker';
 
@@ -20,13 +20,13 @@ const PERMISSION_OPTIONS: readonly ChoiceOption[] = [
   },
 ];
 
-function isPermissionModeChoice(value: string): value is PermissionMode {
+function isPermissionModeChoice(value: string): value is AgentPermissionMode {
   return value === 'manual' || value === 'auto' || value === 'yolo';
 }
 
 export interface PermissionSelectorOptions {
-  readonly currentValue: PermissionMode;
-  readonly onSelect: (mode: PermissionMode) => void;
+  readonly currentValue: AgentPermissionMode;
+  readonly onSelect: (mode: AgentPermissionMode) => void;
   readonly onCancel: () => void;
 }
 

@@ -1,5 +1,7 @@
-import type { PluginInfo, PluginSummary } from '@moonshot-ai/kimi-code-sdk';
-
+import type {
+  PluginInfoView,
+  PluginSummaryView,
+} from '#/tui/runtime/session-plugins-port';
 import { currentTheme } from '#/tui/theme';
 import {
   CURATED_BADGE,
@@ -11,7 +13,7 @@ import {
 } from '../../utils/plugin-source-label';
 
 export interface PluginsListPanelInput {
-  readonly plugins: readonly PluginSummary[];
+  readonly plugins: readonly PluginSummaryView[];
 }
 
 export function buildPluginsListLines(input: PluginsListPanelInput): readonly string[] {
@@ -54,7 +56,7 @@ export function buildPluginsListLines(input: PluginsListPanelInput): readonly st
 
 
 export interface PluginsInfoPanelInput {
-  readonly info: PluginInfo;
+  readonly info: PluginInfoView;
 }
 
 export function buildPluginsInfoLines(input: PluginsInfoPanelInput): readonly string[] {
@@ -161,7 +163,7 @@ export function buildPluginsInfoLines(input: PluginsInfoPanelInput): readonly st
   return lines;
 }
 
-function stateText(state: PluginInfo['state']): string {
+function stateText(state: PluginInfoView['state']): string {
   if (state === 'ok') return currentTheme.fg('success', state);
   return currentTheme.fg('error', state);
 }

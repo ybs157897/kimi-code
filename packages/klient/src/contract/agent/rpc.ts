@@ -63,6 +63,10 @@ export const cancelPayloadSchema = z.object({
   turnId: z.number().optional(),
 });
 
+export const undoHistoryPayloadSchema = z.object({
+  count: z.number(),
+});
+
 export const runShellCommandPayloadSchema = z.object({
   command: z.string(),
   commandId: z.string().optional(),
@@ -92,6 +96,17 @@ export const permissionModeSchema = z.enum(['manual', 'yolo', 'auto']);
 
 export const setPermissionPayloadSchema = z.object({
   mode: permissionModeSchema,
+});
+
+export const activateSkillPayloadSchema = z.object({
+  name: z.string(),
+  args: z.string().optional(),
+});
+
+export const activatePluginCommandPayloadSchema = z.object({
+  pluginId: z.string(),
+  commandName: z.string(),
+  args: z.string().optional(),
 });
 
 export const tokenUsageSchema = z.object({
@@ -195,6 +210,13 @@ export const agentRpcContract = {
   prompt: { input: z.tuple([promptPayloadSchema]), output: maybe(promptLaunchResultSchema) },
   steer: { input: z.tuple([steerPayloadSchema]), output: maybe(promptLaunchResultSchema) },
   cancel: { input: z.tuple([cancelPayloadSchema]), output: noResult },
+  undoHistory: { input: z.tuple([undoHistoryPayloadSchema]), output: z.number() },
   setPermission: { input: z.tuple([setPermissionPayloadSchema]), output: noResult },
+  cancelCompaction: { input: z.tuple([emptyPayloadSchema]), output: noResult },
+  activateSkill: { input: z.tuple([activateSkillPayloadSchema]), output: noResult },
+  activatePluginCommand: {
+    input: z.tuple([activatePluginCommandPayloadSchema]),
+    output: noResult,
+  },
   getContext: { input: z.tuple([emptyPayloadSchema]), output: agentContextDataSchema },
 } satisfies ServiceContract;

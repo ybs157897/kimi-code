@@ -7,11 +7,9 @@ import {
   type Focusable,
 } from '@moonshot-ai/pi-tui';
 
-import type { ThinkingEffort } from '@moonshot-ai/kimi-code-sdk';
-
 import { currentTheme } from '#/tui/theme';
 
-import { effortLabel } from './model-selector';
+import { effortLabel, type ThinkingEffort } from './model-selector';
 
 export interface EffortSelectorOptions {
   readonly title?: string;

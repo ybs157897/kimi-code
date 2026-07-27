@@ -12,8 +12,13 @@ import { log } from '@moonshot-ai/kimi-code-sdk';
 
 import type { ChoiceOption } from '../components/dialogs/choice-picker';
 import { DEFAULT_OAUTH_PROVIDER_NAME, PRODUCT_NAME } from '../constant/kimi-tui';
+import type {
+  RuntimeModelConfigApplyInput,
+  RuntimeProviderType,
+} from '../runtime/runtime-model-config-port';
+import type { RuntimeModelCatalogSnapshot } from '../runtime/runtime-model-catalog-port';
 import { formatErrorMessage } from '../utils/event-payload';
-import type { LoginProgressSpinnerHandle } from '../types';
+import type { AppState, LoginProgressSpinnerHandle } from '../types';
 import {
   promptApiKey,
   promptLogoutProviderSelection,
@@ -41,10 +46,8 @@ export async function handleLoginCommand(host: SlashCommandHost): Promise<void> 
 }
 
 async function handleKimiCodeOAuthLogin(host: SlashCommandHost): Promise<void> {
-  const status = await host.harness.auth.status(DEFAULT_OAUTH_PROVIDER_NAME);
-  const alreadyLoggedIn = status.providers.some(
-    (provider) => provider.providerName === DEFAULT_OAUTH_PROVIDER_NAME && provider.hasToken,
-  );
+  const status = await host.runtime.auth.status(DEFAULT_OAUTH_PROVIDER_NAME);
+  const alreadyLoggedIn = status.loggedIn;
 
   let spinner: LoginProgressSpinnerHandle | undefined;
   const controller = new AbortController();
@@ -53,7 +56,7 @@ async function handleKimiCodeOAuthLogin(host: SlashCommandHost): Promise<void> {
   };
   host.cancelInFlight = cancelLogin;
   try {
-    await host.harness.auth.login(DEFAULT_OAUTH_PROVIDER_NAME, {
+    await host.runtime.auth.login(DEFAULT_OAUTH_PROVIDER_NAME, {
       signal: controller.signal,
       onDeviceCode: (data) => {
         spinner = host.showLoginAuthorizationPrompt(data);
@@ -87,7 +90,7 @@ async function handleKimiCodeOAuthLogin(host: SlashCommandHost): Promise<void> {
     log.warn('login failed', {
       providerName: DEFAULT_OAUTH_PROVIDER_NAME,
       alreadyLoggedIn,
-      sessionId: host.session?.id,
+      sessionId: host.state.appState.sessionId || undefined,
       error,
     });
     const message = formatErrorMessage(error);
@@ -149,13 +152,16 @@ async function handleOpenPlatformLogin(
   const selection = await promptModelSelectionForOpenPlatform(host, models, platform);
   if (selection === undefined) return;
 
-  const existingConfig = await host.harness.getConfig();
-  if (existingConfig.providers[platform.id] !== undefined) {
-    await host.harness.removeProvider(platform.id);
+  const catalog = await host.runtime.models.load();
+  if (catalog.providers[platform.id] !== undefined) {
+    await host.runtime.modelConfig.removeProvider(platform.id);
   }
 
-  const config = await host.harness.getConfig();
-  applyOpenPlatformConfig(config as ManagedKimiConfigShape, {
+  const config: ManagedKimiConfigShape = {
+    providers: {},
+    models: {},
+  };
+  applyOpenPlatformConfig(config, {
     platform,
     models,
     selectedModel: selection.model,
@@ -167,12 +173,7 @@ async function handleOpenPlatformLogin(
     apiKey,
   });
 
-  await host.harness.setConfig({
-    providers: config.providers,
-    models: config.models,
-    defaultModel: config.defaultModel,
-    thinking: config.thinking,
-  });
+  await host.runtime.modelConfig.apply(runtimeConfigApplyInput(config));
 
   await host.authFlow.refreshConfigAfterLogin();
   host.track('login', { provider: platform.id, method: 'api_key' });
@@ -180,14 +181,11 @@ async function handleOpenPlatformLogin(
 }
 
 export async function handleLogoutCommand(host: SlashCommandHost): Promise<void> {
-  const oauthStatus = await host.harness.auth.status(DEFAULT_OAUTH_PROVIDER_NAME);
-  const hasOAuthToken = oauthStatus.providers.some(
-    (p) => p.providerName === DEFAULT_OAUTH_PROVIDER_NAME && p.hasToken,
-  );
-  const config = await host.harness.getConfig();
+  const oauthStatus = await host.runtime.auth.status(DEFAULT_OAUTH_PROVIDER_NAME);
+  const config = await host.runtime.models.load();
   const hasManagedRemnant =
-    hasOAuthToken || config.providers[DEFAULT_OAUTH_PROVIDER_NAME] !== undefined;
-  const apiKeyProviderIds = Object.keys(config.providers ?? {})
+    oauthStatus.loggedIn || config.providers[DEFAULT_OAUTH_PROVIDER_NAME] !== undefined;
+  const apiKeyProviderIds = Object.keys(config.providers)
     .filter((id) => id !== DEFAULT_OAUTH_PROVIDER_NAME)
     .toSorted();
 
@@ -220,23 +218,68 @@ export async function handleLogoutCommand(host: SlashCommandHost): Promise<void>
   if (target === undefined) return;
 
   if (target === DEFAULT_OAUTH_PROVIDER_NAME) {
-    await host.harness.auth.logout(DEFAULT_OAUTH_PROVIDER_NAME);
+    await host.runtime.auth.logout(DEFAULT_OAUTH_PROVIDER_NAME);
   } else {
-    await host.harness.removeProvider(target);
+    await host.runtime.modelConfig.removeProvider(target);
   }
 
   if (target === currentProvider) {
     await host.authFlow.refreshConfigAfterLogout();
     await host.authFlow.clearActiveSessionAfterLogout();
   } else {
-    const updated = await host.harness.getConfig({ reload: true });
-    host.setAppState({
-      availableModels: updated.models ?? {},
-      availableProviders: updated.providers ?? {},
-    });
+    applyRuntimeCatalog(host, await host.runtime.models.load({ reload: true }));
   }
 
   host.track('logout', { provider: target });
   const label = target === DEFAULT_OAUTH_PROVIDER_NAME ? PRODUCT_NAME : target;
   host.showStatus(`Logged out from ${label}.`);
+}
+
+function runtimeConfigApplyInput(
+  config: ManagedKimiConfigShape,
+): RuntimeModelConfigApplyInput {
+  return {
+    providers:
+      config.providers as RuntimeModelConfigApplyInput['providers'],
+    models: config.models as RuntimeModelConfigApplyInput['models'],
+    defaultModel: config.defaultModel,
+    thinking:
+      config.thinking as RuntimeModelConfigApplyInput['thinking'],
+  };
+}
+
+function applyRuntimeCatalog(
+  host: SlashCommandHost,
+  catalog: RuntimeModelCatalogSnapshot,
+): void {
+  const availableProviders: AppState['availableProviders'] = {};
+  for (const [id, provider] of Object.entries(catalog.providers)) {
+    if (!isRuntimeProviderType(provider.type)) continue;
+    availableProviders[id] = {
+      type: provider.type,
+      baseUrl: provider.baseUrl,
+      defaultModel: provider.defaultModel,
+      env: provider.env,
+      customHeaders: provider.customHeaders,
+      source: provider.source,
+    };
+  }
+  host.setAppState({
+    availableModels: catalog.models,
+    availableProviders,
+  });
+}
+
+function isRuntimeProviderType(type: string): type is RuntimeProviderType {
+  switch (type) {
+    case 'anthropic':
+    case 'google-genai':
+    case 'kimi':
+    case 'openai':
+    case 'openai_responses':
+    case 'vertexai':
+      return true;
+    default:
+      return false;
+  }
 }

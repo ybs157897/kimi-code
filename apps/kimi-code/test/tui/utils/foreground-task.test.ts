@@ -1,9 +1,16 @@
-import type { BackgroundTaskInfo } from '@moonshot-ai/kimi-code-sdk';
+/**
+ * Scenario: Foreground process and agent tasks are selected for Ctrl+B detachment.
+ * Responsibility: Filter neutral AgentTask snapshots and order matching tasks newest-first.
+ * Wiring: Pure utility functions receive literal runtime-port fixtures with no collaborators.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/utils/foreground-task.test.ts
+ */
+
 import { describe, expect, it } from 'vitest';
 
+import type { AgentTask } from '@/tui/runtime/session-control-port';
 import { pickForegroundTask, pickForegroundTasks } from '@/tui/utils/foreground-task';
 
-function task(overrides: Partial<BackgroundTaskInfo> = {}): BackgroundTaskInfo {
+function task(overrides: Partial<AgentTask> = {}): AgentTask {
   return {
     taskId: 'bash-aaaaaaaa',
     kind: 'process',
@@ -16,7 +23,7 @@ function task(overrides: Partial<BackgroundTaskInfo> = {}): BackgroundTaskInfo {
     startedAt: 1000,
     endedAt: null,
     ...overrides,
-  } as BackgroundTaskInfo;
+  };
 }
 
 describe('pickForegroundTask', () => {
@@ -37,7 +44,7 @@ describe('pickForegroundTask', () => {
     const question = task({
       kind: 'question',
       questionCount: 1,
-    } as Partial<BackgroundTaskInfo>);
+    });
     expect(pickForegroundTask([question])).toBeUndefined();
   });
 
@@ -59,7 +66,7 @@ describe('pickForegroundTask', () => {
       kind: 'agent',
       agentId: 'child-1',
       subagentType: 'coder',
-    } as Partial<BackgroundTaskInfo>);
+    });
     expect(pickForegroundTask([agent])?.taskId).toBe('agent-aaaaaaaa');
   });
 });
@@ -80,7 +87,7 @@ describe('pickForegroundTasks', () => {
     const fg = task({ taskId: 'bash-fg' });
     const detached = task({ taskId: 'bash-bg', detached: true });
     const done = task({ taskId: 'bash-done', status: 'completed' });
-    const question = task({ taskId: 'q', kind: 'question' } as Partial<BackgroundTaskInfo>);
+    const question = task({ taskId: 'q', kind: 'question' });
     expect(pickForegroundTasks([fg, detached, done, question]).map((t) => t.taskId)).toEqual([
       'bash-fg',
     ]);

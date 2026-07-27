@@ -4,19 +4,26 @@
  * Defines the public contracts of authentication: the `AuthStatus` model, the
  * `IOAuthService` used to drive device-code login / logout / flow inspection,
  * to resolve a per-provider `BearerTokenProvider`, and to refresh a managed
- * OAuth provider's server-side model configuration, the `IOAuthToolkit`
- * device-code client that `IOAuthService` delegates the OAuth protocol to, and
- * the `IAuthSummaryService` used to summarize auth state and provide the
- * prompt auth-readiness gate. App-scoped — shared across the application.
+ * OAuth provider's server-side model configuration and submit managed
+ * feedback, the `IOAuthToolkit` client that `IOAuthService` delegates the
+ * OAuth protocol and managed API calls to, and the `IAuthSummaryService` used
+ * to summarize auth state and provide the prompt auth-readiness gate.
+ * App-scoped — shared across the application.
  */
 
 import type {
   AuthManagedUsageResult,
   BearerTokenProvider,
+  CompleteFeedbackUploadBody,
+  CreateFeedbackUploadUrlBody,
+  FetchCompleteFeedbackUploadResult,
+  FetchCreateFeedbackUploadUrlResult,
+  FetchSubmitFeedbackResult,
   KimiOAuthLoginOptions,
   KimiOAuthLoginResult,
   KimiOAuthLogoutResult,
   KimiOAuthTokenRef,
+  SubmitFeedbackBody,
 } from '@moonshot-ai/kimi-code-oauth';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { Error2 } from '#/_base/errors/errors';
@@ -47,6 +54,18 @@ export interface IOAuthService {
   status(provider?: string): Promise<AuthStatus>;
   refreshOAuthProviderModels(): Promise<RefreshOAuthProviderModelsResponse>;
   getManagedUsage(provider?: string): Promise<AuthManagedUsageResult>;
+  submitFeedback(
+    body: SubmitFeedbackBody,
+    provider?: string,
+  ): Promise<FetchSubmitFeedbackResult>;
+  createFeedbackUploadUrl(
+    body: CreateFeedbackUploadUrlBody,
+    provider?: string,
+  ): Promise<FetchCreateFeedbackUploadUrlResult>;
+  completeFeedbackUpload(
+    body: CompleteFeedbackUploadBody,
+    provider?: string,
+  ): Promise<FetchCompleteFeedbackUploadResult>;
   resolveTokenProvider(provider: string, oauthRef?: OAuthRef): BearerTokenProvider | undefined;
   getCachedAccessToken(provider: string, oauthRef?: OAuthRef): Promise<string | undefined>;
 }
@@ -68,6 +87,21 @@ export interface IOAuthToolkit {
     providerName?: string,
     options?: { readonly oauthRef?: KimiOAuthTokenRef; readonly baseUrl?: string },
   ): Promise<AuthManagedUsageResult>;
+  submitFeedback(
+    body: SubmitFeedbackBody,
+    providerName?: string,
+    options?: { readonly oauthRef?: KimiOAuthTokenRef; readonly baseUrl?: string },
+  ): Promise<FetchSubmitFeedbackResult>;
+  createFeedbackUploadUrl(
+    body: CreateFeedbackUploadUrlBody,
+    providerName?: string,
+    options?: { readonly oauthRef?: KimiOAuthTokenRef; readonly baseUrl?: string },
+  ): Promise<FetchCreateFeedbackUploadUrlResult>;
+  completeFeedbackUpload(
+    body: CompleteFeedbackUploadBody,
+    providerName?: string,
+    options?: { readonly oauthRef?: KimiOAuthTokenRef; readonly baseUrl?: string },
+  ): Promise<FetchCompleteFeedbackUploadResult>;
 }
 
 export const IOAuthToolkit: ServiceIdentifier<IOAuthToolkit> =

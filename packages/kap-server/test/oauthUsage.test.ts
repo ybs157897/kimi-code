@@ -59,6 +59,15 @@ describe('server-v2 GET /api/v1/oauth/usage', () => {
       status: async () => ({ loggedIn: false }),
       refreshOAuthProviderModels: async () => ({ changed: [], unchanged: [], failed: [] }),
       getManagedUsage,
+      submitFeedback: async () => {
+        throw new Error('unused');
+      },
+      createFeedbackUploadUrl: async () => {
+        throw new Error('unused');
+      },
+      completeFeedbackUpload: async () => {
+        throw new Error('unused');
+      },
       resolveTokenProvider: () => undefined,
       getCachedAccessToken: async () => undefined,
     };

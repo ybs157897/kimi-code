@@ -5,15 +5,15 @@
  * separate from the TUI orchestration layer.
  */
 
-import {
-  effectiveModelAlias,
-  type ModelAlias,
-  type PermissionMode,
-  type SessionStatus,
-  type ThinkingEffort,
-} from '@moonshot-ai/kimi-code-sdk';
-
 import { PRODUCT_NAME } from '#/constant/app';
+import {
+  effectiveRuntimeModelCatalogModel,
+  type RuntimeModelCatalogModel,
+} from '#/tui/runtime/runtime-model-catalog-port';
+import type {
+  AgentPermissionMode,
+  AgentRuntimeStatus,
+} from '#/tui/runtime/session-control-port';
 import { currentTheme } from '#/tui/theme';
 import {
   formatTokenCount,
@@ -41,14 +41,14 @@ export interface StatusReportOptions {
   readonly workDir: string;
   readonly sessionId: string;
   readonly sessionTitle: string | null;
-  readonly thinkingEffort: ThinkingEffort;
-  readonly permissionMode: PermissionMode;
+  readonly thinkingEffort: string;
+  readonly permissionMode: AgentPermissionMode;
   readonly planMode: boolean;
   readonly contextUsage: number;
   readonly contextTokens: number;
   readonly maxContextTokens: number;
-  readonly availableModels: Record<string, ModelAlias>;
-  readonly status?: SessionStatus;
+  readonly availableModels: Record<string, RuntimeModelCatalogModel>;
+  readonly status?: AgentRuntimeStatus;
   readonly statusError?: string;
   readonly managedUsage?: ManagedUsageReport;
   readonly managedUsageError?: string;
@@ -56,9 +56,13 @@ export interface StatusReportOptions {
 
 type Colorize = (text: string) => string;
 
-function displayModelName(alias: string, models: Record<string, ModelAlias>): string {
+function displayModelName(
+  alias: string,
+  models: Record<string, RuntimeModelCatalogModel>,
+): string {
   const model = models[alias];
-  const effective = model === undefined ? undefined : effectiveModelAlias(model);
+  const effective =
+    model === undefined ? undefined : effectiveRuntimeModelCatalogModel(model);
   return effective?.displayName ?? effective?.model ?? alias;
 }
 

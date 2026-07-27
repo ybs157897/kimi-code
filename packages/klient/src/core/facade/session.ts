@@ -29,6 +29,19 @@ import type {
   ExpertTeamDefinition,
   ExpertTeamSnapshot,
 } from '@moonshot-ai/agent-core-v2/session/expertTeam/expertTeam';
+import type { CronTask } from '@moonshot-ai/agent-core-v2/app/cron/cronTask';
+import type {
+  GoalQueueMoveDirection,
+  GoalQueueSnapshot,
+  UpcomingGoal,
+} from '@moonshot-ai/agent-core-v2/session/goalQueue/sessionGoalQueue';
+import type { ExtensionReloadSummary } from '@moonshot-ai/agent-core-v2/session/extension/sessionExtension';
+import type { ExtensionCommandDefinition } from '@moonshot-ai/agent-core-v2/app/extension/extension.types';
+import type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
+import type {
+  AddAdditionalDirInput,
+  WorkspaceAdditionalDirsResult,
+} from '@moonshot-ai/agent-core-v2/session/workspaceCommand/workspaceCommand';
 
 import type { ScopeRef } from '../channel.js';
 import type { ScopedCaller } from './global.js';
@@ -56,11 +69,67 @@ export interface SessionInteractionsFacade {
   respond(id: string, response: unknown): Promise<void>;
 }
 
+export interface SessionInitFacade {
+  generateAgentsMd(): Promise<void>;
+  cancel(): Promise<void>;
+}
+
+export interface SessionBtwFacade {
+  start(): Promise<string>;
+}
+
 export interface SessionExpertTeamFacade {
   list(): Promise<readonly ExpertTeamDefinition[]>;
   get(): Promise<ExpertTeamSnapshot | null>;
   activate(pluginId: string): Promise<ExpertTeamSnapshot>;
   deactivate(): Promise<void>;
+}
+
+export interface SessionExtensionsFacade {
+  listCommands(): Promise<readonly ExtensionCommandDefinition[]>;
+  reload(): Promise<ExtensionReloadSummary>;
+}
+
+export interface SessionCronFacade {
+  list(): Promise<readonly CronTask[]>;
+  getNextFireTime(): Promise<number | null>;
+}
+
+export interface SessionGoalQueueFacade {
+  read(): Promise<GoalQueueSnapshot>;
+  append(input: { readonly objective: string }): Promise<GoalQueueSnapshot>;
+  update(input: {
+    readonly goalId: string;
+    readonly objective: string;
+  }): Promise<GoalQueueSnapshot>;
+  remove(input: { readonly goalId: string }): Promise<GoalQueueSnapshot>;
+  restore(goal: UpcomingGoal): Promise<GoalQueueSnapshot>;
+  move(input: {
+    readonly goalId: string;
+    readonly direction: GoalQueueMoveDirection;
+  }): Promise<GoalQueueSnapshot>;
+}
+
+export interface SessionSkillsFacade {
+  list(): Promise<readonly SkillSummary[]>;
+  reload(): Promise<void>;
+}
+
+export interface SessionWarning {
+  readonly code: string;
+  readonly message: string;
+}
+
+export interface SessionWarningsFacade {
+  list(): Promise<readonly SessionWarning[]>;
+}
+
+export interface SessionWorkspaceFacade {
+  get(): Promise<{
+    readonly workDir: string;
+    readonly additionalDirs: readonly string[];
+  }>;
+  addAdditionalDir(input: AddAdditionalDirInput): Promise<WorkspaceAdditionalDirsResult>;
 }
 
 /**
@@ -89,7 +158,15 @@ export interface SessionFacade {
   readonly approvals: SessionApprovalsFacade;
   readonly questions: SessionQuestionsFacade;
   readonly interactions: SessionInteractionsFacade;
+  readonly init: SessionInitFacade;
+  readonly btw: SessionBtwFacade;
   readonly expertTeam: SessionExpertTeamFacade;
+  readonly extensions: SessionExtensionsFacade;
+  readonly cron: SessionCronFacade;
+  readonly goalQueue: SessionGoalQueueFacade;
+  readonly skills: SessionSkillsFacade;
+  readonly warnings: SessionWarningsFacade;
+  readonly workspace: SessionWorkspaceFacade;
   /** Agent id → metadata for every agent registered in this session. */
   agents(): Promise<Readonly<Record<string, AgentMeta>>>;
 }
@@ -178,6 +255,16 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
         call(scope, 'sessionInteractionService', 'respond', [id, response]) as Promise<void>,
     },
 
+    init: {
+      generateAgentsMd: () =>
+        call(scope, 'sessionInitService', 'generateAgentsMd', []) as Promise<void>,
+      cancel: () => call(scope, 'sessionInitService', 'cancelInit', []) as Promise<void>,
+    },
+
+    btw: {
+      start: () => call(scope, 'sessionBtwService', 'start', []) as Promise<string>,
+    },
+
     expertTeam: {
       list: () =>
         call(scope, 'sessionExpertTeamService', 'listAvailable', []) as Promise<
@@ -193,6 +280,73 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
         ]) as Promise<ExpertTeamSnapshot>,
       deactivate: () =>
         call(scope, 'sessionExpertTeamService', 'deactivate', []) as Promise<void>,
+    },
+
+    extensions: {
+      listCommands: () =>
+        call(scope, 'sessionExtensionService', 'listCommands', []) as Promise<
+          readonly ExtensionCommandDefinition[]
+        >,
+      reload: () =>
+        call(scope, 'sessionExtensionService', 'reload', []) as Promise<ExtensionReloadSummary>,
+    },
+
+    cron: {
+      list: () =>
+        call(scope, 'sessionCronService', 'list', []) as Promise<readonly CronTask[]>,
+      getNextFireTime: () =>
+        call(scope, 'sessionCronService', 'getNextFireTime', []) as Promise<number | null>,
+    },
+
+    goalQueue: {
+      read: () =>
+        call(scope, 'sessionGoalQueueService', 'read', []) as Promise<GoalQueueSnapshot>,
+      append: (input) =>
+        call(scope, 'sessionGoalQueueService', 'append', [input]) as Promise<GoalQueueSnapshot>,
+      update: (input) =>
+        call(scope, 'sessionGoalQueueService', 'update', [input]) as Promise<GoalQueueSnapshot>,
+      remove: (input) =>
+        call(scope, 'sessionGoalQueueService', 'remove', [input]) as Promise<GoalQueueSnapshot>,
+      restore: (goal) =>
+        call(scope, 'sessionGoalQueueService', 'restore', [goal]) as Promise<GoalQueueSnapshot>,
+      move: (input) =>
+        call(scope, 'sessionGoalQueueService', 'move', [input]) as Promise<GoalQueueSnapshot>,
+    },
+
+    skills: {
+      list: () =>
+        call(scope, 'sessionSkillCatalog', 'listSkills', []) as Promise<
+          readonly SkillSummary[]
+        >,
+      reload: () => call(scope, 'sessionSkillCatalog', 'reload', []) as Promise<void>,
+    },
+
+    warnings: {
+      list: async () => {
+        const warning = (await call(
+          scope,
+          'sessionSecondaryModelWarningService',
+          'getSecondaryModelWarning',
+          [],
+        )) as SessionWarning | undefined;
+        return warning === undefined ? [] : [warning];
+      },
+    },
+
+    workspace: {
+      get: async () => {
+        const [workDir, additionalDirs] = await Promise.all([
+          call(scope, 'sessionWorkspaceContext', 'workDir', []) as Promise<string>,
+          call(scope, 'sessionWorkspaceContext', 'additionalDirs', []) as Promise<
+            readonly string[]
+          >,
+        ]);
+        return { workDir, additionalDirs };
+      },
+      addAdditionalDir: (input) =>
+        call(scope, 'sessionWorkspaceCommandService', 'addAdditionalDir', [
+          input,
+        ]) as Promise<WorkspaceAdditionalDirsResult>,
     },
 
     agents: async () => {

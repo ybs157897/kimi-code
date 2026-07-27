@@ -20,10 +20,10 @@ import {
   wrapTextWithAnsi,
   type Component,
 } from '@moonshot-ai/pi-tui';
-import type { GoalSnapshot, GoalStatus } from '@moonshot-ai/kimi-code-sdk';
 
 import { MESSAGE_INDENT } from '#/tui/constant/rendering';
 import { STATUS_BULLET } from '#/tui/constant/symbols';
+import type { AgentGoal, AgentGoalStatus } from '#/tui/runtime/session-control-port';
 import { currentTheme } from '#/tui/theme';
 import type { ColorToken } from '#/tui/theme';
 import { formatTokenCount } from '#/utils/usage/usage-format';
@@ -108,7 +108,7 @@ export class GoalCompletionMessageComponent implements Component {
 }
 
 export class GoalStatusMessageComponent implements Component {
-  constructor(private readonly goal: GoalSnapshot) {}
+  constructor(private readonly goal: AgentGoal) {}
 
   invalidate(): void {}
 
@@ -124,11 +124,11 @@ export class GoalStatusMessageComponent implements Component {
 }
 
 /** Box title, e.g. ` Goal · active `. */
-export function goalPanelTitle(goal: GoalSnapshot): string {
+export function goalPanelTitle(goal: AgentGoal): string {
   return ` Goal · ${goal.status} `;
 }
 
-export function buildGoalReportLines(goal: GoalSnapshot, wrapWidth: number = WRAP_WIDTH): string[] {
+export function buildGoalReportLines(goal: AgentGoal, wrapWidth: number = WRAP_WIDTH): string[] {
   const statusColor = statusToken(goal.status);
   const bar = (s: string) => currentTheme.fg(statusColor, s);
   const value = (s: string) => currentTheme.fg('text', s);
@@ -181,7 +181,7 @@ export function buildGoalReportLines(goal: GoalSnapshot, wrapWidth: number = WRA
 }
 
 /** The configured hard stop(s), or null when the goal is unbounded. */
-function formatStopRow(goal: GoalSnapshot): string | null {
+function formatStopRow(goal: AgentGoal): string | null {
   const { budget } = goal;
   const parts: string[] = [];
   if (budget.turnBudget !== null) {
@@ -196,7 +196,7 @@ function formatStopRow(goal: GoalSnapshot): string | null {
   return parts.length > 0 ? parts.join(', ') : null;
 }
 
-function statusToken(status: GoalStatus): ColorToken {
+function statusToken(status: AgentGoalStatus): ColorToken {
   switch (status) {
     case 'active':
       return 'primary';

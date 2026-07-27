@@ -946,6 +946,89 @@ describe('AgentTranscriptProjector', () => {
     expect(tx.getMeta().modes).toBeUndefined();
   });
 
+  it('projects expert-team snapshots into meta with lifecycle markers only', () => {
+    const projector = new AgentTranscriptProjector('main');
+    const tx = new AgentTranscript('main');
+    const binding = {
+      pluginId: 'expert-team',
+      displayName: 'Expert Team',
+      leadAgentName: 'lead',
+      leadProfileName: 'expert-team:lead',
+      memberAgentNames: ['researcher'],
+      previousProfile: {
+        thinkingLevel: 'off',
+        cwd: '/workspace',
+        systemPrompt: '',
+      },
+      activatedAt: '2026-07-27T00:00:00.000Z',
+    };
+    const activated = { binding };
+    tx.apply(projector.mapExpertTeamChanged(null, activated));
+    expect(tx.getMeta().modes?.expertTeam).toEqual({
+      pluginId: 'expert-team',
+      displayName: 'Expert Team',
+      leadAgentName: 'lead',
+      activatedAt: '2026-07-27T00:00:00.000Z',
+    });
+
+    const created = {
+      binding,
+      team: {
+        id: 'analysis',
+        name: 'analysis',
+        createdAt: '2026-07-27T00:01:00.000Z',
+        members: [],
+      },
+    };
+    tx.apply(projector.mapExpertTeamChanged(activated, created));
+    const running = {
+      binding,
+      team: {
+        ...created.team,
+        members: [
+          {
+            name: 'researcher',
+            agentId: 'researcher@analysis',
+            profileName: 'expert-team:researcher',
+            status: 'running' as const,
+            updatedAt: '2026-07-27T00:02:00.000Z',
+            taskId: 'task-1',
+          },
+        ],
+      },
+    };
+    tx.apply(projector.mapExpertTeamChanged(created, running));
+    expect(tx.getMeta().modes?.expertTeam?.team?.members).toEqual([
+      {
+        name: 'researcher',
+        agentId: 'researcher@analysis',
+        status: 'running',
+        taskId: 'task-1',
+      },
+    ]);
+
+    const markersBeforeDelete = tx
+      .getItems()
+      .filter((item) => item.kind === 'marker')
+      .map((item) => item.kind === 'marker' && item.marker);
+    expect(markersBeforeDelete).toEqual(['expert-team.activate', 'expert-team.create']);
+
+    tx.apply(projector.mapExpertTeamChanged(running, { binding }));
+    tx.apply(projector.mapExpertTeamChanged({ binding }, null));
+    expect(tx.getMeta().modes).toBeUndefined();
+    expect(
+      tx
+        .getItems()
+        .filter((item) => item.kind === 'marker')
+        .map((item) => item.kind === 'marker' && item.marker),
+    ).toEqual([
+      'expert-team.activate',
+      'expert-team.create',
+      'expert-team.delete',
+      'expert-team.deactivate',
+    ]);
+  });
+
   it('mirrors status slices into meta.agent (shallow-merged across slices)', () => {
     const projector = new AgentTranscriptProjector('main');
     const tx = new AgentTranscript('main');

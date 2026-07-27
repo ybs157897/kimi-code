@@ -1,15 +1,22 @@
 import type {
-  GoalChange,
-  GoalSnapshot,
-  ExpertTeamMemberState,
-  ExpertTeamSnapshot,
-  ModelAlias,
-  PermissionMode,
-  ProviderConfig,
-  PromptPart,
-  ThinkingEffort,
-  ToolInputDisplay,
-} from '@moonshot-ai/kimi-code-sdk';
+  TUIAgentGoalChange,
+  TUIToolInputDisplay,
+} from '#/tui/runtime/agent-events-port';
+import type {
+  RuntimeModelCatalogModel,
+  RuntimeProviderConfigView,
+} from '#/tui/runtime/runtime-model-catalog-port';
+import type { RuntimeProviderType } from '#/tui/runtime/runtime-model-config-port';
+import type {
+  AgentGoal,
+  AgentPermissionMode,
+  AgentPromptPart,
+} from '#/tui/runtime/session-control-port';
+import type {
+  SessionExpertTeamMember,
+  SessionExpertTeamSnapshot,
+} from '#/tui/runtime/session-expert-team-port';
+import type { ThinkingEffortValue } from '#/tui/utils/thinking-config';
 
 import type { NotificationsConfig, UpgradePreferences } from './config';
 import type { PendingApproval, PendingQuestion } from './reverse-rpc/types';
@@ -31,19 +38,19 @@ export interface AppState {
   workDir: string;
   additionalDirs: readonly string[];
   sessionId: string;
-  permissionMode: PermissionMode;
+  permissionMode: AgentPermissionMode;
   planMode: boolean;
   /** 'bash' when the editor is in `!` shell-command mode. */
   inputMode: 'prompt' | 'bash';
   swarmMode: boolean;
   /** Active plugin-defined expert team mode, when selected. */
-  expertTeam?: ExpertTeamSnapshot | null;
+  expertTeam?: SessionExpertTeamSnapshot | null;
   /** Declared team roster and each member's current lifecycle phase. */
-  expertTeamMembers?: readonly ExpertTeamMemberState[];
+  expertTeamMembers?: readonly SessionExpertTeamMember[];
   /** Live thinking effort of the active session (e.g. 'off', 'on', 'high');
    * mirrors the runtime. The single source of truth for the thinking state in
    * the TUI. */
-  thinkingEffort: ThinkingEffort;
+  thinkingEffort: ThinkingEffortValue;
   contextUsage: number;
   contextTokens: number;
   maxContextTokens: number;
@@ -58,11 +65,14 @@ export interface AppState {
   disablePasteBurst?: boolean;
   notifications: NotificationsConfig;
   upgrade: UpgradePreferences;
-  availableModels: Record<string, ModelAlias>;
-  availableProviders: Record<string, ProviderConfig>;
+  availableModels: Record<string, RuntimeModelCatalogModel>;
+  availableProviders: Record<
+    string,
+    RuntimeProviderConfigView & { readonly type: RuntimeProviderType }
+  >;
   sessionTitle: string | null;
   /** Current goal snapshot for the footer badge; null/undefined when no active goal. */
-  goal?: GoalSnapshot | null;
+  goal?: AgentGoal | null;
   mcpServersSummary: string | null;
   /** Optional banner shown below the welcome panel; null means no banner to render. */
   banner?: BannerState | null;
@@ -73,7 +83,7 @@ export interface ToolCallBlockData {
   name: string;
   args: Record<string, unknown>;
   description?: string;
-  display?: ToolInputDisplay;
+  display?: TUIToolInputDisplay;
   streamingArguments?: string;
   streamingStartedAtMs?: number;
   result?: ToolResultBlockData;
@@ -142,7 +152,7 @@ export interface CronTranscriptData {
 
 export type GoalTranscriptData =
   | { readonly kind: 'created' }
-  | { readonly kind: 'lifecycle'; readonly change: GoalChange };
+  | { readonly kind: 'lifecycle'; readonly change: TUIAgentGoalChange };
 
 export type TranscriptEntryKind =
   | 'welcome'
@@ -212,7 +222,7 @@ export interface LivePaneState {
 export interface QueuedMessage {
   readonly text: string;
   readonly agentId?: string;
-  readonly parts?: readonly PromptPart[];
+  readonly parts?: readonly AgentPromptPart[];
   readonly imageAttachmentIds?: readonly number[];
   /** `bash` for a `!` shell command queued while another command is running;
    *  undefined (=`prompt`) for a normal message. */
@@ -227,7 +237,7 @@ export interface QueuedMessage {
  */
 export interface SteerInputItem {
   readonly text: string;
-  readonly parts?: readonly PromptPart[];
+  readonly parts?: readonly AgentPromptPart[];
   readonly imageAttachmentIds?: readonly number[];
 }
 

@@ -1,0 +1,27 @@
+/**
+ * Session cron read model. Scheduling mutation and callback-bearing methods
+ * stay inside the engine; klient only exposes the serializable task list and
+ * the next fire timestamp.
+ */
+
+import { z } from 'zod';
+
+import type { ServiceContract } from '../types.js';
+
+export const cronTaskSchema = z.object({
+  id: z.string(),
+  cron: z.string(),
+  prompt: z.string(),
+  createdAt: z.number(),
+  recurring: z.boolean().optional(),
+  lastFiredAt: z.number().optional(),
+  tags: z.record(z.string(), z.string()).optional(),
+});
+
+export const sessionCronContract = {
+  list: { input: z.tuple([]), output: z.array(cronTaskSchema) },
+  getNextFireTime: {
+    input: z.tuple([]),
+    output: z.number().nullable(),
+  },
+} satisfies ServiceContract;

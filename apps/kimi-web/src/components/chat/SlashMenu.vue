@@ -41,7 +41,7 @@ watch(
       @mousedown.prevent="emit('select', item)"
     >
       <span class="slash-name">{{ item.name }}</span>
-      <span class="slash-desc">{{ item.isSkill ? item.desc : t(item.desc) }}</span>
+      <span class="slash-desc">{{ item.isSkill || item.isExtension ? item.desc : t(item.desc) }}</span>
     </div>
   </div>
 </template>

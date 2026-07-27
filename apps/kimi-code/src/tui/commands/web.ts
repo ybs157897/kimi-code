@@ -20,13 +20,15 @@ import type { SlashCommandHost } from './dispatch';
  * the ready hook once the server is actually listening.
  */
 export async function handleWebCommand(host: SlashCommandHost): Promise<void> {
-  const session = host.session;
-  if (session === undefined) {
+  let sessionId: string;
+  try {
+    sessionId = host.requireSessionRuntime().sessionId;
+  } catch {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
 
-  startNewServerAfterExit(host, session.id);
+  startNewServerAfterExit(host, sessionId);
   await host.stop();
 }
 

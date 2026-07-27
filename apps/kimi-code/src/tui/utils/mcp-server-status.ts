@@ -1,6 +1,9 @@
-import type { McpServerInfo, McpServerStatusEvent } from '@moonshot-ai/kimi-code-sdk';
+import type { McpServerView } from '../runtime/session-mcp-port';
 
-export type McpServerStatusSnapshot = McpServerInfo | McpServerStatusEvent['server'];
+export type McpServerStatusSnapshot = Pick<
+  McpServerView,
+  'name' | 'status' | 'transport' | 'toolCount' | 'error'
+>;
 
 export const MCP_STARTUP_STATUS_ROW_LIMIT = 4;
 

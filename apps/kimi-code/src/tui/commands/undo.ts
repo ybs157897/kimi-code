@@ -1,6 +1,4 @@
 import type { Component } from '@moonshot-ai/pi-tui';
-import type { ContextMessage } from '@moonshot-ai/kimi-code-sdk';
-import { isKimiError } from '@moonshot-ai/kimi-code-sdk';
 
 import { WelcomeComponent } from '../components/chrome/welcome';
 import { CompactionComponent } from '../components/dialogs/compaction';
@@ -20,6 +18,8 @@ import { ThinkingComponent } from '../components/messages/thinking';
 import { ToolCallComponent } from '../components/messages/tool-call';
 import { UserMessageComponent } from '../components/messages/user-message';
 import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/kimi-tui';
+import type { TUIContextMessage } from '../runtime/session-context-view-port';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
 import type { TranscriptEntry } from '../types';
 import { formatErrorMessage } from '../utils/event-payload';
 import { getTranscriptComponentEntry } from '../utils/transcript-component-metadata';
@@ -34,10 +34,6 @@ interface UndoAvailability {
   readonly maxCount: number;
   readonly stoppedAtCompaction: boolean;
 }
-
-type UndoSessionContext = Awaited<
-  ReturnType<NonNullable<SlashCommandHost['session']>['getContext']>
->;
 
 const UNDO_LIMIT_STATUS_TURN_ID = 'undo-limit-status';
 
@@ -62,28 +58,23 @@ export async function handleUndoCommand(
     return;
   }
 
-  const session = host.session;
-  if (session === undefined) {
-    host.showError(NO_ACTIVE_SESSION_MESSAGE);
-    return;
-  }
+  const runtime = getUndoRuntime(host);
+  if (runtime === undefined) return;
 
-  const availability = await resolveUndoAvailability(host);
+  const availability = await resolveUndoAvailability(host, runtime);
   if (count > availability.maxCount) {
     showUndoLimitStatus(host, formatUndoLimitMessage(count, availability));
     return;
   }
 
-  await undoByCount(host, count);
+  await undoByCount(host, runtime, count);
 }
 
-async function undoByCount(host: SlashCommandHost, count: number): Promise<boolean> {
-  const session = host.session;
-  if (session === undefined) {
-    host.showError(NO_ACTIVE_SESSION_MESSAGE);
-    return false;
-  }
-
+async function undoByCount(
+  host: SlashCommandHost,
+  runtime: TUISessionRuntime,
+  count: number,
+): Promise<boolean> {
   const entries = host.state.transcriptEntries;
   const lastUserIndex = findUndoAnchorEntryIndex(entries, count);
   if (lastUserIndex === undefined) {
@@ -92,7 +83,7 @@ async function undoByCount(host: SlashCommandHost, count: number): Promise<boole
   }
 
   try {
-    await session.undoHistory(count);
+    await runtime.context.undoHistory(count);
   } catch (error) {
     const limit = undoLimitFromError(error);
     if (limit !== undefined) {
@@ -126,12 +117,10 @@ async function undoByCount(host: SlashCommandHost, count: number): Promise<boole
 }
 
 async function showUndoSelector(host: SlashCommandHost): Promise<void> {
-  if (host.session === undefined) {
-    host.showError(NO_ACTIVE_SESSION_MESSAGE);
-    return;
-  }
+  const runtime = getUndoRuntime(host);
+  if (runtime === undefined) return;
 
-  const availability = await resolveUndoAvailability(host);
+  const availability = await resolveUndoAvailability(host, runtime);
   const choices = createUndoChoices(
     host.state.transcriptEntries,
     host.state.transcriptContainer.children,
@@ -146,7 +135,7 @@ async function showUndoSelector(host: SlashCommandHost): Promise<void> {
     new UndoSelectorComponent({
       choices,
       onSelect: (choice) => {
-        void undoByCount(host, choice.count).then((undone) => {
+        void undoByCount(host, runtime, choice.count).then((undone) => {
           if (undone) {
             host.restoreInputText(choice.input);
             return;
@@ -161,6 +150,15 @@ async function showUndoSelector(host: SlashCommandHost): Promise<void> {
   );
 }
 
+function getUndoRuntime(host: SlashCommandHost): TUISessionRuntime | undefined {
+  try {
+    return host.requireSessionRuntime();
+  } catch {
+    host.showError(NO_ACTIVE_SESSION_MESSAGE);
+    return undefined;
+  }
+}
+
 function parseUndoCount(args: string): number | undefined {
   const value = args.trim();
   if (value.length === 0) return 1;
@@ -171,15 +169,16 @@ function parseUndoCount(args: string): number | undefined {
 
 async function resolveUndoAvailability(
   host: SlashCommandHost,
+  runtime: TUISessionRuntime,
 ): Promise<UndoAvailability> {
   const local = undoAvailabilityFromTranscript(
     host.state.transcriptEntries,
     host.state.transcriptContainer.children,
   );
-  const context = await getSessionContext(host.session);
-  if (context === undefined) return local;
+  const history = await getContextHistory(runtime);
+  if (history === undefined) return local;
 
-  const activeContext = undoAvailabilityFromContext(context.history);
+  const activeContext = undoAvailabilityFromContext(history);
   return {
     maxCount: Math.min(local.maxCount, activeContext.maxCount),
     stoppedAtCompaction:
@@ -187,15 +186,11 @@ async function resolveUndoAvailability(
   };
 }
 
-async function getSessionContext(
-  session: SlashCommandHost['session'],
-): Promise<UndoSessionContext | undefined> {
-  const getContext = (
-    session as { getContext?: () => Promise<UndoSessionContext> } | undefined
-  )?.getContext;
-  if (session === undefined || getContext === undefined) return undefined;
+async function getContextHistory(
+  runtime: TUISessionRuntime,
+): Promise<readonly TUIContextMessage[] | undefined> {
   try {
-    return await getContext.call(session);
+    return (await runtime.contextView.read()).history;
   } catch {
     return undefined;
   }
@@ -213,7 +208,7 @@ function undoAvailabilityFromTranscript(
 }
 
 function undoAvailabilityFromContext(
-  history: readonly ContextMessage[],
+  history: readonly TUIContextMessage[],
 ): UndoAvailability {
   let maxCount = 0;
   let stoppedAtCompaction = false;
@@ -232,15 +227,15 @@ function undoAvailabilityFromContext(
   return { maxCount, stoppedAtCompaction };
 }
 
-function isContextUndoAnchor(message: ContextMessage): boolean {
+function isContextUndoAnchor(message: TUIContextMessage): boolean {
   if (message.role !== 'user') return false;
   const origin = message.origin;
   if (origin === undefined || origin.kind === 'user') return true;
   if (origin.kind === 'skill_activation') {
-    return origin.trigger === 'user-slash';
+    return 'trigger' in origin && origin.trigger === 'user-slash';
   }
   if (origin.kind === 'plugin_command') {
-    return origin.trigger === 'user-slash';
+    return 'trigger' in origin && origin.trigger === 'user-slash';
   }
   return false;
 }
@@ -373,9 +368,9 @@ function showUndoLimitStatus(host: SlashCommandHost, message: string): void {
 function undoLimitFromError(
   error: unknown,
 ): (UndoAvailability & { readonly requestedCount: number }) | undefined {
-  if (!isKimiError(error)) return undefined;
-  const details = error.details;
-  if (details?.['reason'] !== 'undo_limit') return undefined;
+  if (!isRecord(error)) return undefined;
+  const details = error['details'];
+  if (!isRecord(details) || details['reason'] !== 'undo_limit') return undefined;
   const requestedCount = details['requestedCount'];
   const maxCount = details['undoableCount'];
   const stoppedAtCompaction = details['stoppedAtCompaction'];
@@ -387,6 +382,10 @@ function undoLimitFromError(
     return undefined;
   }
   return { requestedCount, maxCount, stoppedAtCompaction };
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isUndoAnchorEntry(entry: TranscriptEntry): boolean {

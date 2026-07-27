@@ -1,6 +1,19 @@
+/**
+ * Scenario: neutral TUI context messages are exported as user-facing Markdown.
+ * Responsibilities: format content, tool calls/results, internal-origin filtering,
+ * turn grouping, frontmatter, and overview counts without SDK-owned message types.
+ * Wiring: pure helpers only; no runtime collaborators are stubbed.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/export-markdown.test.ts
+ */
+
 import { describe, expect, it } from 'vitest';
-import type { ContentPart, ToolCall } from '@moonshot-ai/kimi-code-sdk';
-import type { ContextMessage, PromptOrigin } from '@moonshot-ai/kimi-code-sdk';
+
+import type {
+  TUIContentPart,
+  TUIContextMessage,
+  TUIMessageOrigin,
+  TUIToolCall,
+} from '#/tui/runtime/session-context-view-port';
 
 import {
   buildExportMarkdown,
@@ -9,13 +22,15 @@ import {
   formatToolCallMd,
   groupIntoTurns,
   isInternalMessage,
-} from '../../src/tui/utils/export-markdown';
+} from '#/tui/utils/export-markdown';
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
-function userMsg(text: string, origin?: PromptOrigin): ContextMessage {
+type TestMessageOrigin = TUIMessageOrigin & Readonly<Record<string, unknown>>;
+
+function userMsg(text: string, origin?: TestMessageOrigin): TUIContextMessage {
   return {
     role: 'user',
     content: [{ type: 'text', text }],
@@ -26,10 +41,10 @@ function userMsg(text: string, origin?: PromptOrigin): ContextMessage {
 
 function assistantMsg(
   text: string,
-  toolCalls: ToolCall[] = [],
+  toolCalls: readonly TUIToolCall[] = [],
   thinkText?: string,
-): ContextMessage {
-  const content: ContentPart[] = [];
+): TUIContextMessage {
+  const content: TUIContentPart[] = [];
   if (thinkText !== undefined) {
     content.push({ type: 'think', think: thinkText });
   }
@@ -41,7 +56,7 @@ function assistantMsg(
   };
 }
 
-function toolMsg(callId: string, text: string): ContextMessage {
+function toolMsg(callId: string, text: string): TUIContextMessage {
   return {
     role: 'tool',
     content: [{ type: 'text', text }],
@@ -50,7 +65,7 @@ function toolMsg(callId: string, text: string): ContextMessage {
   };
 }
 
-function makeToolCall(id: string, name: string, args: Record<string, unknown>): ToolCall {
+function makeToolCall(id: string, name: string, args: Record<string, unknown>): TUIToolCall {
   return {
     type: 'function',
     id,
@@ -225,7 +240,7 @@ describe('isInternalMessage', () => {
 
 describe('groupIntoTurns', () => {
   it('groups messages into turns starting at user messages', () => {
-    const msgs: ContextMessage[] = [
+    const msgs: TUIContextMessage[] = [
       userMsg('q1', { kind: 'user' }),
       assistantMsg('a1'),
       userMsg('q2', { kind: 'user' }),
@@ -238,7 +253,7 @@ describe('groupIntoTurns', () => {
   });
 
   it('skips internal messages', () => {
-    const msgs: ContextMessage[] = [
+    const msgs: TUIContextMessage[] = [
       userMsg('q1', { kind: 'user' }),
       userMsg('injected', { kind: 'injection', variant: 'test' }),
       assistantMsg('a1'),
@@ -254,7 +269,7 @@ describe('groupIntoTurns', () => {
 
   it('handles tool messages within a turn', () => {
     const tc = makeToolCall('c1', 'Bash', { command: 'ls' });
-    const msgs: ContextMessage[] = [
+    const msgs: TUIContextMessage[] = [
       userMsg('do it', { kind: 'user' }),
       assistantMsg('ok', [tc]),
       toolMsg('c1', 'file1.txt'),
@@ -274,7 +289,7 @@ describe('buildExportMarkdown', () => {
   const now = new Date('2026-05-27T10:00:00+08:00');
 
   it('builds complete markdown with frontmatter and overview', () => {
-    const msgs: ContextMessage[] = [
+    const msgs: TUIContextMessage[] = [
       userMsg('Hello world', { kind: 'user' }),
       assistantMsg('Hi there'),
     ];
@@ -301,7 +316,7 @@ describe('buildExportMarkdown', () => {
   });
 
   it('includes thinking in collapsible details', () => {
-    const msgs: ContextMessage[] = [
+    const msgs: TUIContextMessage[] = [
       userMsg('question', { kind: 'user' }),
       assistantMsg('answer', [], 'deep thought'),
     ];
@@ -318,7 +333,7 @@ describe('buildExportMarkdown', () => {
 
   it('renders tool calls and results', () => {
     const tc = makeToolCall('c1', 'Read', { file_path: '/foo.ts' });
-    const msgs: ContextMessage[] = [
+    const msgs: TUIContextMessage[] = [
       userMsg('read file', { kind: 'user' }),
       assistantMsg('let me read', [tc]),
       toolMsg('c1', 'file contents here'),
@@ -338,7 +353,7 @@ describe('buildExportMarkdown', () => {
   });
 
   it('filters out internal messages', () => {
-    const msgs: ContextMessage[] = [
+    const msgs: TUIContextMessage[] = [
       userMsg('hello', { kind: 'user' }),
       userMsg('injected stuff', { kind: 'injection', variant: 'system-reminder' }),
       assistantMsg('response'),
@@ -356,7 +371,7 @@ describe('buildExportMarkdown', () => {
   });
 
   it('counts turns correctly in overview', () => {
-    const msgs: ContextMessage[] = [
+    const msgs: TUIContextMessage[] = [
       userMsg('q1', { kind: 'user' }),
       assistantMsg('a1'),
       userMsg('q2', { kind: 'user' }),
@@ -380,7 +395,7 @@ describe('buildExportMarkdown', () => {
   it('counts tool calls in overview', () => {
     const tc1 = makeToolCall('c1', 'Bash', { command: 'ls' });
     const tc2 = makeToolCall('c2', 'Read', { file_path: '/a.ts' });
-    const msgs: ContextMessage[] = [
+    const msgs: TUIContextMessage[] = [
       userMsg('do things', { kind: 'user' }),
       assistantMsg('ok', [tc1, tc2]),
       toolMsg('c1', 'out1'),

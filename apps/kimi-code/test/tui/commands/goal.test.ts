@@ -1,4 +1,7 @@
-import { ErrorCodes, KimiError } from '@moonshot-ai/kimi-code-sdk';
+/**
+ * Exercises the public `/goal` command contract: parsing, runtime-agent goal
+ * control, and runtime-bound upcoming-goal queue delegation.
+ */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -8,42 +11,8 @@ import {
   parseGoalCommand,
   setExperimentalFeatures,
 } from '#/tui/commands/index';
-import {
-  appendGoalQueueItem,
-  moveGoalQueueItem,
-  readGoalQueue,
-  removeGoalQueueItem,
-  updateGoalQueueItem,
-} from '#/tui/goal-queue-store';
 import type { SlashCommandHost } from '#/tui/commands/dispatch';
 import { getBuiltInPalette } from '#/tui/theme';
-
-vi.mock('#/tui/goal-queue-store', () => ({
-  appendGoalQueueItem: vi.fn(async () => ({
-    goals: [{ id: 'q1', objective: 'obj', createdAt: '', updatedAt: '' }],
-  })),
-  readGoalQueue: vi.fn(async () => ({
-    goals: [
-      { id: 'q1', objective: 'First queued goal', createdAt: '', updatedAt: '' },
-      { id: 'q2', objective: 'Second queued goal', createdAt: '', updatedAt: '' },
-    ],
-  })),
-  moveGoalQueueItem: vi.fn(async () => ({
-    goals: [
-      { id: 'q2', objective: 'Second queued goal', createdAt: '', updatedAt: '' },
-      { id: 'q1', objective: 'First queued goal', createdAt: '', updatedAt: '' },
-    ],
-  })),
-  removeGoalQueueItem: vi.fn(async () => ({
-    goals: [{ id: 'q2', objective: 'Second queued goal', createdAt: '', updatedAt: '' }],
-  })),
-  updateGoalQueueItem: vi.fn(async () => ({
-    goals: [
-      { id: 'q1', objective: 'First queued goal updated', createdAt: '', updatedAt: '' },
-      { id: 'q2', objective: 'Second queued goal', createdAt: '', updatedAt: '' },
-    ],
-  })),
-}));
 
 const ENTER = '\r';
 const ESCAPE = '\u001B';
@@ -77,27 +46,69 @@ function stripAnsi(text: string): string {
   return text.replaceAll(/\u001B\[[0-9;]*m/g, '');
 }
 
+function errorWithCode(code: string, message: string): Error & { code: string } {
+  return Object.assign(new Error(message), { code });
+}
+
 function makeHost(
   overrides: {
     model?: string;
     hasSession?: boolean;
+    hasRuntime?: boolean;
     streaming?: boolean;
     permissionMode?: 'manual' | 'auto' | 'yolo';
   } = {},
 ) {
-  const session = {
+  const agent = {
     setPermission: vi.fn(async () => {}),
     createGoal: vi.fn(async () => fakeSnapshot()),
-    getGoal: vi.fn(async (): Promise<{ goal: ReturnType<typeof fakeSnapshot> | null }> => ({
-      goal: null,
-    })),
+    getGoal: vi.fn(async (): Promise<ReturnType<typeof fakeSnapshot> | null> => null),
     pauseGoal: vi.fn(async () => fakeSnapshot()),
     resumeGoal: vi.fn(async () => fakeSnapshot()),
     cancelGoal: vi.fn(async () => fakeSnapshot()),
     cancel: vi.fn(async () => {}),
   };
+  const session = {};
   const hasSession = overrides.hasSession ?? true;
+  const hasRuntime = overrides.hasRuntime ?? true;
+  const goalQueue = {
+    append: vi.fn(async () => ({
+      goals: [{ id: 'q1', objective: 'obj', createdAt: '', updatedAt: '' }],
+    })),
+    read: vi.fn(async () => ({
+      goals: [
+        { id: 'q1', objective: 'First queued goal', createdAt: '', updatedAt: '' },
+        { id: 'q2', objective: 'Second queued goal', createdAt: '', updatedAt: '' },
+      ],
+    })),
+    move: vi.fn(async () => ({
+      goals: [
+        { id: 'q2', objective: 'Second queued goal', createdAt: '', updatedAt: '' },
+        { id: 'q1', objective: 'First queued goal', createdAt: '', updatedAt: '' },
+      ],
+    })),
+    remove: vi.fn(async () => ({
+      goals: [{ id: 'q2', objective: 'Second queued goal', createdAt: '', updatedAt: '' }],
+    })),
+    restore: vi.fn(async () => ({
+      goals: [
+        { id: 'q1', objective: 'First queued goal', createdAt: '', updatedAt: '' },
+        { id: 'q2', objective: 'Second queued goal', createdAt: '', updatedAt: '' },
+      ],
+    })),
+    update: vi.fn(async () => ({
+      goals: [
+        { id: 'q1', objective: 'First queued goal updated', createdAt: '', updatedAt: '' },
+        { id: 'q2', objective: 'Second queued goal', createdAt: '', updatedAt: '' },
+      ],
+    })),
+  };
+  const runtime = { agent, goalQueue };
   const transcriptContainer = { addChild: vi.fn() };
+  const requireSession = vi.fn(() => {
+    if (!hasSession) throw new Error('No active raw session');
+    return session;
+  });
   const host = {
     state: {
       appState: {
@@ -112,7 +123,11 @@ function makeHost(
     },
     session: hasSession ? session : undefined,
     skillCommandMap: new Map<string, string>(),
-    requireSession: () => session,
+    requireSession,
+    requireSessionRuntime: () => {
+      if (!hasRuntime) throw new Error('No active session runtime');
+      return runtime;
+    },
     setAppState: vi.fn((patch: Record<string, unknown>) => Object.assign(host.state.appState, patch)),
     showError: vi.fn(),
     showStatus: vi.fn(),
@@ -125,7 +140,7 @@ function makeHost(
     cancelInFlight: vi.fn(),
     track: vi.fn(),
   } as unknown as SlashCommandHost;
-  return { host, session };
+  return { host, session, agent, goalQueue, requireSession };
 }
 
 interface TestPicker {
@@ -220,39 +235,42 @@ describe('parseGoalCommand', () => {
 
 describe('handleGoalCommand', () => {
   let host: SlashCommandHost;
-  let session: ReturnType<typeof makeHost>['session'];
+  let agent: ReturnType<typeof makeHost>['agent'];
+  let goalQueue: ReturnType<typeof makeHost>['goalQueue'];
 
   beforeEach(() => {
     const made = makeHost();
     host = made.host;
-    session = made.session;
-    vi.mocked(appendGoalQueueItem).mockClear();
-    vi.mocked(readGoalQueue).mockClear();
-    vi.mocked(moveGoalQueueItem).mockClear();
-    vi.mocked(removeGoalQueueItem).mockClear();
-    vi.mocked(updateGoalQueueItem).mockClear();
+    agent = made.agent;
+    goalQueue = made.goalQueue;
   });
 
   it('/goal calls getGoal and does not send input', async () => {
     await handleGoalCommand(host, '');
-    expect(session.getGoal).toHaveBeenCalledOnce();
+    expect(agent.getGoal).toHaveBeenCalledOnce();
     expect(host.track).toHaveBeenCalledWith('goal_status', { status: 'none' });
     expect(host.sendNormalUserInput).not.toHaveBeenCalled();
   });
 
-  it('/goal status calls getGoal and does not send input', async () => {
-    await handleGoalCommand(host, 'status');
-    expect(session.getGoal).toHaveBeenCalledOnce();
-    expect(host.sendNormalUserInput).not.toHaveBeenCalled();
+  it('/goal status uses the runtime agent when the raw session is unavailable', async () => {
+    const { host: runtimeHost, agent: runtimeAgent } = makeHost({ hasSession: false });
+
+    await handleGoalCommand(runtimeHost, 'status');
+
+    expect(runtimeAgent.getGoal).toHaveBeenCalledOnce();
+    expect(runtimeHost.sendNormalUserInput).not.toHaveBeenCalled();
   });
 
-  it('/goal <objective> creates a goal and sends the objective as input', async () => {
-    await handleGoalCommand(host, 'Ship feature X');
-    expect(session.createGoal).toHaveBeenCalledWith(
+  it('/goal <objective> uses the runtime agent when the raw session is unavailable', async () => {
+    const { host: runtimeHost, agent: runtimeAgent } = makeHost({ hasSession: false });
+
+    await handleGoalCommand(runtimeHost, 'Ship feature X');
+
+    expect(runtimeAgent.createGoal).toHaveBeenCalledWith(
       expect.objectContaining({ objective: 'Ship feature X', replace: false }),
     );
-    expect(host.sendNormalUserInput).toHaveBeenCalledWith('Ship feature X');
-    expect(host.sendNormalUserInput).not.toHaveBeenCalledWith('/goal Ship feature X');
+    expect(runtimeHost.sendNormalUserInput).toHaveBeenCalledWith('Ship feature X');
+    expect(runtimeHost.sendNormalUserInput).not.toHaveBeenCalledWith('/goal Ship feature X');
   });
 
   it('/goal <objective> keeps the sendNormalUserInput host receiver', async () => {
@@ -267,12 +285,12 @@ describe('handleGoalCommand', () => {
   });
 
   it('asks before starting a goal in Manual mode', async () => {
-    const { host: manualHost, session: s } = makeHost({ permissionMode: 'manual' });
+    const { host: manualHost, agent: a } = makeHost({ permissionMode: 'manual' });
 
     await handleGoalCommand(manualHost, 'Ship feature X');
 
     expect(manualHost.mountEditorReplacement).toHaveBeenCalledOnce();
-    expect(s.createGoal).not.toHaveBeenCalled();
+    expect(a.createGoal).not.toHaveBeenCalled();
     expect(manualHost.sendNormalUserInput).not.toHaveBeenCalled();
     const text = stripAnsi(mountedPicker(manualHost).render(80).join('\n'));
     expect(text).toContain('Manual mode is not suitable for unattended goal work');
@@ -280,23 +298,26 @@ describe('handleGoalCommand', () => {
   });
 
   it('defaults to Auto when confirming a Manual-mode goal start', async () => {
-    const { host: manualHost, session: s } = makeHost({ permissionMode: 'manual' });
+    const { host: manualHost, agent: a } = makeHost({
+      hasSession: false,
+      permissionMode: 'manual',
+    });
 
     await handleGoalCommand(manualHost, 'Ship feature X');
     mountedPicker(manualHost).handleInput(ENTER);
 
     await vi.waitFor(() => {
-      expect(s.createGoal).toHaveBeenCalledWith(
+      expect(a.createGoal).toHaveBeenCalledWith(
         expect.objectContaining({ objective: 'Ship feature X' }),
       );
     });
-    expect(s.setPermission).toHaveBeenCalledWith('auto');
+    expect(a.setPermission).toHaveBeenCalledWith('auto');
     expect(manualHost.setAppState).toHaveBeenCalledWith({ permissionMode: 'auto' });
     expect(manualHost.sendNormalUserInput).toHaveBeenCalledWith('Ship feature X');
   });
 
   it('can start a Manual-mode goal without changing permission', async () => {
-    const { host: manualHost, session: s } = makeHost({ permissionMode: 'manual' });
+    const { host: manualHost, agent: a } = makeHost({ permissionMode: 'manual' });
 
     await handleGoalCommand(manualHost, 'Ship feature X');
     const picker = mountedPicker(manualHost);
@@ -305,16 +326,16 @@ describe('handleGoalCommand', () => {
     picker.handleInput(ENTER);
 
     await vi.waitFor(() => {
-      expect(s.createGoal).toHaveBeenCalledWith(
+      expect(a.createGoal).toHaveBeenCalledWith(
         expect.objectContaining({ objective: 'Ship feature X' }),
       );
     });
-    expect(s.setPermission).not.toHaveBeenCalled();
+    expect(a.setPermission).not.toHaveBeenCalled();
     expect(manualHost.sendNormalUserInput).toHaveBeenCalledWith('Ship feature X');
   });
 
   it('can switch to YOLO when starting a Manual-mode goal', async () => {
-    const { host: manualHost, session: s } = makeHost({ permissionMode: 'manual' });
+    const { host: manualHost, agent: a } = makeHost({ permissionMode: 'manual' });
 
     await handleGoalCommand(manualHost, 'Ship feature X');
     const picker = mountedPicker(manualHost);
@@ -322,18 +343,18 @@ describe('handleGoalCommand', () => {
     picker.handleInput(ENTER);
 
     await vi.waitFor(() => {
-      expect(s.createGoal).toHaveBeenCalledWith(
+      expect(a.createGoal).toHaveBeenCalledWith(
         expect.objectContaining({ objective: 'Ship feature X' }),
       );
     });
-    expect(s.setPermission).toHaveBeenCalledWith('yolo');
+    expect(a.setPermission).toHaveBeenCalledWith('yolo');
     expect(manualHost.setAppState).toHaveBeenCalledWith({ permissionMode: 'yolo' });
   });
 
   it('restores the previous permission mode when the goal fails to start', async () => {
-    const { host: manualHost, session: s } = makeHost({ permissionMode: 'manual' });
-    s.createGoal = vi.fn(async () => {
-      throw new KimiError(ErrorCodes.GOAL_ALREADY_EXISTS, 'A goal already exists');
+    const { host: manualHost, agent: a } = makeHost({ permissionMode: 'manual' });
+    a.createGoal = vi.fn(async () => {
+      throw errorWithCode('goal.already_exists', 'A goal already exists');
     });
 
     await handleGoalCommand(manualHost, 'Ship feature X');
@@ -343,25 +364,25 @@ describe('handleGoalCommand', () => {
 
     await vi.waitFor(() => {
       // Switched to YOLO to run the goal, then restored to Manual on failure.
-      expect(s.setPermission).toHaveBeenLastCalledWith('manual');
+      expect(a.setPermission).toHaveBeenLastCalledWith('manual');
     });
-    expect(s.setPermission).toHaveBeenCalledWith('yolo');
+    expect(a.setPermission).toHaveBeenCalledWith('yolo');
     expect(manualHost.setAppState).toHaveBeenLastCalledWith({ permissionMode: 'manual' });
   });
 
   it('returns the command to the input box when a Manual-mode goal start is cancelled', async () => {
-    const { host: manualHost, session: s } = makeHost({ permissionMode: 'manual' });
+    const { host: manualHost, agent: a } = makeHost({ permissionMode: 'manual' });
 
     await handleGoalCommand(manualHost, 'Ship feature X');
     mountedPicker(manualHost).handleInput(ESCAPE);
 
     expect(manualHost.restoreInputText).toHaveBeenCalledWith('/goal Ship feature X');
     expect(manualHost.showStatus).toHaveBeenCalledWith('Goal not started.');
-    expect(s.createGoal).not.toHaveBeenCalled();
+    expect(a.createGoal).not.toHaveBeenCalled();
   });
 
   it('returns the command to the input box when Do not start is selected', async () => {
-    const { host: manualHost, session: s } = makeHost({ permissionMode: 'manual' });
+    const { host: manualHost, agent: a } = makeHost({ permissionMode: 'manual' });
 
     await handleGoalCommand(manualHost, 'replace Ship feature Y');
     const picker = mountedPicker(manualHost);
@@ -371,16 +392,16 @@ describe('handleGoalCommand', () => {
     picker.handleInput(ENTER);
 
     expect(manualHost.restoreInputText).toHaveBeenCalledWith('/goal replace Ship feature Y');
-    expect(s.createGoal).not.toHaveBeenCalled();
+    expect(a.createGoal).not.toHaveBeenCalled();
   });
 
   it('asks before starting a goal in YOLO mode', async () => {
-    const { host: yoloHost, session: s } = makeHost({ permissionMode: 'yolo' });
+    const { host: yoloHost, agent: a } = makeHost({ permissionMode: 'yolo' });
 
     await handleGoalCommand(yoloHost, 'Ship feature X');
 
     expect(yoloHost.mountEditorReplacement).toHaveBeenCalledOnce();
-    expect(s.createGoal).not.toHaveBeenCalled();
+    expect(a.createGoal).not.toHaveBeenCalled();
     expect(yoloHost.sendNormalUserInput).not.toHaveBeenCalled();
     const text = stripAnsi(mountedPicker(yoloHost).render(80).join('\n'));
     expect(text).toContain('YOLO mode can still stop for questions');
@@ -389,23 +410,23 @@ describe('handleGoalCommand', () => {
   });
 
   it('defaults to Auto when confirming a YOLO-mode goal start', async () => {
-    const { host: yoloHost, session: s } = makeHost({ permissionMode: 'yolo' });
+    const { host: yoloHost, agent: a } = makeHost({ permissionMode: 'yolo' });
 
     await handleGoalCommand(yoloHost, 'Ship feature X');
     mountedPicker(yoloHost).handleInput(ENTER);
 
     await vi.waitFor(() => {
-      expect(s.createGoal).toHaveBeenCalledWith(
+      expect(a.createGoal).toHaveBeenCalledWith(
         expect.objectContaining({ objective: 'Ship feature X' }),
       );
     });
-    expect(s.setPermission).toHaveBeenCalledWith('auto');
+    expect(a.setPermission).toHaveBeenCalledWith('auto');
     expect(yoloHost.setAppState).toHaveBeenCalledWith({ permissionMode: 'auto' });
     expect(yoloHost.sendNormalUserInput).toHaveBeenCalledWith('Ship feature X');
   });
 
   it('can keep YOLO when starting a YOLO-mode goal', async () => {
-    const { host: yoloHost, session: s } = makeHost({ permissionMode: 'yolo' });
+    const { host: yoloHost, agent: a } = makeHost({ permissionMode: 'yolo' });
 
     await handleGoalCommand(yoloHost, 'Ship feature X');
     const picker = mountedPicker(yoloHost);
@@ -413,16 +434,16 @@ describe('handleGoalCommand', () => {
     picker.handleInput(ENTER);
 
     await vi.waitFor(() => {
-      expect(s.createGoal).toHaveBeenCalledWith(
+      expect(a.createGoal).toHaveBeenCalledWith(
         expect.objectContaining({ objective: 'Ship feature X' }),
       );
     });
-    expect(s.setPermission).not.toHaveBeenCalled();
+    expect(a.setPermission).not.toHaveBeenCalled();
     expect(yoloHost.sendNormalUserInput).toHaveBeenCalledWith('Ship feature X');
   });
 
   it('returns the command to the input box when a YOLO-mode goal start is cancelled', async () => {
-    const { host: yoloHost, session: s } = makeHost({ permissionMode: 'yolo' });
+    const { host: yoloHost, agent: a } = makeHost({ permissionMode: 'yolo' });
 
     await handleGoalCommand(yoloHost, 'replace Ship feature Y');
     const picker = mountedPicker(yoloHost);
@@ -431,60 +452,68 @@ describe('handleGoalCommand', () => {
     picker.handleInput(ENTER);
 
     expect(yoloHost.restoreInputText).toHaveBeenCalledWith('/goal replace Ship feature Y');
-    expect(s.createGoal).not.toHaveBeenCalled();
+    expect(a.createGoal).not.toHaveBeenCalled();
   });
 
   it('does not pass budget limits (flags were removed)', async () => {
     await handleGoalCommand(host, 'Ship feature X');
-    const arg = (session.createGoal as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Record<
+    const arg = (agent.createGoal as ReturnType<typeof vi.fn>).mock.calls[0]?.[0] as Record<
       string,
       unknown
     >;
     expect(arg).not.toHaveProperty('budgetLimits');
   });
 
-  it('rejects too-long objectives before any SDK call', async () => {
+  it('rejects too-long objectives before calling the runtime', async () => {
     await handleGoalCommand(host, 'x'.repeat(4001));
     expect(host.showError).toHaveBeenCalled();
-    expect(session.createGoal).not.toHaveBeenCalled();
+    expect(agent.createGoal).not.toHaveBeenCalled();
   });
 
   it('/goal replace passes replace: true', async () => {
     await handleGoalCommand(host, 'replace Ship feature Y');
-    expect(session.createGoal).toHaveBeenCalledWith(
+    expect(agent.createGoal).toHaveBeenCalledWith(
       expect.objectContaining({ objective: 'Ship feature Y', replace: true }),
     );
   });
 
-  it('/goal next queues an upcoming goal and does not send it to the agent', async () => {
-    session.getGoal.mockResolvedValueOnce({ goal: fakeSnapshot() });
+  it('/goal next queues through a runtime-only host without sending agent input', async () => {
+    const {
+      host: runtimeOnlyHost,
+      agent: runtimeAgent,
+      goalQueue: runtimeGoalQueue,
+      requireSession,
+    } = makeHost({ hasSession: false });
+    runtimeAgent.getGoal.mockResolvedValueOnce(fakeSnapshot());
 
-    await handleGoalCommand(host, 'next Ship release notes');
+    await handleGoalCommand(runtimeOnlyHost, 'next Ship release notes');
 
-    expect(session.getGoal).toHaveBeenCalledOnce();
-    expect(appendGoalQueueItem).toHaveBeenCalledWith(session, {
+    expect(runtimeAgent.getGoal).toHaveBeenCalledOnce();
+    expect(runtimeGoalQueue.append).toHaveBeenCalledWith({
       objective: 'Ship release notes',
     });
-    expect(host.track).toHaveBeenCalledWith('goal_queue_append');
-    expect(host.showStatus).not.toHaveBeenCalledWith(
+    expect(requireSession).not.toHaveBeenCalled();
+    expect(runtimeOnlyHost.track).toHaveBeenCalledWith('goal_queue_append');
+    expect(runtimeOnlyHost.showStatus).not.toHaveBeenCalledWith(
       'Upcoming goal added. It will start after the current goal is complete.',
     );
-    const addChild = host.state.transcriptContainer.addChild as ReturnType<typeof vi.fn>;
+    const addChild = runtimeOnlyHost.state.transcriptContainer
+      .addChild as ReturnType<typeof vi.fn>;
     const message = addChild.mock.calls[0]?.[0] as { render(width: number): string[] };
     expect(stripAnsi(message.render(80).join('\n'))).toBe(
       '\n● Upcoming goal added. It will start after the current goal is complete.',
     );
-    expect(host.state.ui.requestRender).toHaveBeenCalled();
-    expect(host.sendNormalUserInput).not.toHaveBeenCalled();
-    expect(session.createGoal).not.toHaveBeenCalled();
+    expect(runtimeOnlyHost.state.ui.requestRender).toHaveBeenCalled();
+    expect(runtimeOnlyHost.sendNormalUserInput).not.toHaveBeenCalled();
+    expect(runtimeAgent.createGoal).not.toHaveBeenCalled();
   });
 
   it('/goal next starts immediately when there is no current goal', async () => {
     await handleGoalCommand(host, 'next Ship release notes');
 
-    expect(session.getGoal).toHaveBeenCalledOnce();
-    expect(appendGoalQueueItem).not.toHaveBeenCalled();
-    expect(session.createGoal).toHaveBeenCalledWith(
+    expect(agent.getGoal).toHaveBeenCalledOnce();
+    expect(goalQueue.append).not.toHaveBeenCalled();
+    expect(agent.createGoal).toHaveBeenCalledWith(
       expect.objectContaining({ objective: 'Ship release notes', replace: false }),
     );
     expect(host.showStatus).toHaveBeenCalledWith(
@@ -494,60 +523,68 @@ describe('handleGoalCommand', () => {
   });
 
   it('/goal next queues instead of starting immediately while streaming with no current goal', async () => {
-    const { host: streamingHost, session: s } = makeHost({ streaming: true });
+    const {
+      host: streamingHost,
+      goalQueue: streamingGoalQueue,
+      agent: a,
+    } = makeHost({ streaming: true });
 
     await handleGoalCommand(streamingHost, 'next Ship release notes');
 
-    expect(s.getGoal).toHaveBeenCalledOnce();
-    expect(appendGoalQueueItem).toHaveBeenCalledWith(s, {
+    expect(a.getGoal).toHaveBeenCalledOnce();
+    expect(streamingGoalQueue.append).toHaveBeenCalledWith({
       objective: 'Ship release notes',
     });
     expect(streamingHost.requestQueuedGoalPromotion).toHaveBeenCalledOnce();
-    expect(s.createGoal).not.toHaveBeenCalled();
+    expect(a.createGoal).not.toHaveBeenCalled();
     expect(streamingHost.sendNormalUserInput).not.toHaveBeenCalled();
   });
 
   it('/goal next follows the normal goal-start prompt when there is no current goal', async () => {
-    const { host: manualHost, session: s } = makeHost({ permissionMode: 'manual' });
+    const { host: manualHost, agent: a } = makeHost({ permissionMode: 'manual' });
 
     await handleGoalCommand(manualHost, 'next Ship release notes');
 
-    expect(s.getGoal).toHaveBeenCalledOnce();
-    expect(appendGoalQueueItem).not.toHaveBeenCalled();
+    expect(a.getGoal).toHaveBeenCalledOnce();
+    expect(goalQueue.append).not.toHaveBeenCalled();
     expect(manualHost.mountEditorReplacement).toHaveBeenCalledOnce();
-    expect(s.createGoal).not.toHaveBeenCalled();
+    expect(a.createGoal).not.toHaveBeenCalled();
 
     mountedPicker(manualHost).handleInput(ESCAPE);
     expect(manualHost.restoreInputText).toHaveBeenCalledWith('/goal next Ship release notes');
   });
 
   it('/goal next does not require a configured model when queueing after a current goal', async () => {
-    const { host: noModelHost, session: s } = makeHost({ model: '' });
-    s.getGoal.mockResolvedValueOnce({ goal: fakeSnapshot() });
+    const {
+      host: noModelHost,
+      goalQueue: noModelGoalQueue,
+      agent: a,
+    } = makeHost({ model: '' });
+    a.getGoal.mockResolvedValueOnce(fakeSnapshot());
 
     await handleGoalCommand(noModelHost, 'next Ship release notes');
 
-    expect(appendGoalQueueItem).toHaveBeenCalledWith(s, {
+    expect(noModelGoalQueue.append).toHaveBeenCalledWith({
       objective: 'Ship release notes',
     });
     expect(noModelHost.showError).not.toHaveBeenCalled();
   });
 
   it('/goal next requires a configured model when it starts immediately', async () => {
-    const { host: noModelHost, session: s } = makeHost({ model: '' });
+    const { host: noModelHost, agent: a } = makeHost({ model: '' });
 
     await handleGoalCommand(noModelHost, 'next Ship release notes');
 
-    expect(s.getGoal).toHaveBeenCalledOnce();
-    expect(appendGoalQueueItem).not.toHaveBeenCalled();
-    expect(s.createGoal).not.toHaveBeenCalled();
+    expect(a.getGoal).toHaveBeenCalledOnce();
+    expect(goalQueue.append).not.toHaveBeenCalled();
+    expect(a.createGoal).not.toHaveBeenCalled();
     expect(noModelHost.showError).toHaveBeenCalled();
   });
 
   it('/goal next manage opens the upcoming goal manager without sending input', async () => {
     await handleGoalCommand(host, 'next manage');
 
-    expect(readGoalQueue).toHaveBeenCalledWith(session);
+    expect(goalQueue.read).toHaveBeenCalledOnce();
     expect(host.track).toHaveBeenCalledWith('goal_queue_manage');
     expect(host.mountEditorReplacement).toHaveBeenCalledOnce();
     const text = stripAnsi(mountedPicker(host).render(100).join('\n'));
@@ -555,10 +592,10 @@ describe('handleGoalCommand', () => {
     expect(text).toContain('First queued goal');
     expect(text).toContain('Second queued goal');
     expect(host.sendNormalUserInput).not.toHaveBeenCalled();
-    expect(session.createGoal).not.toHaveBeenCalled();
+    expect(agent.createGoal).not.toHaveBeenCalled();
   });
 
-  it('/goal next manage reorders goals through the queue store', async () => {
+  it('/goal next manage reorders goals through the runtime queue', async () => {
     await handleGoalCommand(host, 'next manage');
     const manager = mountedPicker(host);
 
@@ -567,24 +604,24 @@ describe('handleGoalCommand', () => {
     manager.handleInput(UP);
 
     await vi.waitFor(() => {
-      expect(moveGoalQueueItem).toHaveBeenCalledWith(session, {
+      expect(goalQueue.move).toHaveBeenCalledWith({
         goalId: 'q2',
         direction: 'up',
       });
     });
   });
 
-  it('/goal next manage removes goals through the queue store', async () => {
+  it('/goal next manage removes goals through the runtime queue', async () => {
     await handleGoalCommand(host, 'next manage');
 
     mountedPicker(host).handleInput('d');
 
     await vi.waitFor(() => {
-      expect(removeGoalQueueItem).toHaveBeenCalledWith(session, { goalId: 'q1' });
+      expect(goalQueue.remove).toHaveBeenCalledWith({ goalId: 'q1' });
     });
   });
 
-  it('/goal next manage edits goals through the queue store', async () => {
+  it('/goal next manage edits goals through the runtime queue', async () => {
     await handleGoalCommand(host, 'next manage');
 
     mountedPicker(host).handleInput('e');
@@ -596,7 +633,7 @@ describe('handleGoalCommand', () => {
     editDialog.handleInput(ENTER);
 
     await vi.waitFor(() => {
-      expect(updateGoalQueueItem).toHaveBeenCalledWith(session, {
+      expect(goalQueue.update).toHaveBeenCalledWith({
         goalId: 'q1',
         objective: 'First queued goal updated',
       });
@@ -604,62 +641,81 @@ describe('handleGoalCommand', () => {
   });
 
   it('surfaces duplicate-goal errors with replace guidance', async () => {
-    session.createGoal.mockRejectedValueOnce(
-      new KimiError(ErrorCodes.GOAL_ALREADY_EXISTS, 'exists'),
+    agent.createGoal.mockRejectedValueOnce(
+      errorWithCode('goal.already_exists', 'exists'),
     );
     await handleGoalCommand(host, 'Ship feature X');
     expect(host.showError).toHaveBeenCalledWith(expect.stringContaining('/goal replace'));
     expect(host.sendNormalUserInput).not.toHaveBeenCalled();
   });
 
-  it('/goal pause calls pauseGoal and does not send input', async () => {
-    await handleGoalCommand(host, 'pause');
-    expect(session.pauseGoal).toHaveBeenCalledOnce();
-    expect(host.track).toHaveBeenCalledWith('goal_pause');
-    expect(host.sendNormalUserInput).not.toHaveBeenCalled();
+  it('/goal pause uses the runtime agent when the raw session is unavailable', async () => {
+    const { host: runtimeHost, agent: runtimeAgent } = makeHost({ hasSession: false });
+
+    await handleGoalCommand(runtimeHost, 'pause');
+
+    expect(runtimeAgent.pauseGoal).toHaveBeenCalledOnce();
+    expect(runtimeHost.track).toHaveBeenCalledWith('goal_pause');
+    expect(runtimeHost.sendNormalUserInput).not.toHaveBeenCalled();
   });
 
   it('/goal pause cancels an active stream', async () => {
-    const { host: streamingHost, session: s } = makeHost({ streaming: true });
+    const { host: streamingHost, agent: a } = makeHost({
+      hasSession: false,
+      streaming: true,
+    });
     await handleGoalCommand(streamingHost, 'pause');
-    expect(s.pauseGoal).toHaveBeenCalledOnce();
-    expect(s.cancel).toHaveBeenCalledOnce();
+    expect(a.pauseGoal).toHaveBeenCalledOnce();
+    expect(a.cancel).toHaveBeenCalledOnce();
   });
 
-  it('/goal resume calls resumeGoal and sends a resume input', async () => {
-    await handleGoalCommand(host, 'resume');
-    expect(session.resumeGoal).toHaveBeenCalledOnce();
-    expect(host.track).toHaveBeenCalledWith('goal_resume');
-    expect(host.showStatus).not.toHaveBeenCalledWith('Goal resumed.');
-    expect(host.sendNormalUserInput).toHaveBeenCalledWith('Resume the active goal.');
+  it('/goal resume uses the runtime agent when the raw session is unavailable', async () => {
+    const { host: runtimeHost, agent: runtimeAgent } = makeHost({ hasSession: false });
+
+    await handleGoalCommand(runtimeHost, 'resume');
+
+    expect(runtimeAgent.resumeGoal).toHaveBeenCalledOnce();
+    expect(runtimeHost.track).toHaveBeenCalledWith('goal_resume');
+    expect(runtimeHost.showStatus).not.toHaveBeenCalledWith('Goal resumed.');
+    expect(runtimeHost.sendNormalUserInput).toHaveBeenCalledWith('Resume the active goal.');
   });
 
-  it('/goal cancel calls cancelGoal and does not send input', async () => {
-    await handleGoalCommand(host, 'cancel');
-    expect(session.cancelGoal).toHaveBeenCalledOnce();
-    expect(host.track).toHaveBeenCalledWith('goal_cancel');
-    expect(host.showNotice).toHaveBeenCalledWith('Goal cancelled.');
-    expect(host.showStatus).not.toHaveBeenCalledWith('Goal cancelled.');
-    expect(host.sendNormalUserInput).not.toHaveBeenCalled();
+  it('/goal cancel uses the runtime agent when the raw session is unavailable', async () => {
+    const { host: runtimeHost, agent: runtimeAgent } = makeHost({ hasSession: false });
+
+    await handleGoalCommand(runtimeHost, 'cancel');
+
+    expect(runtimeAgent.cancelGoal).toHaveBeenCalledOnce();
+    expect(runtimeHost.track).toHaveBeenCalledWith('goal_cancel');
+    expect(runtimeHost.showNotice).toHaveBeenCalledWith('Goal cancelled.');
+    expect(runtimeHost.showStatus).not.toHaveBeenCalledWith('Goal cancelled.');
+    expect(runtimeHost.sendNormalUserInput).not.toHaveBeenCalled();
   });
 
   it('/goal cancel cancels an active stream', async () => {
-    const { host: streamingHost, session: s } = makeHost({ streaming: true });
+    const { host: streamingHost, agent: a } = makeHost({
+      hasSession: false,
+      streaming: true,
+    });
     await handleGoalCommand(streamingHost, 'cancel');
-    expect(s.cancelGoal).toHaveBeenCalledOnce();
-    expect(s.cancel).toHaveBeenCalledOnce();
+    expect(a.cancelGoal).toHaveBeenCalledOnce();
+    expect(a.cancel).toHaveBeenCalledOnce();
   });
 
   // No-goal control commands all read as calm status messages, never red errors.
   it('pausing with no goal shows a friendly status, not an error', async () => {
-    session.pauseGoal.mockRejectedValueOnce(new KimiError(ErrorCodes.GOAL_NOT_FOUND, 'No current goal'));
+    agent.pauseGoal.mockRejectedValueOnce(
+      errorWithCode('goal.not_found', 'No current goal'),
+    );
     await handleGoalCommand(host, 'pause');
     expect(host.showStatus).toHaveBeenCalledWith('No goal to pause.');
     expect(host.showError).not.toHaveBeenCalled();
   });
 
   it('resuming with no goal shows a friendly status, not an error', async () => {
-    session.resumeGoal.mockRejectedValueOnce(new KimiError(ErrorCodes.GOAL_NOT_FOUND, 'No current goal'));
+    agent.resumeGoal.mockRejectedValueOnce(
+      errorWithCode('goal.not_found', 'No current goal'),
+    );
     await handleGoalCommand(host, 'resume');
     expect(host.showStatus).toHaveBeenCalledWith('No goal to resume.');
     expect(host.showError).not.toHaveBeenCalled();
@@ -672,36 +728,36 @@ describe('handleGoalCommand', () => {
   });
 
   it('status/pause/cancel work without a configured model', async () => {
-    const { host: noModelHost, session: s } = makeHost({ model: '' });
+    const { host: noModelHost, agent: a } = makeHost({ model: '' });
     await handleGoalCommand(noModelHost, 'status');
     await handleGoalCommand(noModelHost, 'pause');
     await handleGoalCommand(noModelHost, 'cancel');
-    expect(s.getGoal).toHaveBeenCalled();
-    expect(s.pauseGoal).toHaveBeenCalled();
-    expect(s.cancelGoal).toHaveBeenCalled();
+    expect(a.getGoal).toHaveBeenCalled();
+    expect(a.pauseGoal).toHaveBeenCalled();
+    expect(a.cancelGoal).toHaveBeenCalled();
     expect(noModelHost.showError).not.toHaveBeenCalled();
   });
 
   it('resume without a configured model does not activate the goal', async () => {
-    const { host: noModelHost, session: s } = makeHost({ model: '' });
+    const { host: noModelHost, agent: a } = makeHost({ model: '' });
     await handleGoalCommand(noModelHost, 'resume');
     expect(noModelHost.showError).toHaveBeenCalled();
-    expect(s.resumeGoal).not.toHaveBeenCalled();
+    expect(a.resumeGoal).not.toHaveBeenCalled();
     expect(noModelHost.sendNormalUserInput).not.toHaveBeenCalled();
   });
 
   it('creation without a configured model shows LLM_NOT_SET_MESSAGE', async () => {
-    const { host: noModelHost, session: s } = makeHost({ model: '' });
+    const { host: noModelHost, agent: a } = makeHost({ model: '' });
     await handleGoalCommand(noModelHost, 'Ship feature X');
     expect(noModelHost.showError).toHaveBeenCalled();
-    expect(s.createGoal).not.toHaveBeenCalled();
+    expect(a.createGoal).not.toHaveBeenCalled();
   });
 
-  it('creation without an active session shows LLM_NOT_SET_MESSAGE', async () => {
-    const { host: noSessionHost, session: s } = makeHost({ hasSession: false });
-    await handleGoalCommand(noSessionHost, 'Ship feature X');
-    expect(noSessionHost.showError).toHaveBeenCalled();
-    expect(s.createGoal).not.toHaveBeenCalled();
+  it('creation without an active runtime shows LLM_NOT_SET_MESSAGE', async () => {
+    const { host: noRuntimeHost, agent: a } = makeHost({ hasRuntime: false });
+    await handleGoalCommand(noRuntimeHost, 'Ship feature X');
+    expect(noRuntimeHost.showError).toHaveBeenCalled();
+    expect(a.createGoal).not.toHaveBeenCalled();
   });
 });
 
@@ -711,12 +767,12 @@ describe('dispatchInput /goal integration', () => {
   });
 
   it('routes /goal through the real resolver, creates the goal, and sends the objective', async () => {
-    const { host, session } = makeHost();
+    const { host, agent } = makeHost();
 
     dispatchInput(host, '/goal Ship feature X');
 
     await vi.waitFor(() => {
-      expect(session.createGoal).toHaveBeenCalledWith(
+      expect(agent.createGoal).toHaveBeenCalledWith(
         expect.objectContaining({ objective: 'Ship feature X' }),
       );
     });

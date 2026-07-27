@@ -2,7 +2,7 @@
 
 代码型扩展让你用 TypeScript/JavaScript 在 Kimi Code 进程内运行自定义逻辑。与[声明式插件](./plugins.md)不同，扩展是一段**可执行代码**：它可以订阅事件、注册工具、注册斜杠命令，并在运行时驱动会话。
 
-扩展使用 [jiti](https://github.com/unjs/jiti) 在运行时加载，无需编译。改完代码后在 TUI 里输入 `/reload` 即可热重载。
+扩展使用 [jiti](https://github.com/unjs/jiti) 在运行时加载，无需编译。改完代码后，在 TUI 或 Web 界面中输入 `/reload` 即可热重载。
 
 ## 快速开始
 
@@ -50,7 +50,7 @@ export default (api: ExtensionAPI) => {
 };
 ```
 
-启动 TUI，扩展会自动加载。命令以 `<扩展id>:<命令名>` 的形式出现（如 `/my-ext:greet`），可在 `/` 补全里看到。
+启动 TUI 或 Web 界面后，扩展会自动加载。命令以 `<扩展id>:<命令名>` 的形式出现（如 `/my-ext:greet`），可在 `/` 补全里看到。
 
 ## 加载位置
 
@@ -148,7 +148,7 @@ api.registerCommand('my-cmd', {
 
 ## 热重载
 
-在 TUI 输入 `/reload`，扩展会被重新发现和加载。编辑扩展代码后无需重启 Kimi Code。
+在 TUI 或 Web 界面中输入 `/reload`，扩展会被重新发现和加载。编辑扩展代码后无需重启 Kimi Code。
 
 ## 与声明式插件的关系
 
@@ -163,4 +163,4 @@ api.registerCommand('my-cmd', {
 
 ## 示例
 
-更多示例见 [`packages/agent-core/examples/extensions/`](../../../packages/agent-core/examples/extensions/)。
+更多示例见 [`packages/agent-core/examples/extensions/`](https://github.com/MoonshotAI/kimi-code/tree/main/packages/agent-core/examples/extensions)。

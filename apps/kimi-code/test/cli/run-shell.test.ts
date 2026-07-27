@@ -1,13 +1,14 @@
 import { execSync } from 'node:child_process';
 
 import type { createKimiDeviceId as createKimiDeviceIdFn } from '@moonshot-ai/kimi-code-oauth';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { runShell } from '#/cli/run-shell';
 
 import { captureProcessWrite, ExitCalled, mockProcessExit } from '../helpers/process';
 
 type CreateKimiDeviceId = typeof createKimiDeviceIdFn;
+const originalV2Flag = process.env['KIMI_CODE_EXPERIMENTAL_FLAG'];
 
 const mocks = vi.hoisted(() => {
   type TuiConfigFallback = {
@@ -62,6 +63,12 @@ const mocks = vi.hoisted(() => {
     harnessCreatesDeviceIdOnConstruction: false,
     execSync: vi.fn(),
     TuiConfigParseError,
+    runV2Shell: vi.fn(async () => {}),
+    createCliV2Runtime: vi.fn(),
+    createKlientTUIRuntime: vi.fn(),
+    v2RuntimeClose: vi.fn(async () => {}),
+    v2TelemetryTrack: vi.fn(),
+    v2EnvironmentDiagnostics: vi.fn(async () => [] as readonly string[]),
   };
 });
 
@@ -141,11 +148,27 @@ vi.mock('../../src/migration/index', () => ({
   detectPendingMigration: mocks.detectPendingMigration,
 }));
 
+vi.mock('../../src/cli/v2/run-v2-shell', () => ({
+  runV2Shell: mocks.runV2Shell,
+}));
+
+vi.mock('../../src/cli/v2/create-v2-runtime', () => ({
+  createCliV2Runtime: mocks.createCliV2Runtime,
+}));
+
+vi.mock('../../src/tui/runtime/tui-runtime', () => ({
+  createKlientTUIRuntime: mocks.createKlientTUIRuntime,
+}));
+
 vi.mock('node:child_process', () => ({
   execSync: mocks.execSync,
 }));
 
 describe('runShell', () => {
+  beforeEach(() => {
+    delete process.env['KIMI_CODE_EXPERIMENTAL_FLAG'];
+  });
+
   afterEach(() => {
     vi.clearAllMocks();
     mocks.harnessGetConfig.mockResolvedValue({
@@ -161,6 +184,104 @@ describe('runShell', () => {
       (homeDir?: string) => homeDir ?? '/tmp/kimi-code-test-home',
     );
     mocks.harnessCreatesDeviceIdOnConstruction = false;
+    if (originalV2Flag === undefined) {
+      delete process.env['KIMI_CODE_EXPERIMENTAL_FLAG'];
+    } else {
+      process.env['KIMI_CODE_EXPERIMENTAL_FLAG'] = originalV2Flag;
+    }
+  });
+
+  it('routes interactive shell mode to the v2 runner behind the experimental gate', async () => {
+    process.env['KIMI_CODE_EXPERIMENTAL_FLAG'] = '1';
+    const cliOptions = {
+      session: undefined,
+      continue: false,
+      yolo: false,
+      auto: false,
+      plan: false,
+      model: undefined,
+      outputFormat: undefined,
+      prompt: undefined,
+      skillsDirs: [],
+      agent: undefined,
+      agentFiles: [],
+    };
+
+    await runShell(cliOptions, '1.2.3-test');
+
+    expect(mocks.runV2Shell).toHaveBeenCalledExactlyOnceWith(
+      cliOptions,
+      '1.2.3-test',
+    );
+    expect(mocks.kimiHarnessConstructor).not.toHaveBeenCalled();
+  });
+
+  it('composes the v2 interactive runner without a legacy harness', async () => {
+    const runtime = {
+      telemetry: {
+        track: mocks.v2TelemetryTrack,
+      },
+      close: mocks.v2RuntimeClose,
+    };
+    const tuiRuntime = {
+      environment: {
+        getConfigDiagnostics: mocks.v2EnvironmentDiagnostics,
+      },
+    };
+    mocks.createCliV2Runtime.mockResolvedValue({
+      runtime,
+      homeDir: '/tmp/kimi-v2-home',
+      firstLaunch: false,
+    });
+    mocks.createKlientTUIRuntime.mockResolvedValue(tuiRuntime);
+    mocks.loadTuiConfig.mockResolvedValue({
+      theme: 'dark',
+      editorCommand: null,
+      notifications: { enabled: true, condition: 'unfocused' },
+    });
+    mocks.tuiStart.mockResolvedValue(undefined);
+    const cliOptions = {
+      session: undefined,
+      continue: false,
+      yolo: false,
+      auto: false,
+      plan: false,
+      model: undefined,
+      outputFormat: undefined,
+      prompt: undefined,
+      skillsDirs: [],
+      agent: undefined,
+      agentFiles: [],
+    };
+    const { runV2Shell } = await vi.importActual<
+      typeof import('../../src/cli/v2/run-v2-shell')
+    >('../../src/cli/v2/run-v2-shell');
+
+    await runV2Shell(cliOptions, '1.2.3-test');
+
+    expect(mocks.createCliV2Runtime).toHaveBeenCalledExactlyOnceWith(
+      cliOptions,
+      '1.2.3-test',
+      'shell',
+      'default',
+    );
+    expect(mocks.createKlientTUIRuntime).toHaveBeenCalledExactlyOnceWith(runtime);
+    const [instance, harness, startupInput] = mocks.kimiTuiConstructor.mock.calls[0]!;
+    expect(harness).toBeUndefined();
+    expect(startupInput).toMatchObject({
+      cliOptions,
+      runtime: tuiRuntime,
+      workDir: process.cwd(),
+    });
+
+    const exitMock = mockProcessExit();
+    try {
+      await expect(
+        (instance as { onExit?: (exitCode?: number) => Promise<void> }).onExit?.(0),
+      ).rejects.toBeInstanceOf(ExitCalled);
+    } finally {
+      exitMock.mockRestore();
+    }
   });
 
   it('constructs KimiHarness and KimiTUI with startup input', async () => {

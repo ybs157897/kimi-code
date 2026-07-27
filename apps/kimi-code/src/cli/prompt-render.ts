@@ -1,21 +1,18 @@
 /**
  * Output rendering for `kimi -p` (print mode) — shared by the v1 driver
- * (`run-prompt.ts`) and the native v2 runner (`v2/run-v2-print.ts`).
+ * (`run-prompt.ts`) and the v2 host (`v2/run-v2-print.ts`).
  *
- * Both engines feed the same writer classes: v1 via the SDK `Event` stream, v2
- * via the main agent's native `IEventBus` (whose `DomainEvent` payloads are
- * already v1-protocol-shaped). Keeping the writers here lets v2 reuse them
- * without re-implementing rendering, while v1's `runPromptTurn` keeps its own
- * event-filtering / completion flow intact.
+ * Both engines feed the same writer classes: v1 via the SDK `Event` stream and
+ * v2 via Klient events. Keeping the writers here lets both paths reuse
+ * rendering while v1's `runPromptTurn` keeps its own completion flow.
  */
 
 import type { PromptOutputFormat } from './options';
 
 /**
  * Structural hook-result shape the renderer reads. Both the v1 SDK
- * `HookResultEvent` and the v2 native `hook.result` `DomainEvent` satisfy it,
- * so the renderer stays engine-agnostic without depending on either event
- * definition.
+ * `HookResultEvent` and the v2 Klient `hook.result` event satisfy it, so the
+ * renderer stays engine-agnostic without depending on either definition.
  */
 interface HookResultEventLike {
   readonly hookEvent: string;

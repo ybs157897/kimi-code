@@ -1,8 +1,9 @@
 /**
  * `oauthService` + `authSummaryService` — app-scope OAuth flow and auth
- * summary. Mirrors `agent-core-v2/app/auth/auth.ts`; wire shapes mirror
- * `protocol/src/rest/oauth.ts` (snake_case fields). `resolveTokenProvider`
- * and `getCachedAccessToken` are excluded (non-serializable).
+ * summary. Mirrors `agent-core-v2/app/auth/auth.ts`; OAuth endpoint DTOs use
+ * the protocol's snake_case fields, while `getManagedUsage` preserves the
+ * service's camelCase `AuthManagedUsageResult`. `resolveTokenProvider` and
+ * `getCachedAccessToken` are excluded (non-serializable).
  */
 
 import { z } from 'zod';
@@ -66,6 +67,98 @@ export const authStatusSchema = z.object({
   provider: z.string().optional(),
 });
 
+export const authManagedUsageRowSchema = z.object({
+  label: z.string(),
+  used: z.number().int(),
+  limit: z.number().int(),
+  resetHint: z.string().optional(),
+});
+
+export const authManagedUsageWalletSchema = z.object({
+  balanceCents: z.number().int(),
+  totalCents: z.number().int(),
+  monthlyChargeLimitEnabled: z.boolean(),
+  monthlyChargeLimitCents: z.number().int(),
+  monthlyUsedCents: z.number().int(),
+  currency: z.string(),
+});
+
+export const authManagedUsageResultSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('ok'),
+    summary: authManagedUsageRowSchema.nullable(),
+    limits: z.array(authManagedUsageRowSchema),
+    extraUsage: authManagedUsageWalletSchema.nullable(),
+  }),
+  z.object({
+    kind: z.literal('error'),
+    message: z.string(),
+    status: z.number().int().optional(),
+  }),
+]);
+
+const managedFeedbackErrorSchema = z.object({
+  kind: z.literal('error'),
+  message: z.string(),
+  status: z.number().int().optional(),
+});
+
+export const submitFeedbackBodySchema = z.object({
+  session_id: z.string(),
+  content: z.string(),
+  version: z.string(),
+  os: z.string(),
+  model: z.string().nullable(),
+  contact: z.string().optional(),
+  info: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const submitFeedbackResultSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('ok'),
+    feedbackId: z.number().int(),
+  }),
+  managedFeedbackErrorSchema,
+]);
+
+export const createFeedbackUploadUrlBodySchema = z.object({
+  file_hash: z.string(),
+  file_name: z.string(),
+  file_size: z.number().int(),
+  feedback_id: z.number().int(),
+});
+
+export const feedbackUploadPartSchema = z.object({
+  part_number: z.number().int(),
+  url: z.string(),
+  method: z.string(),
+  size: z.number().int(),
+});
+
+export const createFeedbackUploadUrlResultSchema = z.discriminatedUnion('kind', [
+  z.object({
+    kind: z.literal('ok'),
+    upload_id: z.number().int(),
+    parts: z.array(feedbackUploadPartSchema),
+  }),
+  managedFeedbackErrorSchema,
+]);
+
+export const completeFeedbackUploadPartSchema = z.object({
+  part_number: z.number().int(),
+  etag: z.string(),
+});
+
+export const completeFeedbackUploadBodySchema = z.object({
+  upload_id: z.number().int(),
+  parts: z.array(completeFeedbackUploadPartSchema),
+});
+
+export const completeFeedbackUploadResultSchema = z.discriminatedUnion('kind', [
+  z.object({ kind: z.literal('ok') }),
+  managedFeedbackErrorSchema,
+]);
+
 /** Same shape as `refreshProviderModelsResponseSchema` in `./catalog.js` — keep in sync. */
 export const refreshOAuthProviderModelsResponseSchema = z.object({
   changed: z.array(
@@ -92,6 +185,22 @@ export const authContract = {
   },
   logout: { input: z.tuple([z.string().optional()]), output: oAuthLogoutResponseSchema },
   status: { input: z.tuple([z.string().optional()]), output: authStatusSchema },
+  getManagedUsage: {
+    input: z.tuple([z.string().optional()]),
+    output: authManagedUsageResultSchema,
+  },
+  submitFeedback: {
+    input: z.tuple([submitFeedbackBodySchema, z.string().optional()]),
+    output: submitFeedbackResultSchema,
+  },
+  createFeedbackUploadUrl: {
+    input: z.tuple([createFeedbackUploadUrlBodySchema, z.string().optional()]),
+    output: createFeedbackUploadUrlResultSchema,
+  },
+  completeFeedbackUpload: {
+    input: z.tuple([completeFeedbackUploadBodySchema, z.string().optional()]),
+    output: completeFeedbackUploadResultSchema,
+  },
   refreshOAuthProviderModels: {
     input: z.tuple([]),
     output: refreshOAuthProviderModelsResponseSchema,

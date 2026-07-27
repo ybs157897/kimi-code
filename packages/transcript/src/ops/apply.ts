@@ -606,6 +606,10 @@ function applyMetaMerge(state: AgentState, meta: TranscriptMetaMerge): ApplyResu
       ? {
           plan: meta.modes.plan === null ? undefined : (meta.modes.plan ?? state.meta.modes?.plan),
           swarm: meta.modes.swarm === null ? undefined : (meta.modes.swarm ?? state.meta.modes?.swarm),
+          expertTeam:
+            meta.modes.expertTeam === null
+              ? undefined
+              : (meta.modes.expertTeam ?? state.meta.modes?.expertTeam),
         }
       : state.meta.modes;
   // The agent status arrives in slices (`agent.status.updated` carries only
@@ -616,7 +620,13 @@ function applyMetaMerge(state: AgentState, meta: TranscriptMetaMerge): ApplyResu
   const next: TranscriptMeta = {
     goal: meta.goal ?? state.meta.goal,
     activity: meta.activity ?? state.meta.activity,
-    modes: modes !== undefined && modes.plan === undefined && modes.swarm === undefined ? undefined : modes,
+    modes:
+      modes !== undefined &&
+      modes.plan === undefined &&
+      modes.swarm === undefined &&
+      modes.expertTeam === undefined
+        ? undefined
+        : modes,
     agent,
   };
   if (

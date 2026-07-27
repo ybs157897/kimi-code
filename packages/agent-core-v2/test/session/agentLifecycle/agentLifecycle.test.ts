@@ -52,12 +52,22 @@ import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import '#/agent/extension/agentExtensionService';
 import { IAgentTelemetryContextService } from '#/app/telemetry/agentTelemetryContext';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
+import {
+  type ExtensionReloadSummary,
+  ISessionExtensionService,
+} from '#/session/extension/sessionExtension';
+import type {
+  ExtensionEventName,
+  ExtensionHandler,
+  LoadedExtension,
+} from '#/app/extension/extension.types';
 import { _clearAgentToolContributionsForTests } from '#/agent/toolRegistry/toolContribution';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import '#/agent/toolActivation/toolActivationService';
@@ -160,6 +170,7 @@ describe('AgentLifecycleService', () => {
   let loopSettled: ReturnType<typeof vi.fn<IAgentLoopService['settled']>>;
   let beforeExecuteListeners: number;
   let didExecuteHookIds: string[];
+  let extensionSnapshot: readonly LoadedExtension[];
 
   beforeEach(() => {
     _clearAgentToolContributionsForTests();
@@ -239,6 +250,7 @@ describe('AgentLifecycleService', () => {
     } as IAgentMediaToolsRegistrar);
     beforeExecuteListeners = 0;
     didExecuteHookIds = [];
+    extensionSnapshot = [];
     ix.stub(IAgentToolExecutorService, {
       _serviceBrand: undefined,
       onBeforeExecuteTool: () => {
@@ -328,6 +340,17 @@ describe('AgentLifecycleService', () => {
       disabledTools: () => [],
       setDisabledTools: () => Promise.resolve(),
     } as unknown as ISessionToolPolicy);
+    ix.stub(ISessionExtensionService, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidReload: Event.None as Event<ExtensionReloadSummary>,
+      list: () => extensionSnapshot,
+      errors: () => [],
+      reload: async () => ({ active: [], errors: [] }),
+      registerReloadParticipant: () => Disposable.None,
+      listCommands: async () => [],
+      resolveCommand: () => undefined,
+    } as unknown as ISessionExtensionService);
     permissionModeSetMode = vi.fn();
     ix.stub(IAgentPermissionModeService, {
       _serviceBrand: undefined,
@@ -369,6 +392,38 @@ describe('AgentLifecycleService', () => {
     await svc.remove('main');
 
     expect(stopAllOnExit).toHaveBeenCalledWith('Session closed');
+  });
+
+  it('remove awaits one session shutdown event before disposing the main Agent', async () => {
+    const observed: string[] = [];
+    const handlers = new Map<ExtensionEventName, ExtensionHandler[]>([
+      [
+        'session_shutdown',
+        [
+          async () => {
+            await Promise.resolve();
+            observed.push('shutdown');
+          },
+        ],
+      ],
+    ]);
+    extensionSnapshot = [
+      {
+        id: 'lifecycle',
+        path: '/extensions/lifecycle.ts',
+        resolvedPath: '/extensions/lifecycle.ts',
+        handlers,
+        tools: new Map(),
+        commands: new Map(),
+      },
+    ];
+    const svc = ix.get(IAgentLifecycleService);
+    await svc.create({ agentId: 'main' });
+
+    await svc.remove('main');
+    await svc.remove('main');
+
+    expect(observed).toEqual(['shutdown']);
   });
 
   it('remove cancels queued turns before waiting for the active turn to settle', async () => {

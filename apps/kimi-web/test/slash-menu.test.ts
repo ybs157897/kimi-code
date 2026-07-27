@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { nextTick, ref, type Ref } from 'vue';
-import type { AppSkill } from '../src/api/types';
+import type { AppExtensionCommand, AppSkill } from '../src/api/types';
 import { useSlashMenu } from '../src/composables/useSlashMenu';
 
 // Public slash-menu contract: matching built-ins and dispatching selected
@@ -13,7 +13,11 @@ interface MockTextarea {
   focus: () => void;
 }
 
-function setup(initialText = '', skills: AppSkill[] = []) {
+function setup(
+  initialText = '',
+  skills: AppSkill[] = [],
+  extensionCommands: AppExtensionCommand[] = [],
+) {
   const textarea: MockTextarea = {
     value: initialText,
     selectionStart: 0,
@@ -31,6 +35,7 @@ function setup(initialText = '', skills: AppSkill[] = []) {
     textareaRef,
     autosize: () => {},
     skills: () => skills,
+    extensionCommands: () => extensionCommands,
     emitCommand: (cmd) => emitted.push(cmd),
     historyPush: (entry) => pushed.push(entry),
   });
@@ -63,6 +68,14 @@ describe('useSlashMenu — update', () => {
     const { slash } = setup('/exp');
     slash.update();
     expect(slash.items.value.map((item) => item.name)).toContain('/export');
+  });
+
+  it('offers the extension reload action for a reload prefix', () => {
+    const { slash } = setup('/rel');
+
+    slash.update();
+
+    expect(slash.items.value.map((item) => item.name)).toContain('/reload');
   });
 
   it('closes when nothing matches', () => {
@@ -102,6 +115,39 @@ describe('useSlashMenu — update', () => {
     const { slash } = setup('/depl', [{ name: 'deploy', description: 'deploy stuff', source: 'project' } as AppSkill]);
     slash.update();
     expect(slash.items.value.map((i) => i.name)).toContain('/skill:deploy');
+  });
+
+  it('lists extension commands by serializable extension and command identity', () => {
+    const { slash } = setup('/', [], [
+      {
+        extensionId: 'release-tools',
+        name: 'prepare',
+        description: 'Prepare a release',
+      },
+    ]);
+
+    slash.update();
+
+    expect(slash.items.value).toContainEqual({
+      name: '/release-tools:prepare',
+      desc: 'Prepare a release',
+      isExtension: true,
+      acceptsInput: true,
+    });
+  });
+
+  it('filters extension commands by their extension-qualified name', () => {
+    const { slash } = setup('/release-tools:pre', [], [
+      {
+        extensionId: 'release-tools',
+        name: 'prepare',
+        description: 'Prepare a release',
+      },
+    ]);
+
+    slash.update();
+
+    expect(slash.items.value.map((item) => item.name)).toEqual(['/release-tools:prepare']);
   });
 });
 

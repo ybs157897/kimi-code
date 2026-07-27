@@ -12,6 +12,7 @@ import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
+import { defineState } from '#/_base/state/stateRegistry';
 import { Error2, ErrorCodes } from '#/errors';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -33,6 +34,7 @@ import {
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { ISessionStateService } from '#/session/state/sessionState';
 import { IWireService } from '#/wire/wire';
 
 import {
@@ -57,13 +59,17 @@ import {
 
 const TEAM_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
+export const expertTeamPendingSpawnsKey = defineState<Set<string>>(
+  'expertTeam.pendingSpawns',
+  () => new Set(),
+);
+
 export class SessionExpertTeamService
   extends Disposable
   implements ISessionExpertTeamService
 {
   declare readonly _serviceBrand: undefined;
 
-  private readonly pendingSpawns = new Set<string>();
   private readonly onDidChangeEmitter = this._register(
     new Emitter<ExpertTeamSnapshot | null>(),
   );
@@ -77,8 +83,14 @@ export class SessionExpertTeamService
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @ILogService private readonly log: ILogService,
+    @ISessionStateService private readonly states: ISessionStateService,
   ) {
     super();
+    this.states.register(expertTeamPendingSpawnsKey);
+  }
+
+  private get pendingSpawns(): Set<string> {
+    return this.states.get(expertTeamPendingSpawnsKey);
   }
 
   /** Installed plugin experts merged with drop-in `experts/` directory packages. */

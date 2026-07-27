@@ -1,25 +1,29 @@
-import {
-  effectiveModelAlias,
-  type ExperimentalFeatureState,
-  type ModelAlias,
-  type PermissionMode,
-  type Session,
-  type ThinkingEffort,
-} from '@moonshot-ai/kimi-code-sdk';
-
 import { EditorSelectorComponent } from '../components/dialogs/editor-selector';
 import { EffortSelectorComponent } from '../components/dialogs/effort-selector';
 import {
   ExperimentsSelectorComponent,
   type ExperimentalFeatureDraftChange,
 } from '../components/dialogs/experiments-selector';
-import { modelDisplayName, segmentsFor } from '../components/dialogs/model-selector';
+import {
+  modelDisplayName,
+  segmentsFor,
+  type ThinkingEffort,
+} from '../components/dialogs/model-selector';
 import { TabbedModelSelectorComponent } from '../components/dialogs/tabbed-model-selector';
 import { PermissionSelectorComponent } from '../components/dialogs/permission-selector';
 import { SettingsSelectorComponent, type SettingsSelection } from '../components/dialogs/settings-selector';
 import { ThemeSelectorComponent } from '../components/dialogs/theme-selector';
 import { UpdatePreferenceSelectorComponent } from '../components/dialogs/update-preference-selector';
 import { DEFAULT_TUI_CONFIG, saveTuiConfig, type TuiConfig } from '../config';
+import type { RuntimeFeatureState } from '../runtime/runtime-feature-flags-port';
+import {
+  effectiveRuntimeModelCatalogModel,
+  type RuntimeModelCatalogModel,
+  type RuntimeModelCatalogSnapshot,
+} from '../runtime/runtime-model-catalog-port';
+import type { RuntimeProviderType } from '../runtime/runtime-model-config-port';
+import type { AgentPermissionMode } from '../runtime/session-control-port';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
 import type { ThemeName } from '#/tui/theme';
 import { currentTheme, isBuiltInTheme, lightColors, loadCustomThemeMerged } from '#/tui/theme';
 import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/kimi-tui';
@@ -60,24 +64,32 @@ function currentTuiConfig(host: SlashCommandHost): TuiConfig {
   };
 }
 
-export function effectiveModelForHost(host: SlashCommandHost, model: ModelAlias): ModelAlias {
-  const providerType = host.state.appState.availableProviders[model.provider]?.type;
-  // Flat models (no named provider, e.g. inline base_url served by a v2
-  // backend) have no provider entry to look up; their own protocol declaration
-  // plays the provider-identity role, mirroring the resolver.
-  return effectiveModelAlias(model, providerType ?? model.protocol);
+function activeSessionRuntime(host: SlashCommandHost): TUISessionRuntime | undefined {
+  try {
+    const runtime = host.requireSessionRuntime();
+    return runtime.sessionId === host.state.appState.sessionId ? runtime : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function effectiveModelForHost(
+  _host: SlashCommandHost,
+  model: RuntimeModelCatalogModel,
+): RuntimeModelCatalogModel {
+  return effectiveRuntimeModelCatalogModel(model);
 }
 
 export async function handlePlanCommand(host: SlashCommandHost, args: string): Promise<void> {
-  const session = host.session;
-  if (session === undefined) {
+  const sessionRuntime = activeSessionRuntime(host);
+  if (sessionRuntime === undefined) {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
 
   const subcmd = args.trim().toLowerCase();
   if (subcmd === 'clear') {
-    await session.clearPlan();
+    await sessionRuntime.agent.clearPlan();
     host.showNotice('Plan cleared');
     return;
   }
@@ -91,15 +103,19 @@ export async function handlePlanCommand(host: SlashCommandHost, args: string): P
     return;
   }
 
-  await applyPlanMode(host, session, enabled);
+  await applyPlanMode(host, sessionRuntime, enabled);
 }
 
-async function applyPlanMode(host: SlashCommandHost, session: Session, enabled: boolean): Promise<void> {
+async function applyPlanMode(
+  host: SlashCommandHost,
+  sessionRuntime: TUISessionRuntime,
+  enabled: boolean,
+): Promise<void> {
   try {
-    await session.setPlanMode(enabled);
+    await sessionRuntime.agent.setPlanMode(enabled);
     host.setAppState({ planMode: enabled });
     if (enabled) {
-      const plan = await session.getPlan().catch(() => null);
+      const plan = await sessionRuntime.agent.getPlan().catch(() => null);
       host.showNotice(
         'Plan mode: ON',
         plan?.path !== undefined ? `Plan will be created here: ${plan.path}` : undefined,
@@ -114,8 +130,8 @@ async function applyPlanMode(host: SlashCommandHost, session: Session, enabled: 
 }
 
 export async function handleYoloCommand(host: SlashCommandHost, args: string): Promise<void> {
-  const session = host.session;
-  if (session === undefined) {
+  const sessionRuntime = activeSessionRuntime(host);
+  if (sessionRuntime === undefined) {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
@@ -128,7 +144,7 @@ export async function handleYoloCommand(host: SlashCommandHost, args: string): P
       host.showNotice('YOLO mode is already on');
       return;
     }
-    await session.setPermission('yolo');
+    await sessionRuntime.agent.setPermission('yolo');
     host.setAppState({ permissionMode: 'yolo' });
     host.showNotice('YOLO mode: ON', 'Tool actions auto-approved; the agent may still ask you questions.');
     return;
@@ -139,7 +155,7 @@ export async function handleYoloCommand(host: SlashCommandHost, args: string): P
       host.showNotice('YOLO mode is already off');
       return;
     }
-    await session.setPermission('manual');
+    await sessionRuntime.agent.setPermission('manual');
     host.setAppState({ permissionMode: 'manual' });
     host.showNotice('YOLO mode: OFF');
     return;
@@ -147,19 +163,19 @@ export async function handleYoloCommand(host: SlashCommandHost, args: string): P
 
   // toggle
   if (currentMode === 'yolo') {
-    await session.setPermission('manual');
+    await sessionRuntime.agent.setPermission('manual');
     host.setAppState({ permissionMode: 'manual' });
     host.showNotice('YOLO mode: OFF');
   } else {
-    await session.setPermission('yolo');
+    await sessionRuntime.agent.setPermission('yolo');
     host.setAppState({ permissionMode: 'yolo' });
     host.showNotice('YOLO mode: ON', 'Tool actions auto-approved; the agent may still ask you questions.');
   }
 }
 
 export async function handleAutoCommand(host: SlashCommandHost, args: string): Promise<void> {
-  const session = host.session;
-  if (session === undefined) {
+  const sessionRuntime = activeSessionRuntime(host);
+  if (sessionRuntime === undefined) {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
@@ -172,7 +188,7 @@ export async function handleAutoCommand(host: SlashCommandHost, args: string): P
       host.showNotice('Auto mode is already on');
       return;
     }
-    await session.setPermission('auto');
+    await sessionRuntime.agent.setPermission('auto');
     host.setAppState({ permissionMode: 'auto' });
     host.showNotice('Auto mode: ON', 'All actions auto-approved; the agent will not ask you questions.');
     return;
@@ -183,7 +199,7 @@ export async function handleAutoCommand(host: SlashCommandHost, args: string): P
       host.showNotice('Auto mode is already off');
       return;
     }
-    await session.setPermission('manual');
+    await sessionRuntime.agent.setPermission('manual');
     host.setAppState({ permissionMode: 'manual' });
     host.showNotice('Auto mode: OFF');
     return;
@@ -191,24 +207,24 @@ export async function handleAutoCommand(host: SlashCommandHost, args: string): P
 
   // toggle
   if (currentMode === 'auto') {
-    await session.setPermission('manual');
+    await sessionRuntime.agent.setPermission('manual');
     host.setAppState({ permissionMode: 'manual' });
     host.showNotice('Auto mode: OFF');
   } else {
-    await session.setPermission('auto');
+    await sessionRuntime.agent.setPermission('auto');
     host.setAppState({ permissionMode: 'auto' });
     host.showNotice('Auto mode: ON', 'All actions auto-approved; the agent will not ask you questions.');
   }
 }
 
 export async function handleCompactCommand(host: SlashCommandHost, args: string): Promise<void> {
-  const session = host.session;
-  if (session === undefined) {
+  const sessionRuntime = activeSessionRuntime(host);
+  if (sessionRuntime === undefined) {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
   const customInstruction = args.trim() || undefined;
-  await session.compact({ instruction: customInstruction });
+  await sessionRuntime.context.compact({ instruction: customInstruction });
 }
 
 export async function handleEditorCommand(host: SlashCommandHost, args: string): Promise<void> {
@@ -284,7 +300,7 @@ export async function handleEffortCommand(host: SlashCommandHost, args: string):
 
 function showEffortPicker(
   host: SlashCommandHost,
-  model: ModelAlias,
+  model: RuntimeModelCatalogModel,
   segments: readonly string[],
 ): void {
   const liveEffort = host.state.appState.thinkingEffort;
@@ -333,15 +349,53 @@ function showEditorPicker(host: SlashCommandHost): void {
 async function refreshModelsForPicker(host: SlashCommandHost): Promise<void> {
   try {
     const result = await withTimeout(
-      host.authFlow.refreshOAuthProviderModels(),
+      host.runtime.providerRefresh.refresh('oauth'),
       MODEL_PICKER_REFRESH_TIMEOUT_MS,
     );
     if (result === undefined) return;
     for (const f of result.failed) {
       host.showStatus(`Skipped refreshing ${f.provider}: ${f.reason}`, 'warning');
     }
+    const catalog = await host.runtime.models.load({ reload: true });
+    applyRuntimeCatalog(host, catalog);
   } catch (error) {
     host.showStatus(`Skipped refreshing models: ${formatErrorMessage(error)}`, 'warning');
+  }
+}
+
+function applyRuntimeCatalog(
+  host: SlashCommandHost,
+  catalog: RuntimeModelCatalogSnapshot,
+): void {
+  const availableProviders: SlashCommandHost['state']['appState']['availableProviders'] = {};
+  for (const [id, provider] of Object.entries(catalog.providers)) {
+    if (!isRuntimeProviderType(provider.type)) continue;
+    availableProviders[id] = {
+      type: provider.type,
+      baseUrl: provider.baseUrl,
+      defaultModel: provider.defaultModel,
+      env: provider.env,
+      customHeaders: provider.customHeaders,
+      source: provider.source,
+    };
+  }
+  host.setAppState({
+    availableModels: catalog.models,
+    availableProviders,
+  });
+}
+
+function isRuntimeProviderType(type: string): type is RuntimeProviderType {
+  switch (type) {
+    case 'anthropic':
+    case 'google-genai':
+    case 'kimi':
+    case 'openai':
+    case 'openai_responses':
+    case 'vertexai':
+      return true;
+    default:
+      return false;
   }
 }
 
@@ -446,18 +500,18 @@ async function performModelSwitch(
   let effectiveAlias = alias;
   let effectiveEffort = effort;
 
-  const session = host.session;
+  const sessionRuntime = activeSessionRuntime(host);
   try {
-    if (session === undefined && runtimeChanged) {
+    if (sessionRuntime === undefined && runtimeChanged) {
       await host.authFlow.activateModelAfterLogin(alias, effort);
-    } else if (session !== undefined) {
+    } else if (sessionRuntime !== undefined) {
       if (alias !== prevModel) {
-        await session.setModel(alias);
+        await sessionRuntime.agent.setModel(alias);
       }
       if (effort !== prevEffort) {
-        await session.setThinking(effort);
+        await sessionRuntime.agent.setThinking(effort);
       }
-      const status = await session.getStatus();
+      const status = await sessionRuntime.agent.getStatus();
       effectiveAlias = status.model ?? alias;
       effectiveEffort = status.thinkingEffort;
     }
@@ -467,7 +521,7 @@ async function performModelSwitch(
     return;
   }
 
-  if (session === undefined) {
+  if (sessionRuntime === undefined) {
     effectiveAlias = host.state.appState.model;
     effectiveEffort = host.state.appState.thinkingEffort;
   }
@@ -478,7 +532,7 @@ async function performModelSwitch(
     host.state.appState.availableModels[effectiveAlias],
   );
   host.setAppState({ model: effectiveAlias, thinkingEffort: effectiveEffort });
-  if (session === undefined && runtimeChanged) {
+  if (sessionRuntime === undefined && runtimeChanged) {
     if (effectiveModelChanged) {
       host.track('model_switch', { model: effectiveAlias });
     }
@@ -530,23 +584,25 @@ async function persistModelSelection(
   effort: ThinkingEffort,
   effortChanged: boolean,
 ): Promise<boolean> {
-  const config = await host.harness.getConfig({ reload: true });
-  const model = host.state.appState.availableModels[alias];
+  const catalog = await host.runtime.models.load({ reload: true });
+  const model = catalog.models[alias];
   const full = thinkingEffortToConfig(
     effort,
-    model === undefined ? undefined : effectiveModelForHost(host, model).supportEfforts,
+    model === undefined
+      ? undefined
+      : effectiveRuntimeModelCatalogModel(model).supportEfforts,
   );
   // Re-confirming the effort shown when the picker opened is not an explicit
   // choice — persist the model but leave the stored effort preference alone.
   const patch = effortChanged ? full : { enabled: full.enabled };
   if (
-    config.defaultModel === alias &&
-    config.thinking?.enabled === patch.enabled &&
-    (!effortChanged || config.thinking?.effort === patch.effort)
+    catalog.defaultModel === alias &&
+    catalog.thinking?.enabled === patch.enabled &&
+    (!effortChanged || catalog.thinking?.effort === patch.effort)
   ) {
     return false;
   }
-  await host.harness.setConfig({
+  await host.runtime.modelConfig.apply({
     defaultModel: alias,
     thinking: patch,
   });
@@ -640,9 +696,9 @@ export function showUpdatePreferencePicker(host: SlashCommandHost): void {
 }
 
 export async function showExperimentsPanel(host: SlashCommandHost): Promise<void> {
-  let features: readonly ExperimentalFeatureState[];
+  let features: readonly RuntimeFeatureState[];
   try {
-    features = await host.harness.getExperimentalFeatures();
+    features = await host.runtime.featureFlags.list();
   } catch (error) {
     host.showError(`Failed to load experimental features: ${formatErrorMessage(error)}`);
     return;
@@ -668,19 +724,23 @@ export async function applyExperimentalFeatureChanges(
   }
 
   try {
-    await host.harness.setConfig({ experimental });
-    const features = await host.harness.getExperimentalFeatures();
+    const features = await host.runtime.featureFlags.apply(experimental);
     setExperimentalFeatures(features);
     host.refreshSlashCommandAutocomplete();
     host.restoreEditor();
-    if (host.session !== undefined) {
-      await host.session.reloadSession();
+    let sessionRuntime: TUISessionRuntime | undefined;
+    try {
+      sessionRuntime = host.requireSessionRuntime();
+    } catch {
+      sessionRuntime = undefined;
+    }
+    if (sessionRuntime === undefined) {
+      host.showStatus('Experimental features updated.', 'success');
+    } else {
+      await sessionRuntime.refresh.reload();
       await host.reloadCurrentSessionView(
-        host.session,
         'Experimental features updated. Session reloaded.',
       );
-    } else {
-      host.showStatus('Experimental features updated.', 'success');
     }
     host.track('experimental_features_apply', { changed: changes.length });
   } catch (error) {
@@ -690,7 +750,7 @@ export async function applyExperimentalFeatureChanges(
 
 function mountExperimentsPanel(
   host: SlashCommandHost,
-  features: readonly ExperimentalFeatureState[],
+  features: readonly RuntimeFeatureState[],
 ): void {
   host.mountEditorReplacement(
     new ExperimentsSelectorComponent({
@@ -745,14 +805,22 @@ export async function applyUpdatePreferenceChoice(
   host.showStatus(`Automatic updates ${autoInstall ? 'enabled' : 'disabled'}.`);
 }
 
-async function applyPermissionChoice(host: SlashCommandHost, mode: PermissionMode): Promise<void> {
+async function applyPermissionChoice(
+  host: SlashCommandHost,
+  mode: AgentPermissionMode,
+): Promise<void> {
   if (mode === host.state.appState.permissionMode) {
     host.showStatus(`Permission mode unchanged: ${mode}.`);
     return;
   }
 
   try {
-    await host.requireSession().setPermission(mode);
+    const sessionRuntime = activeSessionRuntime(host);
+    if (sessionRuntime === undefined) {
+      host.showError(NO_ACTIVE_SESSION_MESSAGE);
+      return;
+    }
+    await sessionRuntime.agent.setPermission(mode);
   } catch (error) {
     const msg = formatErrorMessage(error);
     host.showError(`Failed to set permission mode: ${msg}`);

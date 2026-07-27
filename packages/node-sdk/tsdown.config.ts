@@ -5,7 +5,7 @@ import { defineConfig } from 'tsdown';
 import { rawTextPlugin } from '../../build/raw-text-plugin.mjs';
 
 export default defineConfig({
-  entry: ['./src/index.ts'],
+  entry: ['./src/index.ts', './src/v2/index.ts'],
   format: ['esm'],
   dts: false,
   outDir: 'dist',

@@ -10,6 +10,7 @@ export default {
   auto: { desc: '完全自主，Agent 不再提问' },
   thinking: { desc: '设置思考强度' },
   compact: { desc: '压缩会话历史' },
+  reload: { desc: '重新加载代码扩展及其命令' },
   fork: { desc: '把当前会话 fork 出一个新会话' },
   export: {
     desc: '将当前会话和排障日志下载为 ZIP 压缩包',

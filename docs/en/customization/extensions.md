@@ -6,7 +6,8 @@ Kimi Code process. Unlike [declarative plugins](./plugins.md), an extension is
 commands, and drive the session at runtime.
 
 Extensions are loaded at runtime by [jiti](https://github.com/unjs/jiti), so no
-build step is needed. After editing, run `/reload` in the TUI to pick up changes.
+build step is needed. After editing, run `/reload` in the TUI or web UI to pick
+up changes.
 
 ## Quick start
 
@@ -54,8 +55,8 @@ export default (api: ExtensionAPI) => {
 };
 ```
 
-Start the TUI and the extension loads automatically. Commands appear as
-`<extensionId>:<commandName>` (e.g. `/my-ext:greet`) in `/` autocomplete.
+Start the TUI or web UI and the extension loads automatically. Commands appear
+as `<extensionId>:<commandName>` (e.g. `/my-ext:greet`) in `/` autocomplete.
 
 ## Extension locations
 
@@ -158,8 +159,8 @@ The `ctx` passed to event handlers exposes:
 
 ## Hot reload
 
-Run `/reload` in the TUI to re-discover and re-load extensions. No Kimi Code
-restart needed after editing extension code.
+Run `/reload` in the TUI or web UI to re-discover and re-load extensions. No
+Kimi Code restart is needed after editing extension code.
 
 ## Relationship to declarative plugins
 
@@ -175,4 +176,4 @@ The two coexist and do not interfere.
 ## Examples
 
 More examples in
-[`packages/agent-core/examples/extensions/`](../../../packages/agent-core/examples/extensions/).
+[`packages/agent-core/examples/extensions/`](https://github.com/MoonshotAI/kimi-code/tree/main/packages/agent-core/examples/extensions).

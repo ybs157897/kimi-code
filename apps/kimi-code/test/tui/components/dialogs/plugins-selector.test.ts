@@ -1,3 +1,11 @@
+/**
+ * Scenario: plugin manager dialogs render and route local interactions.
+ * Responsibilities: preserve tabs, trust labels, update badges, toggles,
+ * confirmations, and MCP rows with runtime-neutral plugin views.
+ * Wiring: real components and theme helpers; callbacks are the only stubs.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/dialogs/plugins-selector.test.ts
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 import chalk from 'chalk';
 
@@ -11,6 +19,7 @@ import {
   type PluginRemoveConfirmResult,
   type PluginsPanelSelection,
 } from '#/tui/components/dialogs/plugins-selector';
+import type { PluginSummaryView } from '#/tui/runtime/session-plugins-port';
 import { currentTheme } from '#/tui/theme';
 import { darkColors, lightColors } from '#/tui/theme/colors';
 import { isOfficialPluginInstall, isOfficialPluginSource, pluginTrustLabel } from '#/tui/utils/plugin-source-label';
@@ -45,7 +54,7 @@ function warningMark(): string {
   return withAnsiColors(() => chalk.hex(darkColors.warning)('\u0001').split('\u0001')[0]!);
 }
 
-const superpowers = {
+const superpowers: PluginSummaryView = {
   id: 'superpowers',
   displayName: 'Superpowers',
   version: '5.1.0',
@@ -54,8 +63,6 @@ const superpowers = {
   skillCount: 14,
   mcpServerCount: 0,
   enabledMcpServerCount: 0,
-  hookCount: 0,
-  commandCount: 0,
   hasErrors: false,
   source: 'local-path' as const,
 };
@@ -69,7 +76,7 @@ const thirdPartyEntries = [
 const marketplaceEntries = [...officialEntries, ...thirdPartyEntries];
 
 function makePanel(opts: {
-  installed?: readonly (typeof superpowers)[];
+  installed?: readonly PluginSummaryView[];
   initialTab?: 'installed' | 'official' | 'third-party' | 'custom';
   selectedId?: string;
   pluginHint?: { id: string; text: string };
@@ -100,8 +107,6 @@ describe('plugins selector dialogs', () => {
       skillCount: 0,
       mcpServerCount: 0,
       enabledMcpServerCount: 0,
-      hookCount: 0,
-      commandCount: 0,
       hasErrors: false,
       source: 'zip-url',
       originalSource: 'https://code.kimi.com/kimi-code/plugins/official/kimi-datasource.zip',
@@ -114,8 +119,6 @@ describe('plugins selector dialogs', () => {
       skillCount: 0,
       mcpServerCount: 0,
       enabledMcpServerCount: 0,
-      hookCount: 0,
-      commandCount: 0,
       hasErrors: false,
       source: 'zip-url',
       originalSource: 'https://code.kimi.com/kimi-code/plugins/curated/superpowers.zip',
@@ -128,8 +131,6 @@ describe('plugins selector dialogs', () => {
       skillCount: 0,
       mcpServerCount: 0,
       enabledMcpServerCount: 0,
-      hookCount: 0,
-      commandCount: 0,
       hasErrors: false,
       source: 'zip-url',
       originalSource: 'https://code.kimi.com/demo.zip',
@@ -142,8 +143,6 @@ describe('plugins selector dialogs', () => {
       skillCount: 0,
       mcpServerCount: 0,
       enabledMcpServerCount: 0,
-      hookCount: 0,
-      commandCount: 0,
       hasErrors: false,
       source: 'local-path',
       originalSource: 'https://code.kimi.com/kimi-code/plugins/official/local',
@@ -151,7 +150,7 @@ describe('plugins selector dialogs', () => {
   });
 
   it('recognizes installed plugins by official provenance', () => {
-    const base = {
+    const base: Omit<PluginSummaryView, 'source'> = {
       id: 'kimi-datasource',
       displayName: 'Kimi Datasource',
       enabled: true,
@@ -159,8 +158,6 @@ describe('plugins selector dialogs', () => {
       skillCount: 0,
       mcpServerCount: 0,
       enabledMcpServerCount: 0,
-      hookCount: 0,
-      commandCount: 0,
       hasErrors: false,
     };
     // Zip installs from the official CDN path.
@@ -544,8 +541,6 @@ describe('plugins selector dialogs', () => {
         skillCount: 1,
         mcpServerCount: 1,
         enabledMcpServerCount: 1,
-        hookCount: 0,
-      commandCount: 0,
         hasErrors: false,
         source: 'local-path',
         installedAt: '2026-05-29T00:00:00.000Z',

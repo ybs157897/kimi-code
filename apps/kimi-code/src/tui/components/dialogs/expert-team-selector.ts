@@ -1,13 +1,13 @@
 import type {
-  ExpertTeamDefinition,
-  ExpertTeamSnapshot,
-} from '@moonshot-ai/kimi-code-sdk';
+  SessionExpertTeamDefinition,
+  SessionExpertTeamSnapshot,
+} from '#/tui/runtime/session-expert-team-port';
 
 import { ChoicePickerComponent, type ChoiceOption } from './choice-picker';
 
 export interface ExpertTeamSelectorOptions {
-  readonly teams: readonly ExpertTeamDefinition[];
-  readonly current: ExpertTeamSnapshot | null;
+  readonly teams: readonly SessionExpertTeamDefinition[];
+  readonly current: SessionExpertTeamSnapshot | null;
   readonly onSelect: (pluginId: string | null) => void;
   readonly onCancel: () => void;
 }
@@ -40,7 +40,7 @@ export class ExpertTeamSelectorComponent extends ChoicePickerComponent {
   }
 }
 
-function expertTeamDescription(team: ExpertTeamDefinition): string {
+function expertTeamDescription(team: SessionExpertTeamDefinition): string {
   const specialists = `${String(team.memberAgentNames.length)} specialist${
     team.memberAgentNames.length === 1 ? '' : 's'
   }`;

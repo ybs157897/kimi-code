@@ -10,7 +10,6 @@
 
 import { join } from 'node:path';
 
-import { hostRequestHeadersSeed } from '@moonshot-ai/agent-core-v2';
 import { createServerLogger, startServer, type ServerLogger } from '@moonshot-ai/kap-server';
 import { shutdownTelemetry, track } from '@moonshot-ai/kimi-telemetry';
 import chalk from 'chalk';
@@ -284,10 +283,10 @@ async function runServerInProcess(
     // `telemetry` toggle). Complements the v1 client registered above, which
     // only covers host-level events.
     telemetry: true,
-    // Seed the CLI's Kimi identity headers so the engine's outbound
+    // Pass the CLI's Kimi identity headers so the engine's outbound
     // requests (model, WebSearch, FetchURL) carry the same User-Agent +
     // X-Msh-* identity as direct CLI runs.
-    seeds: hostRequestHeadersSeed(buildKimiDefaultHeaders(version)),
+    requestHeaders: buildKimiDefaultHeaders(version),
     webAssetsDir: serverWebAssetsDir(),
   });
   logger.info('serving the REST/WS API and the bundled web UI');

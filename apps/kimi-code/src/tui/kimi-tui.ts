@@ -1,15 +1,13 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import type { DeviceAuthorization } from '@moonshot-ai/kimi-code-oauth';
 import type {
   ApprovalRequest,
   ApprovalResponse,
-  BackgroundTaskInfo,
-  CreateSessionOptions,
   KimiHarness,
-  PermissionMode,
   PromptPart,
+  QuestionRequest,
+  QuestionResult,
   Session,
 } from '@moonshot-ai/kimi-code-sdk';
 import type { MigrationPlan } from '@moonshot-ai/migration-legacy';
@@ -26,6 +24,7 @@ import type { CLIOptions } from '#/cli/options';
 import { MigrationScreenComponent, type MigrationScreenResult } from '#/migration/index';
 import { copyTextToClipboard } from '#/utils/clipboard/clipboard-text';
 import { appendInputHistory, loadInputHistory } from '#/utils/history/input-history';
+import type { RuntimeAuthDeviceCode } from './runtime/runtime-auth-port';
 import { openUrl } from '#/utils/open-url';
 import { getInputHistoryFile } from '#/utils/paths';
 import { detectFdPath, ensureFdPath } from '#/utils/process/fd-detect';
@@ -43,7 +42,6 @@ import {
   setExperimentalFeatures,
   sortSlashCommands,
   type KimiSlashCommand,
-  type SkillListSession,
 } from './commands';
 import * as slashCommands from './commands/dispatch';
 import { BannerComponent } from './components/chrome/banner';
@@ -117,6 +115,22 @@ import { registerReverseRPCHandlers } from './reverse-rpc/index';
 import { QuestionController } from './reverse-rpc/question/controller';
 import { createQuestionAskHandler } from './reverse-rpc/question/handler';
 import type { ApprovalPanelData, QuestionPanelData } from './reverse-rpc/types';
+import type { ExtensionCommandPort } from './runtime/extension-command-port';
+import type { RuntimeEnvironmentPort } from './runtime/runtime-environment-port';
+import type {
+  RuntimeTelemetryPort,
+  RuntimeTelemetryProperties,
+} from './runtime/runtime-telemetry-port';
+import type {
+  AgentPermissionMode,
+  AgentTask,
+  SessionAgentControlPort,
+  SessionControlPort,
+  SessionCreateInput,
+  SessionIdentity,
+} from './runtime/session-control-port';
+import { createLegacyTUIRuntime, type TUIRuntime } from './runtime/tui-runtime';
+import type { TUISessionRuntime } from './runtime/tui-session-runtime';
 import { currentTheme, getColorPalette, getBuiltInPalette, isBuiltInTheme } from './theme';
 import type { ColorToken, ResolvedTheme, ThemeName } from './theme';
 import { createTUIState, type TUIState } from './tui-state';
@@ -183,6 +197,10 @@ export interface KimiTUIStartupInput {
   readonly migrationPlan?: MigrationPlan | null;
   /** When true, run only the migration screen, then exit (the `kimi migrate` command). */
   readonly migrateOnly?: boolean;
+  readonly runtime?: TUIRuntime;
+  readonly runtimeEnvironment?: RuntimeEnvironmentPort;
+  readonly runtimeTelemetry?: RuntimeTelemetryPort;
+  readonly sessionControl?: SessionControlPort;
 }
 
 type EffectiveActivityPaneMode = ActivityPaneMode | 'idle' | 'session';
@@ -198,12 +216,8 @@ function sameStringArrays(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
 }
 
-type MutableCreateSessionOptions = {
-  -readonly [P in keyof CreateSessionOptions]: CreateSessionOptions[P];
-};
-
 function createInitialAppState(input: KimiTUIStartupInput): AppState {
-  const startupPermission: PermissionMode = input.cliOptions.auto
+  const startupPermission: AgentPermissionMode = input.cliOptions.auto
     ? 'auto'
     : input.cliOptions.yolo
       ? 'yolo'
@@ -295,10 +309,39 @@ function appendSteerText(parts: PromptPart[], text: string): void {
 /** How long the one-shot "moved to background" footer hint stays visible. */
 const DETACH_HINT_DISPLAY_MS = 4_000;
 
+interface ActiveSessionBinding {
+  readonly identity: SessionIdentity;
+  readonly runtime: TUISessionRuntime;
+  readonly legacySession?: Session;
+}
+
+function identityFromLegacySession(session: Session): SessionIdentity {
+  const now = Date.now();
+  return {
+    id: session.id,
+    workDir: session.summary?.workDir,
+    title: session.summary?.title ?? undefined,
+    lastPrompt: session.summary?.lastPrompt,
+    createdAt: session.summary?.createdAt ?? now,
+    updatedAt: session.summary?.updatedAt ?? now,
+    archived: session.summary?.archived ?? false,
+    metadata:
+      session.summary?.metadata === undefined
+        ? undefined
+        : { ...session.summary.metadata },
+  };
+}
+
 export class KimiTUI {
-  readonly harness: KimiHarness;
+  readonly harness: KimiHarness | undefined;
+  readonly runtime: TUIRuntime;
+  readonly runtimeEnvironment: RuntimeEnvironmentPort;
+  readonly runtimeTelemetry: RuntimeTelemetryPort;
+  readonly sessionControl: SessionControlPort;
   readonly options: KimiTUIOptions;
+  /** v1 compatibility handle. Runtime-neutral code must use the active binding. */
   session: Session | undefined;
+  private activeSessionBinding: ActiveSessionBinding | undefined;
   state: TUIState;
   private readonly approvalController = new ApprovalController();
   private readonly questionController = new QuestionController();
@@ -309,6 +352,7 @@ export class KimiTUI {
   readonly pluginCommandMap = new Map<string, string>();
   private extensionCommands: readonly KimiSlashCommand[] = [];
   readonly extensionCommandNames = new Set<string>();
+  private extensionCommandPort: ExtensionCommandPort | undefined;
   private readonly imageStore = new ImageAttachmentStore();
   private fdPath: string | null = detectFdPath();
   private fdDownloadStarted = false;
@@ -335,7 +379,13 @@ export class KimiTUI {
   // `taskId` (from `shell.started`) lets ctrl+b detach the exact task.
   private readonly shellOutputStreams = new Map<
     string,
-    { entry: TranscriptEntry; component: ShellRunComponent; taskId?: string }
+    {
+      entry: TranscriptEntry;
+      component: ShellRunComponent;
+      sessionRuntime: TUISessionRuntime;
+      agentId?: string;
+      taskId?: string;
+    }
   >();
   readonly streamingUI: StreamingUIController;
   readonly authFlow: AuthFlowController;
@@ -374,12 +424,21 @@ export class KimiTUI {
    */
   public exitForegroundTask: ((exitCode: number) => Promise<void>) | undefined;
 
-  track(event: string, properties?: Parameters<KimiHarness['track']>[1]): void {
-    this.harness.track(event, properties);
+  track(event: string, properties?: RuntimeTelemetryProperties): void {
+    this.runtimeTelemetry.track(event, properties);
   }
 
-  constructor(harness: KimiHarness, startupInput: KimiTUIStartupInput) {
+  constructor(harness: KimiHarness | undefined, startupInput: KimiTUIStartupInput) {
     this.harness = harness;
+    if (startupInput.runtime === undefined && harness === undefined) {
+      throw new Error('KimiTUI requires either a legacy harness or a TUI runtime.');
+    }
+    this.runtime =
+      startupInput.runtime ??
+      createLegacyTUIRuntime(harness as KimiHarness);
+    this.runtimeEnvironment = startupInput.runtimeEnvironment ?? this.runtime.environment;
+    this.runtimeTelemetry = startupInput.runtimeTelemetry ?? this.runtime.telemetry;
+    this.sessionControl = startupInput.sessionControl ?? this.runtime.sessionControl;
     const tuiOptions: KimiTUIOptions = {
       initialAppState: createInitialAppState(startupInput),
       startup: {
@@ -476,8 +535,11 @@ export class KimiTUI {
     this.setupAutocomplete();
   }
 
-  async refreshSkillCommands(session?: SkillListSession): Promise<void> {
-    if (session === undefined) {
+  async refreshSkillCommands(): Promise<void> {
+    let sessionRuntime: TUISessionRuntime;
+    try {
+      sessionRuntime = this.requireSessionRuntime();
+    } catch {
       this.skillCommands = [];
       this.skillCommandMap.clear();
       this.setupAutocomplete();
@@ -486,10 +548,11 @@ export class KimiTUI {
 
     let skills;
     try {
-      skills = await session.listSkills();
+      skills = await sessionRuntime.skills.list();
     } catch {
       return;
     }
+    if (this.activeSessionBinding?.runtime !== sessionRuntime) return;
     const skillCommands = buildSkillSlashCommands(skills);
     this.skillCommands = skillCommands.commands;
     this.skillCommandMap.clear();
@@ -499,8 +562,11 @@ export class KimiTUI {
     this.setupAutocomplete();
   }
 
-  async refreshPluginCommands(session?: Session): Promise<void> {
-    if (session === undefined) {
+  async refreshPluginCommands(): Promise<void> {
+    let sessionRuntime: TUISessionRuntime;
+    try {
+      sessionRuntime = this.requireSessionRuntime();
+    } catch {
       this.pluginCommands = [];
       this.pluginCommandMap.clear();
       this.setupAutocomplete();
@@ -509,10 +575,11 @@ export class KimiTUI {
 
     let defs;
     try {
-      defs = await session.listPluginCommands();
+      defs = await sessionRuntime.pluginCommands.list();
     } catch {
       return;
     }
+    if (this.activeSessionBinding?.runtime !== sessionRuntime) return;
     const pluginSlashCommands = buildPluginSlashCommands(defs);
     this.pluginCommands = pluginSlashCommands.commands;
     this.pluginCommandMap.clear();
@@ -522,9 +589,10 @@ export class KimiTUI {
     this.setupAutocomplete();
   }
 
-  /** Refresh code-based extension slash commands from the session. */
-  async refreshExtensionCommands(session?: Session): Promise<void> {
-    if (session === undefined) {
+  /** Refresh code-based extension slash commands from the active runtime. */
+  async refreshExtensionCommands(): Promise<void> {
+    const port = this.extensionCommandPort;
+    if (port === undefined) {
       this.extensionCommands = [];
       this.extensionCommandNames.clear();
       this.setupAutocomplete();
@@ -533,7 +601,7 @@ export class KimiTUI {
 
     let defs;
     try {
-      defs = await session.listExtensionCommands();
+      defs = await port.list();
     } catch {
       return;
     }
@@ -544,6 +612,10 @@ export class KimiTUI {
       this.extensionCommandNames.add(name);
     }
     this.setupAutocomplete();
+  }
+
+  async reloadExtensionCommands(): Promise<void> {
+    await this.extensionCommandPort?.reload();
   }
 
   // =========================================================================
@@ -719,36 +791,40 @@ export class KimiTUI {
       return;
     }
     if (shouldReplayHistory) {
-      await this.sessionReplay.hydrateFromReplay(this.requireSession());
+      await this.sessionReplay.hydrateFromReplay(this.requireSessionRuntime());
       this.applyStartupPermissionAndPlanToAppState();
     }
     const resumeState = this.session?.getResumeState();
     if (resumeState?.warning !== undefined) {
       this.showStatus(`Warning: ${resumeState.warning}`, 'warning');
     }
-    if (this.session !== undefined) {
+    const sessionRuntime = this.activeSessionBinding?.runtime;
+    if (sessionRuntime !== undefined) {
       this.sessionEventHandler.startSubscription();
-      void this.showSessionWarnings(this.session);
-    }
-    void this.fetchSessions();
-    if (this.session !== undefined) {
+      void this.showSessionWarnings(sessionRuntime);
       this.updateTerminalTitle();
     }
-    void this.refreshSkillCommands(this.session);
-    void this.refreshPluginCommands(this.session);
-    void this.refreshExtensionCommands(this.session);
+    void this.fetchSessions();
+    void this.refreshSkillCommands();
+    void this.refreshPluginCommands();
+    void this.refreshExtensionCommands();
   }
 
-  private async showSessionWarnings(session: Session): Promise<void> {
+  private async showSessionWarnings(sessionRuntime: TUISessionRuntime): Promise<void> {
     try {
-      const warnings = await session.getSessionWarnings();
-      if (this.session !== session) return;
+      const warnings = await sessionRuntime.warnings.list();
+      if (
+        this.activeSessionBinding?.runtime !== sessionRuntime ||
+        this.state.appState.sessionId !== sessionRuntime.sessionId
+      ) {
+        return;
+      }
       for (const warning of warnings) {
         const severity = warning.severity === 'error' ? 'error' : 'warning';
         this.showStatus(`Warning: ${warning.message}`, severity);
       }
     } catch {
-      // Best-effort: startup must not block on warning retrieval.
+      // Best-effort: session setup must not block on warning retrieval.
     }
   }
 
@@ -759,24 +835,25 @@ export class KimiTUI {
   }
 
   private async init(): Promise<boolean> {
-    setExperimentalFeatures(await this.harness.getExperimentalFeatures());
+    setExperimentalFeatures(await this.runtimeEnvironment.getExperimentalFeatures());
     await this.authFlow.refreshAvailableModels();
     void this.refreshProviderModelsInBackground();
 
     const { startup } = this.options;
     const { workDir } = this.state.appState;
-    let session: Session | undefined;
+    let identity: SessionIdentity | undefined;
     let shouldReplayHistory = false;
     const isResumeStartup = startup.sessionFlag !== undefined || startup.continueLast;
-    const createSessionOptions: MutableCreateSessionOptions = {
+    const createSessionOptions: SessionCreateInput = {
       workDir,
       model: startup.model,
       permission: startup.auto ? 'auto' : startup.yolo ? 'yolo' : undefined,
       planMode: startup.plan ? true : undefined,
+      additionalDirs:
+        this.state.appState.additionalDirs.length === 0
+          ? undefined
+          : [...this.state.appState.additionalDirs],
     };
-    if (this.state.appState.additionalDirs.length > 0) {
-      createSessionOptions.additionalDirs = [...this.state.appState.additionalDirs];
-    }
 
     try {
       if (isResumeStartup) {
@@ -786,7 +863,7 @@ export class KimiTUI {
         }
 
         if (startup.sessionFlag !== undefined) {
-          const sessions = await this.harness.listSessions({
+          const sessions = await this.sessionControl.sessions.list({
             sessionId: startup.sessionFlag,
             workDir,
           });
@@ -794,7 +871,10 @@ export class KimiTUI {
           if (target === undefined) {
             throw new Error(`Session "${startup.sessionFlag}" not found.`);
           }
-          if (resolve(target.workDir) !== resolve(workDir)) {
+          if (
+            target.workDir !== undefined &&
+            resolve(target.workDir) !== resolve(workDir)
+          ) {
             this.state.ui.stop();
             process.stderr.write(
               `${currentTheme.fg(
@@ -807,24 +887,30 @@ export class KimiTUI {
               `Session "${startup.sessionFlag}" was created under a different directory.`,
             );
           }
-          session = await this.harness.resumeSession({
+          identity = await this.sessionControl.sessions.resume({
             id: startup.sessionFlag,
             additionalDirs: createSessionOptions.additionalDirs,
             replayTurnLimit: REPLAY_TURN_LIMIT,
           });
+          if (identity === undefined) {
+            throw new Error(`Session "${startup.sessionFlag}" not found.`);
+          }
           shouldReplayHistory = true;
         } else {
-          const sessions = await this.harness.listSessions({ workDir });
+          const sessions = await this.sessionControl.sessions.list({ workDir });
           const target = sessions[0];
           if (target !== undefined) {
-            session = await this.harness.resumeSession({
+            identity = await this.sessionControl.sessions.resume({
               id: target.id,
               additionalDirs: createSessionOptions.additionalDirs,
               replayTurnLimit: REPLAY_TURN_LIMIT,
             });
+            if (identity === undefined) {
+              throw new Error(`Session "${target.id}" not found.`);
+            }
             shouldReplayHistory = true;
           } else {
-            session = await this.harness.createSession(createSessionOptions);
+            identity = await this.sessionControl.sessions.create(createSessionOptions);
             this.startupNotice = combineStartupNotice(
               this.startupNotice,
               `No sessions to continue under "${workDir}"; starting a fresh session.`,
@@ -832,12 +918,17 @@ export class KimiTUI {
           }
         }
       } else {
-        session = await this.harness.createSession(createSessionOptions);
+        identity = await this.sessionControl.sessions.create(createSessionOptions);
       }
-      if (session !== undefined && shouldReplayHistory) {
-        await this.applyStartupModesToResumedSession(session);
+      if (identity === undefined) {
+        throw new Error('Startup session was not initialized.');
+      }
+      await this.setSessionIdentity(identity, this.harness?.getSession(identity.id));
+      const sessionRuntime = this.requireSessionRuntime();
+      if (shouldReplayHistory) {
+        await this.applyStartupModesToResumedSession(sessionRuntime);
         if (startup.model !== undefined) {
-          await session.setModel(startup.model);
+          await sessionRuntime.agent.setModel(startup.model);
         }
       }
     } catch (error) {
@@ -846,11 +937,7 @@ export class KimiTUI {
       return false;
     }
 
-    if (session === undefined) {
-      throw new Error('Startup session was not initialized.');
-    }
-    await this.setSession(session);
-    await this.syncRuntimeState(session);
+    await this.syncRuntimeState();
     this.applyStartupPermissionAndPlanToAppState();
     this.state.startupState = 'ready';
     return shouldReplayHistory;
@@ -878,12 +965,12 @@ export class KimiTUI {
     }
     this.reverseRpcDisposers.length = 0;
     this.disposeTerminalTracking();
-    // Restore the terminal even if closing the session / harness throws — a
+    // Restore the terminal even if closing the session / runtime throws — a
     // SIGTERM during a network or MCP shutdown must not leave the user stuck in
     // raw mode with a hidden cursor.
     try {
       await this.closeSession('shutting down');
-      await this.harness.close();
+      await this.runtimeEnvironment.close();
     } finally {
       this.sessionEventHandler.stopAllMcpServerStatusSpinners();
       this.uninstallRainbowDance();
@@ -1033,7 +1120,11 @@ export class KimiTUI {
       // Only one foreground action at a time: queue the shell command while
       // another shell command is running or an agent turn is in progress.
       if (this.state.appState.streamingPhase !== 'idle') {
-        this.enqueueMessage(text, undefined, 'bash');
+        const sessionRuntime = this.sessionRuntimeForInput(
+          'No active session for shell command.',
+        );
+        if (sessionRuntime === undefined) return;
+        this.enqueueMessage(sessionRuntime, text, undefined, 'bash');
         this.updateQueueDisplay();
         this.state.ui.requestRender();
         return;
@@ -1044,12 +1135,12 @@ export class KimiTUI {
     slashCommands.dispatchInput(this, text);
   }
 
-  private runShellCommandFromInput(command: string): void {
-    const session = this.session;
-    if (session === undefined) {
-      this.showError('No active session for shell command.');
-      return;
-    }
+  private runShellCommandFromInput(command: string, agentId?: string): void {
+    const sessionRuntime = this.sessionRuntimeForInput(
+      'No active session for shell command.',
+    );
+    if (sessionRuntime === undefined) return;
+    const agent = this.agentControl(sessionRuntime, agentId);
     // Echo the command locally (bash-input) with a `$` prompt. The agent also
     // records it for resume; this is the live view.
     this.appendTranscriptEntry({
@@ -1071,8 +1162,15 @@ export class KimiTUI {
       renderMode: 'plain',
       content: '',
     };
-    const outputComponent = new ShellRunComponent(() => this.state.ui.requestRender());
-    this.shellOutputStreams.set(commandId, { entry: outputEntry, component: outputComponent });
+    const outputComponent = new ShellRunComponent(() => {
+      this.state.ui.requestRender();
+    });
+    this.shellOutputStreams.set(commandId, {
+      entry: outputEntry,
+      component: outputComponent,
+      sessionRuntime,
+      agentId,
+    });
     this.state.transcriptEntries.push(outputEntry);
     markTranscriptComponent(outputComponent, outputEntry);
     this.state.transcriptContainer.addChild(outputComponent);
@@ -1083,16 +1181,19 @@ export class KimiTUI {
 
     this.track('shell_command');
 
-    void session.runShellCommand(command, { commandId }).then(
-      ({ stdout, stderr, isError, backgrounded }) => {
-        this.finishShellOutput(commandId, stdout, stderr, isError, backgrounded);
-      },
-      (error: unknown) => {
-        const message = formatErrorMessage(error);
-        this.finishShellOutput(commandId, '', message, true);
-        this.showError(`Shell command failed: ${message}`);
-      },
-    );
+    void agent
+      .runShellCommand(command, commandId)
+      .then(
+        ({ stdout, stderr, isError, backgrounded }) => {
+          this.finishShellOutput(commandId, stdout, stderr, isError, backgrounded);
+        },
+        (error: unknown) => {
+          const message = formatErrorMessage(error);
+          if (this.finishShellOutput(commandId, '', message, true)) {
+            this.showError(`Shell command failed: ${message}`);
+          }
+        },
+      );
   }
 
   handleShellOutput(event: { commandId: string; update: { kind: string; text?: string } }): void {
@@ -1110,12 +1211,20 @@ export class KimiTUI {
   }
 
   cancelRunningShellCommand(): void {
-    const session = this.session;
-    if (session === undefined) return;
-    for (const commandId of this.shellOutputStreams.keys()) {
-      void session.cancelShellCommand(commandId).catch((error: unknown) => {
-        this.showError(`Failed to cancel shell command: ${formatErrorMessage(error)}`);
-      });
+    let sessionRuntime: TUISessionRuntime;
+    try {
+      sessionRuntime = this.requireSessionRuntime();
+    } catch {
+      return;
+    }
+    if (sessionRuntime.sessionId !== this.state.appState.sessionId) return;
+    for (const [commandId, stream] of this.shellOutputStreams) {
+      if (stream.sessionRuntime !== sessionRuntime) continue;
+      void this.agentControl(sessionRuntime, stream.agentId)
+        .cancelShellCommand(commandId)
+        .catch((error: unknown) => {
+          this.showError(`Failed to cancel shell command: ${formatErrorMessage(error)}`);
+        });
     }
   }
 
@@ -1125,13 +1234,20 @@ export class KimiTUI {
     stderr: string,
     isError?: boolean,
     backgrounded?: boolean,
-  ): void {
+  ): boolean {
     const stream = this.shellOutputStreams.get(commandId);
-    if (stream === undefined) return;
+    if (stream === undefined) return false;
+    if (
+      stream.sessionRuntime !== this.activeSessionBinding?.runtime ||
+      stream.sessionRuntime.sessionId !== this.state.appState.sessionId
+    ) {
+      this.shellOutputStreams.delete(commandId);
+      return false;
+    }
     if (backgrounded === true) {
       // The command was moved to the background; detachRunningShellCommand owns
       // the UI and the model notification, so there is nothing to render here.
-      return;
+      return true;
     }
     stream.component.finish(stdout, stderr, isError);
     // Keep the transcript entry's metadata in sync for anything that reads it
@@ -1144,17 +1260,23 @@ export class KimiTUI {
       this.setAppState({ streamingPhase: 'idle' });
       this.drainOneQueuedMessage();
     }
+    return true;
   }
 
   private drainOneQueuedMessage(): void {
+    let sessionRuntime: TUISessionRuntime;
+    try {
+      sessionRuntime = this.requireSessionRuntime();
+    } catch {
+      return;
+    }
+    if (sessionRuntime.sessionId !== this.state.appState.sessionId) return;
     const item = this.shiftQueuedMessage();
     if (item === undefined) return;
-    const session = this.session;
-    if (session === undefined) return;
     if (item.mode === 'bash') {
-      this.runShellCommandFromInput(item.text);
+      this.runShellCommandFromInput(item.text, item.agentId);
     } else {
-      this.sendQueuedMessage(session, item);
+      this.sendQueuedMessage(item);
     }
     this.updateQueueDisplay();
   }
@@ -1178,19 +1300,16 @@ export class KimiTUI {
       return;
     }
     if (!this.validateMediaCapabilities(extraction)) return;
-    const session = this.session;
-    if (session === undefined) {
-      this.showError(LLM_NOT_SET_MESSAGE);
-      return;
-    }
+    const sessionRuntime = this.sessionRuntimeForInput(NO_ACTIVE_SESSION_MESSAGE);
+    if (sessionRuntime === undefined) return;
     if (extraction.hasMedia) {
-      this.sendMessage(session, text, {
+      this.sendMessage(sessionRuntime, text, {
         hasMedia: true,
         parts: extraction.parts,
         imageAttachmentIds: extraction.imageAttachmentIds,
       });
     } else {
-      this.sendMessage(session, text);
+      this.sendMessage(sessionRuntime, text);
     }
     this.updateQueueDisplay();
     this.state.ui.requestRender();
@@ -1265,13 +1384,14 @@ export class KimiTUI {
   // =========================================================================
 
   private enqueueMessage(
+    sessionRuntime: TUISessionRuntime,
     text: string,
     options?: SendMessageOptions,
     mode?: 'prompt' | 'bash',
   ): void {
     this.state.queuedMessages.push({
       text,
-      agentId: this.harness.interactiveAgentId,
+      agentId: sessionRuntime.agentId,
       parts: options?.parts,
       imageAttachmentIds:
         options?.imageAttachmentIds !== undefined && options.imageAttachmentIds.length > 0
@@ -1305,24 +1425,40 @@ export class KimiTUI {
     this.showError(message);
   }
 
-  sendQueuedMessage(session: Session, item: QueuedMessage): void {
+  sendQueuedMessage(item: QueuedMessage): void;
+  sendQueuedMessage(_session: Session, item: QueuedMessage): void;
+  sendQueuedMessage(
+    itemOrSession: QueuedMessage | Session,
+    legacyItem?: QueuedMessage,
+  ): void {
+    const item = legacyItem ?? (itemOrSession as QueuedMessage);
     if (item.mode === 'bash') {
-      this.runShellCommandFromInput(item.text);
+      this.runShellCommandFromInput(item.text, item.agentId);
       return;
     }
-    this.harness.withInteractiveAgent(item.agentId ?? MAIN_AGENT_ID, () => {
-      this.sendMessageInternal(session, item.text, {
+    const sessionRuntime = this.sessionRuntimeForInput(NO_ACTIVE_SESSION_MESSAGE);
+    if (sessionRuntime === undefined) return;
+    this.sendMessageInternal(
+      sessionRuntime,
+      item.text,
+      {
         parts: item.parts,
         imageAttachmentIds: item.imageAttachmentIds,
-      });
-    });
+      },
+      item.agentId ?? MAIN_AGENT_ID,
+    );
   }
 
   requestQueuedGoalPromotion(): void {
     this.sessionEventHandler.requestQueuedGoalPromotion();
   }
 
-  private sendMessageInternal(session: Session, input: string, options?: SendMessageOptions): void {
+  private sendMessageInternal(
+    sessionRuntime: TUISessionRuntime,
+    input: string,
+    options?: SendMessageOptions,
+    agentId?: string,
+  ): void {
     const imageAttachmentIds =
       options?.imageAttachmentIds !== undefined && options.imageAttachmentIds.length > 0
         ? options.imageAttachmentIds
@@ -1339,29 +1475,36 @@ export class KimiTUI {
     this.beginSessionRequest();
 
     const sdkInput = options?.parts ?? input;
+    const agent = this.agentControl(sessionRuntime, agentId);
     // While a goal is being pursued the engine holds its active turn across the
     // whole continuation loop, so a fresh prompt races the goal driver at every
     // continuation boundary and is rejected with `turn.agent_busy`, dropping
     // the message. Steer instead: the engine buffers it into the running goal
     // turn, or launches a turn of its own if the loop just ended.
     if (this.state.appState.goal?.status === 'active') {
-      void session.steer(sdkInput).catch((error: unknown) => {
-        const message = formatErrorMessage(error);
-        // Same reset as the prompt path: beginSessionRequest already moved the
-        // TUI to the waiting phase, and no turn events may follow a failed
-        // steer (e.g. the session is gone), which would leave the UI stuck
-        // queueing input behind a request that never completes.
-        this.failSessionRequest(`Failed to steer: ${message}`);
-      });
+      void agent
+        .steer(sdkInput)
+        .catch((error: unknown) => {
+          const message = formatErrorMessage(error);
+          // Same reset as the prompt path: beginSessionRequest already moved the
+          // TUI to the waiting phase, and no turn events may follow a failed
+          // steer (e.g. the session is gone), which would leave the UI stuck
+          // queueing input behind a request that never completes.
+          this.failSessionRequest(`Failed to steer: ${message}`);
+        });
       return;
     }
-    void session.prompt(sdkInput).catch((error: unknown) => {
-      const message = formatErrorMessage(error);
-      this.failSessionRequest(`Failed to send: ${message}`);
-    });
+    void agent
+      .prompt(sdkInput)
+      .catch((error: unknown) => {
+        const message = formatErrorMessage(error);
+        this.failSessionRequest(`Failed to send: ${message}`);
+      });
   }
 
-  sendSkillActivation(session: Session, skillName: string, skillArgs: string): void {
+  sendSkillActivation(skillName: string, skillArgs: string): void {
+    const sessionRuntime = this.sessionRuntimeForInput(LLM_NOT_SET_MESSAGE);
+    if (sessionRuntime === undefined) return;
     // Args are a plain-text channel, so pasted media can't ride along as
     // inline parts. Skill args are XML-escaped on render (renderSkillAttributes
     // + expandSkillParameters), so rewrite placeholders into escape-proof
@@ -1377,18 +1520,16 @@ export class KimiTUI {
     }
     if (!this.validateMediaCapabilities(rewrite)) return;
     this.beginSessionRequest();
-    void session.activateSkill(skillName, rewrite.text).catch((error: unknown) => {
+    void sessionRuntime.skills.activate(skillName, rewrite.text).catch((error: unknown) => {
+      if (this.activeSessionBinding?.runtime !== sessionRuntime) return;
       const message = formatErrorMessage(error);
       this.failSessionRequest(`Skill "${skillName}" failed: ${message}`);
     });
   }
 
-  activatePluginCommand(
-    session: Session,
-    pluginId: string,
-    commandName: string,
-    args: string,
-  ): void {
+  activatePluginCommand(pluginId: string, commandName: string, args: string): void {
+    const sessionRuntime = this.sessionRuntimeForInput('No active session.');
+    if (sessionRuntime === undefined) return;
     // Plugin command args are expanded verbatim (no XML escaping), so the
     // standard <image|video path> tag convention works — see
     // sendSkillActivation for the escaped-channel variant.
@@ -1401,9 +1542,10 @@ export class KimiTUI {
     }
     if (!this.validateMediaCapabilities(rewrite)) return;
     this.beginSessionRequest();
-    void session
-      .activatePluginCommand(pluginId, commandName, rewrite.text)
+    void sessionRuntime.pluginCommands
+      .activate(pluginId, commandName, rewrite.text)
       .catch((error: unknown) => {
+        if (this.activeSessionBinding?.runtime !== sessionRuntime) return;
         const message = formatErrorMessage(error);
         this.failSessionRequest(`Command "${pluginId}:${commandName}" failed: ${message}`);
       });
@@ -1418,13 +1560,21 @@ export class KimiTUI {
    * `streamingPhase` as `waiting`, so {@link sendMessage} enqueues the prompt
    * instead of sending it and the UI sticks on loading forever.
    */
-  activateExtensionCommand(session: Session, commandName: string, args: string): void {
-    void session
-      .activateExtensionCommand(commandName, args)
+  activateExtensionCommand(commandName: string, args: string): void {
+    const sessionRuntime = this.sessionRuntimeForInput('No active session.');
+    if (sessionRuntime === undefined) return;
+    const port = sessionRuntime.extensionCommands;
+    void port
+      .activate(commandName, args)
       .then((result) => {
         // Prompt-style: sendMessage → sendMessageInternal begins the request.
         if (result?.prompt !== undefined && result.prompt.length > 0) {
-          this.sendMessage(session, result.prompt);
+          if (
+            this.activeSessionBinding?.runtime !== sessionRuntime ||
+            this.state.appState.sessionId !== sessionRuntime.sessionId
+          )
+            return;
+          this.sendMessage(sessionRuntime, result.prompt);
           return;
         }
         // Action-style / unknown command: nothing to send to the model.
@@ -1435,28 +1585,34 @@ export class KimiTUI {
       });
   }
 
-  private sendMessage(session: Session, input: string, options?: SendMessageOptions): void {
+  private sendMessage(
+    sessionRuntime: TUISessionRuntime,
+    input: string,
+    options?: SendMessageOptions,
+  ): void {
     if (
       this.deferUserMessages ||
       this.state.appState.streamingPhase !== 'idle' ||
       this.state.appState.isCompacting
     ) {
-      this.enqueueMessage(input, options);
+      this.enqueueMessage(sessionRuntime, input, options);
       return;
     }
-    this.sendMessageInternal(session, input, options);
+    this.sendMessageInternal(sessionRuntime, input, options);
   }
 
-  steerMessage(session: Session, input: readonly SteerInputItem[]): void {
+  steerMessage(input: readonly SteerInputItem[]): void {
+    const sessionRuntime = this.sessionRuntimeForInput(NO_ACTIVE_SESSION_MESSAGE);
+    if (sessionRuntime === undefined) return;
     if (this.deferUserMessages || this.state.appState.isCompacting) {
       for (const item of input) {
-        this.enqueueMessage(item.text, item);
+        this.enqueueMessage(sessionRuntime, item.text, item);
       }
       return;
     }
     if (this.state.appState.streamingPhase === 'idle') {
       for (const item of input) {
-        this.sendMessageInternal(session, item.text, item);
+        this.sendMessageInternal(sessionRuntime, item.text, item);
       }
       return;
     }
@@ -1475,10 +1631,36 @@ export class KimiTUI {
       });
     }
 
-    void session.steer(combineSteerInput(input)).catch((error: unknown) => {
-      const message = formatErrorMessage(error);
-      this.showError(`Failed to steer: ${message}`);
-    });
+    void sessionRuntime.agent
+      .steer(combineSteerInput(input))
+      .catch((error: unknown) => {
+        const message = formatErrorMessage(error);
+        this.showError(`Failed to steer: ${message}`);
+      });
+  }
+
+  private sessionRuntimeForInput(errorMessage: string): TUISessionRuntime | undefined {
+    let sessionRuntime: TUISessionRuntime;
+    try {
+      sessionRuntime = this.requireSessionRuntime();
+    } catch {
+      this.showError(errorMessage);
+      return undefined;
+    }
+    if (sessionRuntime.sessionId !== this.state.appState.sessionId) {
+      this.showError(errorMessage);
+      return undefined;
+    }
+    return sessionRuntime;
+  }
+
+  private agentControl(
+    sessionRuntime: TUISessionRuntime,
+    agentId?: string,
+  ): SessionAgentControlPort {
+    return agentId === undefined || agentId === sessionRuntime.agentId
+      ? sessionRuntime.agent
+      : this.sessionControl.agent(sessionRuntime.sessionId, agentId);
   }
 
   // =========================================================================
@@ -1516,7 +1698,7 @@ export class KimiTUI {
     this.startupNotice = combineStartupNotice(this.startupNotice, extra);
   }
 
-  get backgroundTasks(): ReadonlyMap<string, BackgroundTaskInfo> {
+  get backgroundTasks(): ReadonlyMap<string, AgentTask> {
     return this.sessionEventHandler.backgroundTasks;
   }
 
@@ -1537,11 +1719,14 @@ export class KimiTUI {
   }
 
   async getStartupMcpMs(): Promise<number> {
-    const session = this.session;
-    if (session === undefined) return 0;
+    const sessionRuntime = this.activeSessionBinding?.runtime;
+    if (sessionRuntime === undefined) return 0;
     try {
-      const metrics = await session.getMcpStartupMetrics();
-      return metrics.durationMs;
+      const durationMs = await sessionRuntime.mcp.initialLoadDurationMs();
+      return this.activeSessionBinding?.runtime === sessionRuntime &&
+        this.state.appState.sessionId === sessionRuntime.sessionId
+        ? durationMs
+        : 0;
     } catch {
       return 0;
     }
@@ -1578,8 +1763,14 @@ export class KimiTUI {
     this.state.ui.requestRender();
   }
 
-  private syncAdditionalDirs(session: Session): void {
-    const additionalDirs = session.summary?.additionalDirs ?? [];
+  private async syncAdditionalDirs(sessionRuntime: TUISessionRuntime): Promise<void> {
+    let additionalDirs: readonly string[];
+    try {
+      ({ additionalDirs } = await sessionRuntime.workspace.get());
+    } catch {
+      return;
+    }
+    if (this.activeSessionBinding?.runtime !== sessionRuntime) return;
     if (sameStringArrays(this.state.appState.additionalDirs, additionalDirs)) return;
     this.setAppState({ additionalDirs: [...additionalDirs] });
   }
@@ -1595,68 +1786,125 @@ export class KimiTUI {
     return this.session;
   }
 
-  private async createSessionFromCurrentState(): Promise<Session> {
+  requireSessionRuntime(): TUISessionRuntime {
+    if (this.activeSessionBinding === undefined) {
+      throw new Error(NO_ACTIVE_SESSION_MESSAGE);
+    }
+    return this.activeSessionBinding.runtime;
+  }
+
+  async requestApprovalResponse(request: ApprovalRequest): Promise<ApprovalResponse> {
+    return createApprovalRequestHandler(this.approvalController)(request);
+  }
+
+  async requestQuestionResponse(request: QuestionRequest): Promise<QuestionResult> {
+    return createQuestionAskHandler(this.questionController)(request);
+  }
+
+  recordApprovalResponse(request: ApprovalRequest, response: ApprovalResponse): void {
+    this.appendApprovalTranscriptEntry(request, response);
+  }
+
+  private async createSessionFromCurrentState(): Promise<SessionIdentity> {
     const model = this.state.appState.model.trim();
     if (model.length === 0) {
       throw new Error(LLM_NOT_SET_MESSAGE);
     }
-    const options: MutableCreateSessionOptions = {
+    const options: SessionCreateInput = {
       workDir: this.state.appState.workDir,
       model,
-      thinking: this.session === undefined ? undefined : this.state.appState.thinkingEffort,
+      thinking:
+        this.activeSessionBinding === undefined
+          ? undefined
+          : this.state.appState.thinkingEffort,
       permission: this.state.appState.permissionMode,
       planMode: this.state.appState.planMode ? true : undefined,
+      additionalDirs:
+        this.state.appState.additionalDirs.length === 0
+          ? undefined
+          : [...this.state.appState.additionalDirs],
     };
-    if (this.state.appState.additionalDirs.length > 0) {
-      options.additionalDirs = [...this.state.appState.additionalDirs];
-    }
-    return this.harness.createSession(options);
+    return this.sessionControl.sessions.create(options);
   }
 
   async setSession(session: Session): Promise<void> {
-    const previous = this.unloadCurrentSession('switching session');
-    await previous?.close();
-    this.session = session;
-    this.harness.setTelemetryContext({ sessionId: session.id });
-    this.registerSessionHandlers(session);
-    this.syncAdditionalDirs(session);
+    await this.setSessionIdentity(identityFromLegacySession(session), session);
   }
 
-  async syncRuntimeState(session: Session = this.requireSession()): Promise<void> {
-    const [status, goalResult] = await Promise.all([session.getStatus(), session.getGoal()]);
+  async createAndBindSession(
+    input: SessionCreateInput,
+  ): Promise<TUISessionRuntime> {
+    const identity = await this.sessionControl.sessions.create(input);
+    await this.setSessionIdentity(identity, this.harness?.getSession(identity.id));
+    return this.requireSessionRuntime();
+  }
+
+  private async setSessionIdentity(
+    identity: SessionIdentity,
+    legacySession?: Session,
+  ): Promise<void> {
+    const previous = this.unloadCurrentSession('switching session');
+    await previous?.lifecycle.close();
+    const sessionRuntime = this.runtime.bindSession(identity.id, MAIN_AGENT_ID);
+    this.session = legacySession;
+    this.activeSessionBinding = {
+      identity,
+      runtime: sessionRuntime,
+      legacySession,
+    };
+    this.extensionCommandPort = sessionRuntime.extensionCommands;
+    this.runtimeTelemetry.setContext({ sessionId: identity.id });
+    await this.syncAdditionalDirs(sessionRuntime);
+  }
+
+  async syncRuntimeState(_session?: Session): Promise<void> {
+    const sessionRuntime = this.requireSessionRuntime();
+    const [identity, status, goal, expertTeam] = await Promise.all([
+      sessionRuntime.lifecycle.getIdentity(),
+      sessionRuntime.agent.getStatus(),
+      sessionRuntime.agent.getGoal(),
+      sessionRuntime.expertTeam.get(),
+    ]);
+    if (this.activeSessionBinding?.runtime !== sessionRuntime) return;
+    this.activeSessionBinding = {
+      identity,
+      runtime: sessionRuntime,
+      legacySession: this.session,
+    };
     this.setAppState({
-      sessionId: session.id,
+      sessionId: identity.id,
       model: status.model ?? '',
       thinkingEffort: status.thinkingEffort,
       permissionMode: status.permission,
       planMode: status.planMode,
-      swarmMode: status.swarmMode ?? false,
-      expertTeam: status.expertTeam ?? null,
-      expertTeamMembers: status.expertTeamStatus?.members ?? [],
+      swarmMode: false,
+      expertTeam,
+      expertTeamMembers: expertTeam?.members ?? [],
       contextTokens: status.contextTokens,
       maxContextTokens: status.maxContextTokens,
       contextUsage: status.contextUsage,
-      sessionTitle: session.summary?.title ?? null,
-      goal: goalResult.goal,
+      sessionTitle: identity.title ?? null,
+      goal,
     });
-    this.syncAdditionalDirs(session);
   }
 
   // Apply --auto/--yolo/--plan startup flags to a resumed session. The resumed
   // session may already be in plan mode from its persisted records, and
   // re-entering plan mode throws, so only enable it when it is not active yet.
   // setPermission is idempotent and needs no such guard.
-  private async applyStartupModesToResumedSession(session: Session): Promise<void> {
+  private async applyStartupModesToResumedSession(
+    sessionRuntime: TUISessionRuntime,
+  ): Promise<void> {
     const { startup } = this.options;
     if (startup.auto) {
-      await session.setPermission('auto');
+      await sessionRuntime.agent.setPermission('auto');
     } else if (startup.yolo) {
-      await session.setPermission('yolo');
+      await sessionRuntime.agent.setPermission('yolo');
     }
     if (startup.plan) {
-      const status = await session.getStatus();
+      const status = await sessionRuntime.agent.getStatus();
       if (!status.planMode) {
-        await session.setPlanMode(true);
+        await sessionRuntime.agent.setPlanMode(true);
       }
     }
   }
@@ -1678,46 +1926,29 @@ export class KimiTUI {
 
   // Plan mode is set by createSession — do not re-enter it here.
   private async activateRuntime(): Promise<void> {
-    const session = this.requireSession();
-    await session.setPermission(this.state.appState.permissionMode);
-    await this.syncRuntimeState(session);
+    const sessionRuntime = this.requireSessionRuntime();
+    await sessionRuntime.agent.setPermission(this.state.appState.permissionMode);
+    await this.syncRuntimeState();
   }
 
   async closeSession(reason: string): Promise<void> {
     const previous = this.unloadCurrentSession(reason);
-    await previous?.close();
+    await previous?.lifecycle.close();
   }
 
-  private unloadCurrentSession(reason: string): Session | undefined {
-    const previous = this.session;
+  private unloadCurrentSession(reason: string): TUISessionRuntime | undefined {
+    const previous = this.activeSessionBinding?.runtime;
     this.sessionEventUnsubscribe?.();
     this.sessionEventUnsubscribe = undefined;
-    this.clearReverseRpcPanels();
-    previous?.setApprovalHandler(undefined);
-    previous?.setQuestionHandler(undefined);
     this.approvalController.cancelAll(reason);
     this.questionController.cancelAll(reason);
     this.session = undefined;
+    this.activeSessionBinding = undefined;
+    this.extensionCommandPort = undefined;
     this.state.swarmModeEntry = undefined;
-    this.harness.setTelemetryContext({ sessionId: null });
+    this.runtimeTelemetry.setContext({ sessionId: null });
     this.setAppState({ goal: null, expertTeam: null, expertTeamMembers: [] });
     return previous;
-  }
-
-  private clearReverseRpcPanels(): void {
-    for (const dispose of this.reverseRpcDisposers) {
-      dispose();
-    }
-    this.reverseRpcDisposers.length = 0;
-  }
-
-  private registerSessionHandlers(session: Session): void {
-    session.setApprovalHandler(
-      createApprovalRequestHandler(this.approvalController, (request, response) => {
-        this.appendApprovalTranscriptEntry(request, response);
-      }),
-    );
-    session.setQuestionHandler(createQuestionAskHandler(this.questionController));
   }
 
   async fetchSessions(scope: 'cwd' | 'all' = this.state.sessionsScope): Promise<void> {
@@ -1726,8 +1957,8 @@ export class KimiTUI {
     try {
       const sessions =
         scope === 'all'
-          ? await this.harness.listSessions({})
-          : await this.harness.listSessions({ workDir: this.state.appState.workDir });
+          ? await this.sessionControl.sessions.list({})
+          : await this.sessionControl.sessions.list({ workDir: this.state.appState.workDir });
       this.state.sessions = sessionRowsForPicker(
         sessions,
         this.state.appState.sessionId,
@@ -1791,9 +2022,9 @@ export class KimiTUI {
       return false;
     }
 
-    let session: Session;
+    let identity: SessionIdentity | undefined;
     try {
-      session = await this.harness.resumeSession({
+      identity = await this.sessionControl.sessions.resume({
         id: targetSessionId,
         replayTurnLimit: REPLAY_TURN_LIMIT,
       });
@@ -1802,69 +2033,98 @@ export class KimiTUI {
       this.showError(`Failed to resume session ${targetSessionId}: ${msg}`);
       return false;
     }
+    if (identity === undefined) {
+      this.showError(`Failed to resume session ${targetSessionId}: session not found`);
+      return false;
+    }
 
-    await this.switchToSession(session, `Resumed session (${session.id}).`);
+    await this.switchToSessionIdentity(
+      identity,
+      `Resumed session (${identity.id}).`,
+      this.harness?.getSession(identity.id),
+    );
     return true;
   }
 
   async switchToSession(session: Session, statusMessage: string): Promise<void> {
+    await this.switchToSessionIdentity(
+      identityFromLegacySession(session),
+      statusMessage,
+      session,
+    );
+  }
+
+  async switchToSessionIdentity(
+    identity: SessionIdentity,
+    statusMessage: string,
+    legacySession?: Session,
+  ): Promise<void> {
     this.resetSessionRuntime();
-    await this.setSession(session);
-    await this.syncRuntimeState(session);
+    const resolvedLegacySession = legacySession ?? this.harness?.getSession(identity.id);
+    await this.setSessionIdentity(identity, resolvedLegacySession);
+    const sessionRuntime = this.requireSessionRuntime();
+    await this.syncRuntimeState();
     this.updateTerminalTitle();
     try {
-      await this.refreshSkillCommands(this.session);
-      await this.refreshPluginCommands(this.session);
-      await this.refreshExtensionCommands(this.session);
+      await this.refreshSkillCommands();
+      await this.refreshPluginCommands();
+      await this.refreshExtensionCommands();
     } catch {
       /* keep the switched session usable even if dynamic skills fail */
     }
     this.clearTranscriptAndRedraw();
     try {
-      await this.sessionReplay.hydrateFromReplay(session);
+      await this.sessionReplay.hydrateFromReplay(sessionRuntime);
     } catch (error) {
       const msg = formatErrorMessage(error);
       this.showError(`Failed to replay session history: ${msg}`);
     } finally {
       this.sessionEventHandler.startSubscription();
     }
-    const resumeState = session.getResumeState();
+    const resumeState = resolvedLegacySession?.getResumeState();
     if (resumeState?.warning !== undefined) {
       this.showStatus(`Warning: ${resumeState.warning}`, 'warning');
     }
     this.showStatus(statusMessage);
-    void this.showSessionWarnings(session);
+    void this.showSessionWarnings(sessionRuntime);
   }
 
-  async reloadCurrentSessionView(session: Session, statusMessage: string): Promise<void> {
+  async reloadCurrentSessionView(statusMessage: string): Promise<void> {
+    const currentRuntime = this.requireSessionRuntime();
+    const identity = await currentRuntime.lifecycle.getIdentity();
     this.sessionEventUnsubscribe?.();
     this.sessionEventUnsubscribe = undefined;
-    this.clearReverseRpcPanels();
-    session.setApprovalHandler(undefined);
-    session.setQuestionHandler(undefined);
     this.approvalController.cancelAll('reloading session');
     this.questionController.cancelAll('reloading session');
 
     this.resetSessionRuntime();
-    this.session = session;
-    this.harness.setTelemetryContext({ sessionId: session.id });
-    this.registerSessionHandlers(session);
-    await this.syncRuntimeState(session);
+    const sessionRuntime = this.runtime.bindSession(identity.id, MAIN_AGENT_ID);
+    const legacySession = this.harness?.getSession(identity.id);
+    this.session = legacySession;
+    this.activeSessionBinding = {
+      identity,
+      runtime: sessionRuntime,
+      legacySession,
+    };
+    this.extensionCommandPort = sessionRuntime.extensionCommands;
+    this.runtimeTelemetry.setContext({ sessionId: identity.id });
+    await this.syncAdditionalDirs(sessionRuntime);
+    await this.syncRuntimeState();
     this.updateTerminalTitle();
     try {
-      await this.refreshSkillCommands(session);
-      await this.refreshPluginCommands(session);
-      await this.refreshExtensionCommands(session);
+      await this.refreshSkillCommands();
+      await this.refreshPluginCommands();
+      await this.refreshExtensionCommands();
     } catch {
       /* keep the reloaded session usable even if dynamic skills fail */
     }
     this.sessionEventHandler.startSubscription();
-    const resumeState = session.getResumeState();
+    const resumeState = legacySession?.getResumeState();
     if (resumeState?.warning !== undefined) {
       this.showStatus(`Warning: ${resumeState.warning}`, 'warning');
     }
     this.showStatus(statusMessage);
-    void this.showSessionWarnings(session);
+    void this.showSessionWarnings(sessionRuntime);
   }
 
   async createNewSession(): Promise<void> {
@@ -1873,9 +2133,9 @@ export class KimiTUI {
       return;
     }
 
-    let session: Session;
+    let identity: SessionIdentity;
     try {
-      session = await this.createSessionFromCurrentState();
+      identity = await this.createSessionFromCurrentState();
     } catch (error) {
       const msg = formatErrorMessage(error);
       this.showError(`Failed to start a new session: ${msg}`);
@@ -1883,11 +2143,12 @@ export class KimiTUI {
     }
 
     this.resetSessionRuntime();
-    await this.setSession(session);
-    this.setAppState({ sessionId: session.id });
+    await this.setSessionIdentity(identity, this.harness?.getSession(identity.id));
+    const sessionRuntime = this.requireSessionRuntime();
+    this.setAppState({ sessionId: identity.id });
     try {
       await this.activateRuntime();
-      await this.syncRuntimeState(session);
+      await this.syncRuntimeState();
     } catch (error) {
       this.sessionEventHandler.startSubscription();
       const msg = formatErrorMessage(error);
@@ -1895,23 +2156,23 @@ export class KimiTUI {
       return;
     }
     try {
-      await this.refreshSkillCommands(this.session);
-      await this.refreshPluginCommands(this.session);
-      await this.refreshExtensionCommands(this.session);
+      await this.refreshSkillCommands();
+      await this.refreshPluginCommands();
+      await this.refreshExtensionCommands();
     } catch {
       /* keep the new session usable even if dynamic skills fail */
     }
     this.sessionEventHandler.startSubscription();
     this.clearTranscriptAndRedraw();
-    this.showStatus(`Started a new session (${session.id}).`);
-    void this.showSessionWarnings(session);
+    this.showStatus(`Started a new session (${identity.id}).`);
+    void this.showSessionWarnings(sessionRuntime);
     void this.showConfigWarningsIfAny();
   }
 
   /** Surface config.toml load warnings (degraded or kept-previous config) in the status bar. */
   private async showConfigWarningsIfAny(): Promise<void> {
     try {
-      const { warnings } = await this.harness.getConfigDiagnostics();
+      const warnings = await this.runtimeEnvironment.getConfigDiagnostics();
       for (const warning of warnings) {
         this.showStatus(warning, 'warning');
       }
@@ -2419,7 +2680,7 @@ export class KimiTUI {
     };
   }
 
-  showLoginAuthorizationPrompt(auth: DeviceAuthorization): LoginProgressSpinnerHandle {
+  showLoginAuthorizationPrompt(auth: RuntimeAuthDeviceCode): LoginProgressSpinnerHandle {
     openUrl(auth.verificationUriComplete);
     this.state.transcriptContainer.addChild(
       new DeviceCodeBoxComponent({
@@ -2623,10 +2884,8 @@ export class KimiTUI {
       this.showDetachHint('Command is still starting — try again.');
       return;
     }
-    const session = this.session;
-    if (session === undefined) return;
     try {
-      const info = await session.detachBackgroundTask(stream.taskId);
+      const info = await stream.sessionRuntime.agent.detachTask(stream.taskId);
       if (info === undefined) {
         this.showDetachHint('Command already finished.');
         return;
@@ -2654,17 +2913,19 @@ export class KimiTUI {
       return;
     }
 
-    const session = this.session;
-    if (session === undefined) {
+    let sessionRuntime: TUISessionRuntime;
+    try {
+      sessionRuntime = this.requireSessionRuntime();
+    } catch {
       this.showError(NO_ACTIVE_SESSION_MESSAGE);
       return;
     }
 
-    let tasks: readonly BackgroundTaskInfo[];
+    let tasks: readonly AgentTask[];
     try {
       // activeOnly defaults to true; foreground running tasks are non-terminal
       // and therefore included. We filter to `detached === false` ourselves.
-      tasks = await session.listBackgroundTasks();
+      tasks = await sessionRuntime.agent.listTasks({ activeOnly: true });
     } catch (error) {
       this.showError(`Failed to list tasks: ${formatErrorMessage(error)}`);
       return;
@@ -2680,7 +2941,7 @@ export class KimiTUI {
     let alreadyFinished = 0;
     for (const target of targets) {
       try {
-        const info = await session.detachBackgroundTask(target.taskId);
+        const info = await sessionRuntime.agent.detachTask(target.taskId);
         if (info === undefined) alreadyFinished++;
         else detached++;
       } catch (error) {
@@ -2867,7 +3128,7 @@ export class KimiTUI {
       const screen = new MigrationScreenComponent({
         plan,
         sourceHome: plan.sourceHome,
-        targetHome: this.harness.homeDir,
+        targetHome: this.runtimeEnvironment.homeDir,
         skipDecisionStep: this.migrateOnly,
         requestRender: () => {
           this.state.ui.requestRender();
@@ -2883,7 +3144,11 @@ export class KimiTUI {
       // Persist the skip marker `detectPendingMigration` checks, so "Never ask
       // again" actually stops the prompt from reappearing every launch.
       try {
-        writeFileSync(join(this.harness.homeDir, '.skip-migration-from-kimi-cli'), '', 'utf-8');
+        writeFileSync(
+          join(this.runtimeEnvironment.homeDir, '.skip-migration-from-kimi-cli'),
+          '',
+          'utf-8',
+        );
       } catch {
         // Non-blocking: a failed marker write must never crash startup.
       }
@@ -3047,7 +3312,7 @@ export class KimiTUI {
     const switched = await this.resumeSession(session.id);
     if (!switched) return;
     if (applyStartupModes) {
-      await this.applyStartupModesToResumedSession(this.requireSession());
+      await this.applyStartupModesToResumedSession(this.requireSessionRuntime());
       this.applyStartupPermissionAndPlanToAppState();
     }
     this.hideSessionPicker();

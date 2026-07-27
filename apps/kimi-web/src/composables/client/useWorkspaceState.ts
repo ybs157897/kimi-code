@@ -45,6 +45,7 @@ import type {
   WorkspaceView,
 } from '../../types';
 import type { ExtendedState, PromptAttachment } from '../useKimiWebClient';
+import type { UseExtensionState } from './useExtensionState';
 import type { UseModelProviderState } from './useModelProviderState';
 import type { UseSideChat } from './useSideChat';
 import type { UseTaskPoller } from './useTaskPoller';
@@ -211,6 +212,7 @@ export interface UseWorkspaceStateDeps {
   taskPoller: UseTaskPoller;
   sideChat: UseSideChat;
   modelProvider: UseModelProviderState;
+  extensionState: UseExtensionState;
   pushOperationFailure: (
     operation: string,
     err: unknown,
@@ -275,6 +277,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     taskPoller,
     sideChat,
     modelProvider,
+    extensionState,
     pushOperationFailure,
     activity,
     sessionsKnownEmpty,
@@ -364,6 +367,11 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     void refreshSessionGoal(sessionId);
     if (!Object.prototype.hasOwnProperty.call(modelProvider.skillsBySession.value, sessionId)) {
       void modelProvider.loadSkillsForSession(sessionId);
+    }
+    if (rawState.backend === 'v2') {
+      // Unlike skills, extension files can be edited while the daemon stays
+      // alive, so selecting a session always re-reads its command catalog.
+      void extensionState.loadCommandsForSession(sessionId);
     }
     void loadExpertTeamsForSession(sessionId);
   }
@@ -892,6 +900,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     // round-trip settled the backend generation — catch the v2-only loads up.
     if (becameV2 && rawState.activeSessionId) {
       void loadExpertTeamsForSession(rawState.activeSessionId);
+      void extensionState.loadCommandsForSession(rawState.activeSessionId);
     }
   }
 

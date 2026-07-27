@@ -1,5 +1,6 @@
 import type { AutocompleteItem, SlashCommand } from '@moonshot-ai/pi-tui';
-import type { FlagId } from '@moonshot-ai/kimi-code-sdk';
+
+import type { FlagId } from '#/tui/runtime/runtime-environment-port';
 
 export type SlashCommandAvailability = 'always' | 'idle-only';
 

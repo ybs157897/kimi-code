@@ -1,14 +1,22 @@
-import type { QuestionHandler, QuestionRequest, QuestionResult } from '@moonshot-ai/kimi-code-sdk';
-
 import type {
   QuestionPanelData,
   QuestionPanelResponse,
 } from '#/tui/reverse-rpc/types';
+import type {
+  TUIQuestionRequest,
+  TUIQuestionResult,
+} from '#/tui/runtime/session-events-port';
 
 import type { QuestionController } from './controller';
 
-export function createQuestionAskHandler(controller: QuestionController): QuestionHandler {
-  return async (event): Promise<QuestionResult> => {
+export type TUIQuestionRequestHandler = (
+  request: TUIQuestionRequest,
+) => Promise<TUIQuestionResult>;
+
+export function createQuestionAskHandler(
+  controller: QuestionController,
+): TUIQuestionRequestHandler {
+  return async (event): Promise<TUIQuestionResult> => {
     try {
       const answers = await controller.show(adaptQuestionRequest(event));
       return adaptQuestionAnswers(event, answers);
@@ -18,7 +26,7 @@ export function createQuestionAskHandler(controller: QuestionController): Questi
   };
 }
 
-export function adaptQuestionRequest(event: QuestionRequest): QuestionPanelData {
+export function adaptQuestionRequest(event: TUIQuestionRequest): QuestionPanelData {
   const id =
     event.toolCallId ??
     (event.turnId === undefined ? 'question' : `question-${String(event.turnId)}`);
@@ -41,9 +49,9 @@ export function adaptQuestionRequest(event: QuestionRequest): QuestionPanelData 
 }
 
 export function adaptQuestionAnswers(
-  event: QuestionRequest,
+  event: TUIQuestionRequest,
   response: QuestionPanelResponse,
-): QuestionResult {
+): TUIQuestionResult {
   const result: Record<string, string | true> = {};
   for (let i = 0; i < event.questions.length; i++) {
     const question = event.questions[i];

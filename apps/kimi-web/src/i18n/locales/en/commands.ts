@@ -10,6 +10,7 @@ export default {
   auto: { desc: 'Fully autonomous — the agent never asks questions' },
   thinking: { desc: 'Set the thinking level' },
   compact: { desc: 'Compact the conversation history' },
+  reload: { desc: 'Reload code extensions and their commands' },
   fork: { desc: 'Fork this session into a new one' },
   export: {
     desc: 'Download this session and troubleshooting logs as a ZIP',

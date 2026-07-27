@@ -1,6 +1,5 @@
-import type { PluginSummary } from '@moonshot-ai/kimi-code-sdk';
-
 import { KIMI_CODE_PLUGIN_MARKETPLACE_URL } from '#/constant/app';
+import type { PluginSummaryView } from '#/tui/runtime/session-plugins-port';
 import {
   computeUpdateStatus,
   loadPluginMarketplace,
@@ -13,12 +12,12 @@ import {
 import { isOfficialPluginInstall } from '../utils/plugin-source-label';
 
 /**
- * The slice of the SDK session the notifier reads. Structurally satisfied by
- * the full SDK `Session`, and easy to fake in tests.
+ * The narrow session-like dependency the notifier reads. Runtime wiring may
+ * adapt either session implementation into this neutral view.
  */
 export interface PluginUpdateNotifierSession {
   listMcpServers(): Promise<readonly { name: string }[]>;
-  listPlugins(): Promise<readonly PluginSummary[]>;
+  listPlugins(): Promise<readonly PluginSummaryView[]>;
 }
 
 export interface PluginUpdateNotifierDeps {

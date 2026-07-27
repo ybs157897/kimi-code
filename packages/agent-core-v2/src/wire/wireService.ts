@@ -210,6 +210,18 @@ export class WireService extends Disposable implements IWireService {
     await this.log.flush();
   }
 
+  async readRecords(): Promise<readonly WireRecord[]> {
+    await this.persistQueue;
+    const records: WireRecord[] = [];
+    for await (const candidate of this.log.read<unknown>(
+      this.wireScope,
+      AGENT_WIRE_RECORD_KEY,
+    )) {
+      if (isWireRecord(candidate)) records.push(candidate);
+    }
+    return records;
+  }
+
   private replayRecord(record: WireRecord, index: number): void {
     const descriptor = OP_REGISTRY.get(record.type);
     if (descriptor === undefined) {

@@ -25,7 +25,12 @@ export type { KlientEvents } from './core/events/hub.js';
 export type { Caller, ScopedCaller, ScopedStreamCaller } from './core/facade/global.js';
 
 export type {
+  AuthManagedUsageResult,
+  CompleteFeedbackUploadBody,
+  CompleteFeedbackUploadResult,
   ConfigTargetLiteral,
+  CreateFeedbackUploadUrlBody,
+  CreateFeedbackUploadUrlResult,
   GlobalAuthFacade,
   GlobalConfigFacade,
   GlobalFacade,
@@ -33,6 +38,7 @@ export type {
   GlobalHostFsFacade,
   GlobalKosongFacade,
   GlobalPluginsFacade,
+  GlobalSessionExportFacade,
   GlobalSessionsFacade,
   GlobalWorkspacesFacade,
   KlientEnvInfo,
@@ -45,6 +51,8 @@ export type {
   RefreshProviderModelsOptions,
   RefreshProviderModelsResponse,
   SetDefaultModelResponse,
+  SubmitFeedbackBody,
+  SubmitFeedbackResult,
 } from './core/facade/global.js';
 
 export type {
@@ -58,20 +66,32 @@ export type {
 
 export type {
   SessionApprovalsFacade,
+  SessionExtensionsFacade,
+  SessionCronFacade,
   SessionFacade,
   SessionInteractionsFacade,
+  SessionInitFacade,
   SessionQuestionsFacade,
   SessionStatus,
+  SessionWarning,
+  SessionWarningsFacade,
 } from './core/facade/session.js';
 export type {
   AgentContextData,
+  AgentExtensionsFacade,
   AgentFacade,
+  AgentGoalFacade,
+  AgentProfileFacade,
+  AgentReplayFacade,
+  AgentSwarmFacade,
   AgentTaskInfo,
   PlanData,
   PromptLaunchResult,
+  ResumedAgentState,
   SetModelResult,
   ShellCommandResult,
   UsageStatus,
+  SwarmModeTrigger,
 } from './core/facade/agent.js';
 
 export type {
@@ -90,6 +110,12 @@ export type {
   SessionListQuery,
   SessionSummary,
 } from '@moonshot-ai/agent-core-v2/app/sessionIndex/sessionIndex';
+export type {
+  ExportSessionManifest,
+  ExportSessionPayload,
+  ExportSessionResult,
+  ShellEnvironment,
+} from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExport';
 export type { Page } from '@moonshot-ai/agent-core-v2/persistence/interface/queryStore';
 export type {
   Workspace,
@@ -130,5 +156,25 @@ export type {
   Interaction,
   InteractionKind,
 } from '@moonshot-ai/agent-core-v2/session/interaction/interaction';
+export type {
+  ExtensionCommandDefinition,
+  ExtensionLoadError,
+} from '@moonshot-ai/agent-core-v2/app/extension/extension.types';
+export type { ExtensionReloadSummary } from '@moonshot-ai/agent-core-v2/session/extension/sessionExtension';
+export type { ActivateExtensionCommandInput } from '@moonshot-ai/agent-core-v2/agent/extension/agentExtension';
+export type {
+  CreateGoalInput,
+  GoalSnapshot,
+  GoalStatus,
+} from '@moonshot-ai/agent-core-v2/agent/goal/types';
+export type {
+  GoalReasonInput,
+  ResumeGoalInput,
+} from '@moonshot-ai/agent-core-v2/agent/goal/goal';
+export type {
+  BindAgentInput,
+  ProfileData,
+} from '@moonshot-ai/agent-core-v2/agent/profile/profile';
+export type { CronTask } from '@moonshot-ai/agent-core-v2/app/cron/cronTask';
 export type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
 export type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';

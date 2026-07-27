@@ -1,13 +1,12 @@
 import type {
-  AgentReplayRecord,
-  ContextMessage,
-  GoalChange,
-  PermissionMode,
-  PromptOrigin,
-  ResumedAgentState,
-  Session,
-  ToolCall,
-} from '@moonshot-ai/kimi-code-sdk';
+  TUIAgentReplay,
+  TUIAgentReplayRecord,
+  TUIReplayContextMessage,
+  TUIReplayGoalChange,
+} from '../runtime/agent-events-port';
+import type { AgentPermissionMode } from '../runtime/session-control-port';
+import type { TUIToolCall } from '../runtime/session-context-view-port';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
 
 import { ToolCallComponent } from '../components/messages/tool-call';
 import { ReplayTurnBoundaryComponent } from '../components/messages/user-message';
@@ -40,6 +39,7 @@ import {
   replayEntry,
   skillActivationFromOrigin,
   pluginCommandFromOrigin,
+  type ReplayBackgroundOrigin,
   toolCallFromReplayMessage,
   toolResultOutput,
   type ReplayRenderContext,
@@ -50,9 +50,9 @@ import type { StreamingUIController } from './streaming-ui';
 import type { SessionEventHandler } from './session-event-handler';
 import type { TUIState } from '../tui-state';
 
-type GoalReplayRecord = Extract<AgentReplayRecord, { type: 'goal_updated' }>;
-type CompactionReplayRecord = Extract<AgentReplayRecord, { type: 'compaction' }>;
-type GoalReplayLifecycleChange = GoalChange & { readonly kind: 'lifecycle' };
+type GoalReplayRecord = Extract<TUIAgentReplayRecord, { type: 'goal_updated' }>;
+type CompactionReplayRecord = Extract<TUIAgentReplayRecord, { type: 'compaction' }>;
+type GoalReplayLifecycleChange = TUIReplayGoalChange & { readonly kind: 'lifecycle' };
 
 export interface SessionReplayHost {
   state: TUIState;
@@ -83,10 +83,10 @@ function unescapeBashXml(text: string): string {
 export class SessionReplayRenderer {
   constructor(private readonly host: SessionReplayHost) {}
 
-  async hydrateFromReplay(session: Session): Promise<boolean> {
+  async hydrateFromReplay(runtime: TUISessionRuntime): Promise<boolean> {
     this.host.setAppState({ isReplaying: true });
     try {
-      const main = session.getResumeState()?.agents['main'];
+      const main = await runtime.events.readReplay(runtime.agentId);
       if (main === undefined) {
         this.host.showError('Session history is unavailable for this session.');
         return false;
@@ -110,13 +110,13 @@ export class SessionReplayRenderer {
   // Snapshot hydration
   // ---------------------------------------------------------------------------
 
-  private hydrateSnapshot(agent: ResumedAgentState): void {
+  private hydrateSnapshot(agent: TUIAgentReplay): void {
     this.host.setAppState(appStateFromResumeAgent(agent));
     this.hydrateTodoPanel(agent);
     this.hydrateBackgroundState(agent);
   }
 
-  private hydrateTodoPanel(agent: ResumedAgentState): void {
+  private hydrateTodoPanel(agent: TUIAgentReplay): void {
     const rawTodos = agent.toolStore?.['todo'];
     if (!Array.isArray(rawTodos)) {
       this.host.streamingUI.setTodoList([]);
@@ -143,8 +143,8 @@ export class SessionReplayRenderer {
    * reconcile reclassified as `lost`) keep the spawn-success ToolResult's
    * default of `✓ Completed`.
    */
-  private applyTerminalBackgroundAgentStatuses(agent: ResumedAgentState): void {
-    for (const info of agent.background) {
+  private applyTerminalBackgroundAgentStatuses(agent: TUIAgentReplay): void {
+    for (const info of agent.tasks) {
       if (info.kind !== 'agent') continue;
       if (!isTerminalBackgroundTask(info)) continue;
       const status = info.status;
@@ -165,18 +165,18 @@ export class SessionReplayRenderer {
     }
   }
 
-  private hydrateBackgroundState(agent: ResumedAgentState): void {
+  private hydrateBackgroundState(agent: TUIAgentReplay): void {
     const { state, sessionEventHandler } = this.host;
-    const projection = replayBackgroundProjection(agent.background);
+    const projection = replayBackgroundProjection(agent.tasks);
     sessionEventHandler.subAgentEventHandler.backgroundAgentMetadata = new Map(
       projection.backgroundAgentMetadata,
     );
     sessionEventHandler.backgroundTasks.clear();
-    for (const info of agent.background) {
+    for (const info of agent.tasks) {
       sessionEventHandler.backgroundTasks.set(info.taskId, info);
     }
     sessionEventHandler.backgroundTaskTranscriptedTerminal.clear();
-    for (const info of agent.background) {
+    for (const info of agent.tasks) {
       if (isTerminalBackgroundTask(info)) {
         sessionEventHandler.backgroundTaskTranscriptedTerminal.add(info.taskId);
       }
@@ -189,7 +189,7 @@ export class SessionReplayRenderer {
   // Record rendering
   // ---------------------------------------------------------------------------
 
-  private renderRecords(agent: ResumedAgentState): void {
+  private renderRecords(agent: TUIAgentReplay): void {
     const context = createReplayRenderContext();
     for (const record of limitReplayRecordsByTurn(agent.replay, REPLAY_TURN_LIMIT)) {
       this.renderRecord(context, record);
@@ -198,7 +198,7 @@ export class SessionReplayRenderer {
     this.cleanupRuntime(context);
   }
 
-  private renderRecord(context: ReplayRenderContext, record: AgentReplayRecord): void {
+  private renderRecord(context: ReplayRenderContext, record: TUIAgentReplayRecord): void {
     switch (record.type) {
       case 'message':
         this.renderMessage(context, record.message);
@@ -233,7 +233,7 @@ export class SessionReplayRenderer {
     }
   }
 
-  private renderMessage(context: ReplayRenderContext, message: ContextMessage): void {
+  private renderMessage(context: ReplayRenderContext, message: TUIReplayContextMessage): void {
     switch (message.role) {
       case 'user':
         this.renderUserMessage(context, message);
@@ -259,7 +259,7 @@ export class SessionReplayRenderer {
     }
   }
 
-  private renderUserMessage(context: ReplayRenderContext, message: ContextMessage): void {
+  private renderUserMessage(context: ReplayRenderContext, message: TUIReplayContextMessage): void {
     const origin = backgroundOrigin(message);
     if (origin !== undefined) {
       this.flushAssistant(context);
@@ -344,7 +344,7 @@ export class SessionReplayRenderer {
     );
   }
 
-  private renderToolCalls(context: ReplayRenderContext, toolCalls: readonly ToolCall[]): void {
+  private renderToolCalls(context: ReplayRenderContext, toolCalls: readonly TUIToolCall[]): void {
     if (toolCalls.length === 0) return;
     const { streamingUI } = this.host;
     context.stepIndex += 1;
@@ -358,7 +358,7 @@ export class SessionReplayRenderer {
     }
   }
 
-  private renderToolResult(context: ReplayRenderContext, message: ContextMessage): void {
+  private renderToolResult(context: ReplayRenderContext, message: TUIReplayContextMessage): void {
     const toolCallId = message.toolCallId;
     if (toolCallId === undefined) return;
     const call = context.toolCalls.get(toolCallId);
@@ -522,7 +522,7 @@ export class SessionReplayRenderer {
     });
   }
 
-  private renderHookResult(context: ReplayRenderContext, message: ContextMessage): void {
+  private renderHookResult(context: ReplayRenderContext, message: TUIReplayContextMessage): void {
     if (message.origin?.kind !== 'hook_result') return;
     this.flushAssistant(context);
     this.host.appendTranscriptEntry(
@@ -539,7 +539,7 @@ export class SessionReplayRenderer {
     );
   }
 
-  private renderCronJob(context: ReplayRenderContext, message: ContextMessage): void {
+  private renderCronJob(context: ReplayRenderContext, message: TUIReplayContextMessage): void {
     if (message.origin?.kind !== 'cron_job') return;
     this.flushAssistant(context);
     this.host.appendTranscriptEntry({
@@ -559,7 +559,7 @@ export class SessionReplayRenderer {
     });
   }
 
-  private renderCronMissed(context: ReplayRenderContext, message: ContextMessage): void {
+  private renderCronMissed(context: ReplayRenderContext, message: TUIReplayContextMessage): void {
     if (message.origin?.kind !== 'cron_missed') return;
     this.flushAssistant(context);
     this.host.appendTranscriptEntry({
@@ -570,7 +570,7 @@ export class SessionReplayRenderer {
     });
   }
 
-  private renderPermissionUpdate(context: ReplayRenderContext, mode: PermissionMode): void {
+  private renderPermissionUpdate(context: ReplayRenderContext, mode: AgentPermissionMode): void {
     if (mode === 'yolo') {
       this.host.appendTranscriptEntry(
         replayEntry(context, 'status', 'YOLO mode: ON', 'notice', {
@@ -591,7 +591,7 @@ export class SessionReplayRenderer {
 
   private renderApprovalResult(
     context: ReplayRenderContext,
-    record: Extract<AgentReplayRecord, { type: 'approval_result' }>['record'],
+    record: Extract<TUIAgentReplayRecord, { type: 'approval_result' }>['record'],
   ): void {
     if (record.toolName === 'ExitPlanMode') {
       this.renderPlanReviewResult(context, record);
@@ -620,7 +620,7 @@ export class SessionReplayRenderer {
 
   private renderPlanReviewResult(
     context: ReplayRenderContext,
-    record: Extract<AgentReplayRecord, { type: 'approval_result' }>['record'],
+    record: Extract<TUIAgentReplayRecord, { type: 'approval_result' }>['record'],
   ): void {
     const { result } = record;
     if (result.decision === 'approved') {
@@ -667,7 +667,7 @@ export class SessionReplayRenderer {
 
   private renderBackgroundTaskNotification(
     context: ReplayRenderContext,
-    origin: Extract<PromptOrigin, { kind: 'background_task' }>,
+    origin: ReplayBackgroundOrigin,
   ): void {
     const { sessionEventHandler } = this.host;
     const task = sessionEventHandler.backgroundTasks.get(origin.taskId);

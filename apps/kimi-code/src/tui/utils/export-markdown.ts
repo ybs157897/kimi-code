@@ -1,4 +1,9 @@
-import type { ContentPart, ContextMessage, PromptOrigin, ToolCall } from '@moonshot-ai/kimi-code-sdk';
+import type {
+  TUIContentPart,
+  TUIContextMessage,
+  TUIMessageOrigin,
+  TUIToolCall,
+} from '../runtime/session-context-view-port';
 
 const HINT_KEYS = ['path', 'file_path', 'command', 'query', 'url', 'name', 'pattern'] as const;
 
@@ -36,7 +41,7 @@ function shorten(text: string, width: number): string {
   return `${text.slice(0, width)}…`;
 }
 
-export function formatContentPartMd(part: ContentPart): string {
+export function formatContentPartMd(part: TUIContentPart): string {
   switch (part.type) {
     case 'text':
       return part.text;
@@ -50,11 +55,11 @@ export function formatContentPartMd(part: ContentPart): string {
     case 'video_url':
       return '[video]';
     default:
-      return `[${(part as ContentPart).type}]`;
+      return `[${(part as TUIContentPart).type}]`;
   }
 }
 
-export function formatToolCallMd(tc: ToolCall): string {
+export function formatToolCallMd(tc: TUIToolCall): string {
   const argsRaw = tc.arguments ?? '{}';
   const hint = extractToolCallHint(argsRaw);
   let title = `#### Tool Call: ${tc.name}`;
@@ -72,7 +77,7 @@ export function formatToolCallMd(tc: ToolCall): string {
   return `${title}\n<!-- call_id: ${tc.id} -->\n\`\`\`json\n${argsFormatted}\n\`\`\``;
 }
 
-function formatToolResultMd(msg: ContextMessage, toolName: string, hint: string): string {
+function formatToolResultMd(msg: TUIContextMessage, toolName: string, hint: string): string {
   const callId = msg.toolCallId ?? 'unknown';
   const parts: string[] = [];
   for (const part of msg.content) {
@@ -92,7 +97,7 @@ function formatToolResultMd(msg: ContextMessage, toolName: string, hint: string)
   );
 }
 
-const INTERNAL_ORIGINS = new Set<PromptOrigin['kind']>([
+const INTERNAL_ORIGINS = new Set<TUIMessageOrigin['kind']>([
   'injection',
   'system_trigger',
   'compaction_summary',
@@ -105,15 +110,15 @@ const INTERNAL_ORIGINS = new Set<PromptOrigin['kind']>([
   'cron_missed',
 ]);
 
-export function isInternalMessage(msg: ContextMessage): boolean {
+export function isInternalMessage(msg: TUIContextMessage): boolean {
   const origin = msg.origin;
   if (origin === undefined) return false;
   return INTERNAL_ORIGINS.has(origin.kind);
 }
 
-export function groupIntoTurns(history: readonly ContextMessage[]): ContextMessage[][] {
-  const turns: ContextMessage[][] = [];
-  let current: ContextMessage[] = [];
+export function groupIntoTurns(history: readonly TUIContextMessage[]): TUIContextMessage[][] {
+  const turns: TUIContextMessage[][] = [];
+  let current: TUIContextMessage[] = [];
 
   for (const msg of history) {
     if (isInternalMessage(msg)) continue;
@@ -128,7 +133,7 @@ export function groupIntoTurns(history: readonly ContextMessage[]): ContextMessa
   return turns;
 }
 
-function formatTurnMd(messages: readonly ContextMessage[], turnNumber: number): string {
+function formatTurnMd(messages: readonly TUIContextMessage[], turnNumber: number): string {
   const lines: string[] = [`## Turn ${String(turnNumber)}`, ''];
 
   const toolCallInfo = new Map<string, { name: string; hint: string }>();
@@ -182,8 +187,8 @@ function formatTurnMd(messages: readonly ContextMessage[], turnNumber: number): 
 }
 
 function buildOverview(
-  history: readonly ContextMessage[],
-  turns: readonly ContextMessage[][],
+  history: readonly TUIContextMessage[],
+  turns: readonly TUIContextMessage[][],
 ): string {
   let topic = '';
   for (const msg of history) {
@@ -214,7 +219,7 @@ function buildOverview(
 export interface BuildExportMarkdownInput {
   readonly sessionId: string;
   readonly workDir: string;
-  readonly history: readonly ContextMessage[];
+  readonly history: readonly TUIContextMessage[];
   readonly tokenCount: number;
   readonly now: Date;
 }

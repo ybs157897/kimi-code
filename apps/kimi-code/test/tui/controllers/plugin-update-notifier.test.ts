@@ -1,20 +1,27 @@
+/**
+ * Scenario: plugin-use update checks through the notifier's neutral session boundary.
+ * Covers official-source filtering, version notices, persisted deduplication,
+ * and MCP lookup caching. Uses a stubbed session/marketplace plus real
+ * notice-state persistence; run with this file's Vitest target.
+ */
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { PluginSummary } from '@moonshot-ai/kimi-code-sdk';
-
 import { KIMI_CODE_PLUGIN_MARKETPLACE_URL } from '#/constant/app';
 import {
   PluginUpdateNotifier,
   type PluginUpdateNotifierSession,
 } from '#/tui/controllers/plugin-update-notifier';
+import type { PluginSummaryView } from '#/tui/runtime/session-plugins-port';
 import type { PluginMarketplace } from '#/utils/plugin-marketplace';
 import { readPluginUpdateNoticeState } from '#/utils/plugin-update-notice-state';
 
-function makePluginSummary(overrides: Partial<PluginSummary> = {}): PluginSummary {
+function makePluginSummaryView(
+  overrides: Partial<PluginSummaryView> = {},
+): PluginSummaryView {
   return {
     id: 'kimi-datasource',
     displayName: 'Kimi Datasource',
@@ -24,8 +31,6 @@ function makePluginSummary(overrides: Partial<PluginSummary> = {}): PluginSummar
     skillCount: 0,
     mcpServerCount: 1,
     enabledMcpServerCount: 1,
-    hookCount: 0,
-    commandCount: 0,
     hasErrors: false,
     source: 'zip-url',
     originalSource: 'https://code.kimi.com/kimi-code/plugins/official/kimi-datasource.zip',
@@ -56,7 +61,7 @@ function makeMarketplace(version = '3.4.0'): PluginMarketplace {
 
 interface HarnessOptions {
   readonly marketplace?: PluginMarketplace;
-  readonly installed?: readonly PluginSummary[];
+  readonly installed?: readonly PluginSummaryView[];
   readonly mcpServers?: readonly string[];
   readonly loadMarketplace?: () => Promise<PluginMarketplace>;
 }
@@ -66,7 +71,7 @@ function makeHarness(options: HarnessOptions = {}) {
     listMcpServers: vi.fn(async () =>
       (options.mcpServers ?? ['plugin-kimi-datasource:data']).map((name) => ({ name })),
     ),
-    listPlugins: vi.fn(async () => options.installed ?? [makePluginSummary()]),
+    listPlugins: vi.fn(async () => options.installed ?? [makePluginSummaryView()]),
   };
   const notify = vi.fn();
   const loadMarketplace = vi.fn(
@@ -131,7 +136,9 @@ describe('PluginUpdateNotifier', () => {
   });
 
   it('does not notify when the installed version is up to date', async () => {
-    const harness = makeHarness({ installed: [makePluginSummary({ version: '3.4.0' })] });
+    const harness = makeHarness({
+      installed: [makePluginSummaryView({ version: '3.4.0' })],
+    });
     const notifier = makeNotifier(harness);
 
     await notifier.handleMcpToolCompleted(DATASOURCE_TOOL);
@@ -140,7 +147,9 @@ describe('PluginUpdateNotifier', () => {
   });
 
   it('does not notify for plugins absent from the marketplace', async () => {
-    const harness = makeHarness({ installed: [makePluginSummary({ id: 'local-only' })] });
+    const harness = makeHarness({
+      installed: [makePluginSummaryView({ id: 'local-only' })],
+    });
     const notifier = makeNotifier(harness);
 
     await notifier.handlePluginCommandCompleted('local-only');
@@ -168,7 +177,7 @@ describe('PluginUpdateNotifier', () => {
   it('does not notify for a same-id fork installed from a local path', async () => {
     const harness = makeHarness({
       installed: [
-        makePluginSummary({ source: 'local-path', originalSource: undefined }),
+        makePluginSummaryView({ source: 'local-path', originalSource: undefined }),
       ],
     });
     const notifier = makeNotifier(harness);
@@ -275,8 +284,8 @@ describe('PluginUpdateNotifier', () => {
         ],
       },
       installed: [
-        makePluginSummary(),
-        makePluginSummary({
+        makePluginSummaryView(),
+        makePluginSummaryView({
           id: 'another-plugin',
           displayName: 'Another Plugin',
           version: '1.0.0',

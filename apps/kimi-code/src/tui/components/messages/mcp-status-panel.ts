@@ -1,12 +1,11 @@
-import type { McpServerInfo } from '@moonshot-ai/kimi-code-sdk';
-
+import type { McpServerView } from '#/tui/runtime/session-mcp-port';
 import { currentTheme } from '#/tui/theme';
 
 export interface McpStatusReportOptions {
-  readonly servers: readonly McpServerInfo[];
+  readonly servers: readonly McpServerView[];
 }
 
-const STATUS_PRIORITY: Record<McpServerInfo['status'], number> = {
+const STATUS_PRIORITY: Record<McpServerView['status'], number> = {
   failed: 0,
   'needs-auth': 1,
   pending: 2,
@@ -14,7 +13,7 @@ const STATUS_PRIORITY: Record<McpServerInfo['status'], number> = {
   disabled: 4,
 };
 
-const STATUS_LABEL: Record<McpServerInfo['status'], string> = {
+const STATUS_LABEL: Record<McpServerView['status'], string> = {
   connected: 'connected',
   pending: 'pending',
   'needs-auth': 'needs auth',
@@ -22,7 +21,7 @@ const STATUS_LABEL: Record<McpServerInfo['status'], string> = {
   disabled: 'disabled',
 };
 
-const SUMMARY_ORDER: readonly McpServerInfo['status'][] = [
+const SUMMARY_ORDER: readonly McpServerView['status'][] = [
   'connected',
   'pending',
   'needs-auth',
@@ -31,7 +30,7 @@ const SUMMARY_ORDER: readonly McpServerInfo['status'][] = [
 ];
 
 function statusPainter(
-  status: McpServerInfo['status'],
+  status: McpServerView['status'],
 ): (text: string) => string {
   switch (status) {
     case 'connected':
@@ -46,7 +45,7 @@ function statusPainter(
   }
 }
 
-function formatToolCount(server: McpServerInfo): string {
+function formatToolCount(server: McpServerView): string {
   if (server.status === 'disabled') return '—';
   return `${server.toolCount} tool${server.toolCount === 1 ? '' : 's'}`;
 }
@@ -68,15 +67,15 @@ function formatErrorLine(error: string): string {
   return error.trim().replaceAll(/\s+/g, ' ');
 }
 
-function sortedServers(servers: readonly McpServerInfo[]): McpServerInfo[] {
+function sortedServers(servers: readonly McpServerView[]): McpServerView[] {
   return servers.toSorted(
     (a, b) =>
       STATUS_PRIORITY[a.status] - STATUS_PRIORITY[b.status] || a.name.localeCompare(b.name),
   );
 }
 
-function buildSummary(servers: readonly McpServerInfo[]): string {
-  const counts: Partial<Record<McpServerInfo['status'], number>> = {};
+function buildSummary(servers: readonly McpServerView[]): string {
+  const counts: Partial<Record<McpServerView['status'], number>> = {};
   let toolsAvailable = 0;
   for (const server of servers) {
     counts[server.status] = (counts[server.status] ?? 0) + 1;

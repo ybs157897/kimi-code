@@ -1,12 +1,12 @@
-import type { BackgroundTaskInfo, BackgroundTaskStatus } from '@moonshot-ai/kimi-code-sdk';
 import { describe, expect, it } from 'vitest';
 
+import type { AgentTask } from '#/tui/runtime/session-control-port';
 import { formatBackgroundTaskTranscript } from '@/tui/utils/background-task-status';
 
-function task(overrides: Partial<BackgroundTaskInfo> = {}): BackgroundTaskInfo {
+function task(overrides: Partial<AgentTask> = {}): AgentTask {
   const taskId = overrides.taskId ?? 'bash-abcd1234';
   const kind = overrides.kind ?? (taskId.startsWith('agent-') ? 'agent' : 'process');
-  const base = {
+  return {
     taskId,
     kind,
     description: 'dev server',
@@ -15,38 +15,27 @@ function task(overrides: Partial<BackgroundTaskInfo> = {}): BackgroundTaskInfo {
     endedAt: null,
     ...overrides,
   };
-  if (kind === 'agent') {
-    return {
-      ...base,
-      kind: 'agent',
-      agentId: 'agent-child',
-      subagentType: 'coder',
-      ...overrides,
-    } as BackgroundTaskInfo;
-  }
-  return {
-    ...base,
-    kind: 'process',
-    command: 'npm run dev',
-    pid: 1234,
-    exitCode: null,
-    ...overrides,
-  } as BackgroundTaskInfo;
 }
 
 describe('formatBackgroundTaskTranscript', () => {
   it('renders a bash started entry', () => {
     const data = formatBackgroundTaskTranscript(task({ status: 'running' }));
-    expect(data.phase).toBe('started');
-    expect(data.headline).toContain('bash task started');
-    expect(data.detail).toBe('dev server');
+    expect(data).toEqual({
+      phase: 'started',
+      headline: 'bash task started in background',
+      detail: 'dev server',
+    });
   });
 
   it('renders an agent started entry', () => {
     const data = formatBackgroundTaskTranscript(
       task({ taskId: 'agent-deadbeef', status: 'running' }),
     );
-    expect(data.headline).toContain('agent task started');
+    expect(data).toEqual({
+      phase: 'started',
+      headline: 'agent task started in background',
+      detail: 'dev server',
+    });
   });
 
   it('renders a question started entry', () => {
@@ -58,41 +47,58 @@ describe('formatBackgroundTaskTranscript', () => {
         status: 'running',
       }),
     );
-    expect(data.headline).toContain('question task started');
+    expect(data).toEqual({
+      phase: 'started',
+      headline: 'question task started in background',
+      detail: 'dev server',
+    });
   });
 
   it('renders a completed entry with exit code in detail', () => {
     const data = formatBackgroundTaskTranscript(
       task({ status: 'completed', exitCode: 0, endedAt: Date.now() }),
     );
-    expect(data.phase).toBe('completed');
-    expect(data.headline).toContain('completed');
-    expect(data.detail).toContain('exit 0');
+    expect(data).toEqual({
+      phase: 'completed',
+      headline: 'bash task completed in background',
+      detail: 'dev server · exit 0',
+    });
   });
 
-  it('renders a failed entry with non-zero exit', () => {
+  it('renders a failed entry with non-zero exit and stop reason', () => {
     const data = formatBackgroundTaskTranscript(
-      task({ status: 'failed', exitCode: 2, endedAt: Date.now() }),
+      task({
+        status: 'failed',
+        exitCode: 2,
+        stopReason: 'process failed',
+        endedAt: Date.now(),
+      }),
     );
-    expect(data.phase).toBe('failed');
-    expect(data.headline).toContain('failed');
-    expect(data.detail).toContain('exit 2');
+    expect(data).toEqual({
+      phase: 'failed',
+      headline: 'bash task failed in background',
+      detail: 'dev server · exit 2 · process failed',
+    });
   });
 
   it('renders a killed entry with stop reason', () => {
     const data = formatBackgroundTaskTranscript(
       task({ status: 'killed', stopReason: 'user', endedAt: Date.now() }),
     );
-    expect(data.phase).toBe('failed');
-    expect(data.headline).toContain('stopped');
-    expect(data.detail).toContain('user');
+    expect(data).toEqual({
+      phase: 'failed',
+      headline: 'bash task stopped',
+      detail: 'dev server · stopped — user',
+    });
   });
 
   it('renders a lost entry with restart note', () => {
     const data = formatBackgroundTaskTranscript(task({ status: 'lost', endedAt: Date.now() }));
-    expect(data.phase).toBe('failed');
-    expect(data.headline).toContain('lost');
-    expect(data.detail).toContain('session restarted');
+    expect(data).toEqual({
+      phase: 'failed',
+      headline: 'bash task lost',
+      detail: 'dev server · session restarted before completion',
+    });
   });
 
   it('surfaces timeout stop reason for agent deadlines', () => {
@@ -103,20 +109,17 @@ describe('formatBackgroundTaskTranscript', () => {
         endedAt: Date.now(),
       }),
     );
-    expect(data.detail).toContain('timed out');
+    expect(data).toEqual({
+      phase: 'failed',
+      headline: 'agent task timed out',
+      detail: 'dev server · timed out',
+    });
   });
 
-  it('handles every BackgroundTaskStatus without throwing', () => {
-    const statuses: BackgroundTaskStatus[] = [
-      'running',
-      'completed',
-      'failed',
-      'timed_out',
-      'killed',
-      'lost',
-    ];
-    for (const status of statuses) {
-      expect(() => formatBackgroundTaskTranscript(task({ status }))).not.toThrow();
-    }
+  it('collapses and truncates long detail text', () => {
+    const data = formatBackgroundTaskTranscript(
+      task({ description: `  ${'a'.repeat(120)}   ${'b'.repeat(121)}  ` }),
+    );
+    expect(data.detail).toBe(`${'a'.repeat(120)} ${'b'.repeat(116)}...`);
   });
 });

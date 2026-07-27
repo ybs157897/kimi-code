@@ -1,3 +1,12 @@
+/**
+ * Scenario: editor keyboard shortcuts route cancellation, undo, and history
+ * behavior through the public TUI host boundary.
+ * Responsibilities: active-session cancellation uses neutral runtime ports,
+ * while shortcut priority and history behavior remain stable.
+ * Wiring: the editor and TUI host ports are small in-memory fakes.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/controllers/editor-keyboard.test.ts
+ */
+
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { DOUBLE_ESC_WINDOW_MS } from '#/tui/constant/kimi-tui';
@@ -12,12 +21,24 @@ interface Harness {
   readonly editor: Record<string, ((...args: never[]) => unknown) | undefined>;
   readonly openUndoSelector: ReturnType<typeof vi.fn>;
   readonly cancelRunningShellCommand: ReturnType<typeof vi.fn>;
+  readonly agentCancel: ReturnType<typeof vi.fn>;
   readonly cancelCompaction: ReturnType<typeof vi.fn>;
+  readonly requireSessionRuntime: ReturnType<typeof vi.fn>;
+  readonly steerMessage: ReturnType<typeof vi.fn>;
+  readonly showError: ReturnType<typeof vi.fn>;
+  readonly track: ReturnType<typeof vi.fn>;
+  readonly handlePlanToggle: ReturnType<typeof vi.fn>;
   readonly btwCancelRunning: ReturnType<typeof vi.fn>;
   readonly btwCloseOrCancel: ReturnType<typeof vi.fn>;
 }
 
-function createHarness(options: { streamingPhase?: string; isCompacting?: boolean } = {}): Harness {
+function createHarness(
+  options: {
+    streamingPhase?: string;
+    isCompacting?: boolean;
+    sessionId?: string;
+  } = {},
+): Harness {
   const editor: Record<string, ((...args: never[]) => unknown) | undefined> = {
     setHistoryFilter: vi.fn() as unknown as (...args: never[]) => unknown,
     setInputMode: vi.fn() as unknown as (...args: never[]) => unknown,
@@ -26,24 +47,43 @@ function createHarness(options: { streamingPhase?: string; isCompacting?: boolea
   };
   const openUndoSelector = vi.fn();
   const cancelRunningShellCommand = vi.fn();
+  const agentCancel = vi.fn(async () => {});
   const cancelCompaction = vi.fn(async () => {});
+  const requireSessionRuntime = vi.fn(() => ({
+    agent: { cancel: agentCancel },
+    context: { cancelCompaction },
+  }));
+  const steerMessage = vi.fn();
+  const showError = vi.fn();
+  const track = vi.fn();
+  const handlePlanToggle = vi.fn();
   const btwCancelRunning = vi.fn(() => false);
   const btwCloseOrCancel = vi.fn(() => false);
-  const session = { cancel: vi.fn(async () => {}), cancelCompaction };
 
   const host = {
     state: {
       editor,
       activeDialog: null,
       appState: {
+        model: 'k2',
+        sessionId: options.sessionId ?? 'session-1',
+        planMode: false,
         streamingPhase: options.streamingPhase ?? 'idle',
         isCompacting: options.isCompacting ?? false,
       },
+      queuedMessages: [],
       footer: { setTransientHint: vi.fn() },
       ui: { requestRender: vi.fn() },
     },
-    session,
+    session: undefined,
     btwPanelController: { cancelRunning: btwCancelRunning, closeOrCancel: btwCloseOrCancel },
+    requireSessionRuntime,
+    steerMessage,
+    validateMediaCapabilities: vi.fn(() => true),
+    updateQueueDisplay: vi.fn(),
+    showError,
+    track,
+    handlePlanToggle,
     openUndoSelector,
     cancelRunningShellCommand,
   } as unknown as EditorKeyboardHost;
@@ -59,7 +99,13 @@ function createHarness(options: { streamingPhase?: string; isCompacting?: boolea
     editor,
     openUndoSelector,
     cancelRunningShellCommand,
+    agentCancel,
     cancelCompaction,
+    requireSessionRuntime,
+    steerMessage,
+    showError,
+    track,
+    handlePlanToggle,
     btwCancelRunning,
     btwCloseOrCancel,
   };
@@ -74,6 +120,18 @@ function pressEscape(editor: Harness['editor']): void {
 function pressCtrlC(editor: Harness['editor']): void {
   const handler = editor['onCtrlC'];
   if (handler === undefined) throw new Error('onCtrlC handler not installed');
+  (handler as () => void)();
+}
+
+function pressCtrlS(editor: Harness['editor']): void {
+  const handler = editor['onCtrlS'];
+  if (handler === undefined) throw new Error('onCtrlS handler not installed');
+  (handler as () => void)();
+}
+
+function pressShiftTab(editor: Harness['editor']): void {
+  const handler = editor['onShiftTab'];
+  if (handler === undefined) throw new Error('onShiftTab handler not installed');
   (handler as () => void)();
 }
 
@@ -131,7 +189,7 @@ describe('EditorKeyboardController double-Esc undo', () => {
   });
 
   it('does not trigger undo while streaming; Esc cancels the stream instead', () => {
-    const { editor, host, openUndoSelector, cancelRunningShellCommand } = createHarness({
+    const { editor, openUndoSelector, cancelRunningShellCommand, agentCancel } = createHarness({
       streamingPhase: 'waiting',
     });
 
@@ -140,8 +198,60 @@ describe('EditorKeyboardController double-Esc undo', () => {
 
     expect(openUndoSelector).not.toHaveBeenCalled();
     expect(cancelRunningShellCommand).toHaveBeenCalled();
-    const session = host.session as unknown as { cancel: ReturnType<typeof vi.fn> };
-    expect(session.cancel).toHaveBeenCalled();
+    expect(agentCancel).toHaveBeenCalled();
+  });
+});
+
+describe('EditorKeyboardController steer dispatch', () => {
+  it('steers queued input through the active binding when the raw session is absent', () => {
+    const { host, editor, steerMessage } = createHarness({ streamingPhase: 'waiting' });
+    host.state.queuedMessages = [{ text: 'focus on the tests', agentId: 'main' }];
+
+    pressCtrlS(editor);
+
+    expect(steerMessage).toHaveBeenCalledWith([{ text: 'focus on the tests' }]);
+    expect(host.state.queuedMessages).toEqual([]);
+  });
+});
+
+describe('EditorKeyboardController plan toggle', () => {
+  it('shows the no-session error when the active runtime is unavailable', () => {
+    const {
+      editor,
+      requireSessionRuntime,
+      showError,
+      track,
+      handlePlanToggle,
+    } = createHarness();
+    requireSessionRuntime.mockImplementationOnce(() => {
+      throw new Error('no active runtime');
+    });
+
+    pressShiftTab(editor);
+
+    expect(showError).toHaveBeenCalledWith('No active session. Send /login to login.');
+    expect(track).not.toHaveBeenCalled();
+    expect(handlePlanToggle).not.toHaveBeenCalled();
+  });
+
+  it('toggles plan mode through the active runtime when the raw session is absent', () => {
+    const {
+      host,
+      editor,
+      requireSessionRuntime,
+      showError,
+      track,
+      handlePlanToggle,
+    } = createHarness();
+
+    expect(host.session).toBeUndefined();
+    pressShiftTab(editor);
+
+    expect(requireSessionRuntime).toHaveBeenCalledOnce();
+    expect(showError).not.toHaveBeenCalled();
+    expect(track).toHaveBeenNthCalledWith(1, 'shortcut_plan_toggle', { enabled: true });
+    expect(track).toHaveBeenNthCalledWith(2, 'shortcut_mode_switch', { to_mode: 'plan' });
+    expect(handlePlanToggle).toHaveBeenCalledWith(true);
   });
 });
 
@@ -206,6 +316,52 @@ describe('EditorKeyboardController btw panel priority', () => {
     expect(btwCancelRunning).toHaveBeenCalledOnce();
     expect(btwCloseOrCancel).toHaveBeenCalledOnce();
     expect(cancelCompaction).toHaveBeenCalledOnce();
+  });
+
+  it('does not cancel compaction when no session id is active', () => {
+    const { editor, requireSessionRuntime, cancelCompaction } = createHarness({
+      isCompacting: true,
+      sessionId: '',
+    });
+
+    pressEscape(editor);
+
+    expect(requireSessionRuntime).not.toHaveBeenCalled();
+    expect(cancelCompaction).not.toHaveBeenCalled();
+  });
+
+  it('shows the existing error when context cancellation fails', async () => {
+    const { editor, cancelCompaction, showError } = createHarness({
+      isCompacting: true,
+    });
+    cancelCompaction.mockRejectedValueOnce(new Error('cancel failed'));
+
+    pressEscape(editor);
+    await Promise.resolve();
+
+    expect(showError).toHaveBeenCalledWith(
+      'Failed to cancel compaction: cancel failed',
+    );
+  });
+});
+
+describe('EditorKeyboardController stream cancellation', () => {
+  it('still cancels the shell while skipping the agent without a session id', () => {
+    const {
+      editor,
+      cancelRunningShellCommand,
+      requireSessionRuntime,
+      agentCancel,
+    } = createHarness({
+      streamingPhase: 'waiting',
+      sessionId: '',
+    });
+
+    pressEscape(editor);
+
+    expect(cancelRunningShellCommand).toHaveBeenCalledOnce();
+    expect(requireSessionRuntime).not.toHaveBeenCalled();
+    expect(agentCancel).not.toHaveBeenCalled();
   });
 });
 

@@ -1,3 +1,11 @@
+/**
+ * Scenario: the welcome chrome renders runtime state at wide and narrow
+ * widths. Responsibilities: width bounds, dance/theme behavior, and effective
+ * model display fallbacks stay presentation-only.
+ * Wiring: the component and theme are real; no external boundary is stubbed.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/chrome/welcome.test.ts
+ */
+
 import { visibleWidth } from '@moonshot-ai/pi-tui';
 import chalk from 'chalk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -101,5 +109,48 @@ describe('WelcomeComponent', () => {
         expect(visibleWidth(line)).toBeLessThanOrEqual(width);
       }
     }
+  });
+
+  it('renders the overridden model display name', () => {
+    const state: AppState = {
+      ...appState,
+      availableModels: {
+        'kimi-k2': {
+          provider: 'managed:kimi-code',
+          model: 'kimi-k2',
+          maxContextSize: 262144,
+          displayName: 'Remote Name',
+          overrides: { displayName: 'Custom Name' },
+        },
+      },
+    };
+
+    const rendered = new WelcomeComponent(state).render(80).join('\n');
+    expect(rendered).toContain('Custom Name');
+    expect(rendered).not.toContain('Remote Name');
+  });
+
+  it('falls back to the catalog model name when displayName is absent', () => {
+    const state: AppState = {
+      ...appState,
+      model: 'active-alias',
+      availableModels: {
+        'active-alias': {
+          provider: 'example-provider',
+          model: 'runtime-model-name',
+          maxContextSize: 262144,
+        },
+      },
+    };
+
+    expect(new WelcomeComponent(state).render(80).join('\n')).toContain(
+      'runtime-model-name',
+    );
+  });
+
+  it('falls back to the active alias when the catalog entry is absent', () => {
+    const rendered = new WelcomeComponent(appState).render(80).join('\n');
+
+    expect(rendered).toContain('kimi-k2');
   });
 });

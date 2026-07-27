@@ -9,7 +9,15 @@ import { buildSlashItems, parseSlash, SKILL_COMMAND_PREFIX } from '../../lib/sla
 import { formatTokens } from '../../lib/formatTokens';
 import type { FileItem } from './MentionMenu.vue';
 import type { ActivationBadges, ConversationStatus, PermissionMode, QueuedPromptView } from '../../types';
-import type { AppExpertTeam, AppExpertTeamStatus, AppGoal, AppModel, AppSkill, ThinkingLevel } from '../../api/types';
+import type {
+  AppExpertTeam,
+  AppExpertTeamStatus,
+  AppExtensionCommand,
+  AppGoal,
+  AppModel,
+  AppSkill,
+  ThinkingLevel,
+} from '../../api/types';
 import {
   commitLevel,
   effectiveThinkingLevel,
@@ -62,6 +70,8 @@ const props = withDefaults(defineProps<{
   starredIds?: string[];
   /** Session skills shown in the `/` menu (after the built-in commands). */
   skills?: AppSkill[];
+  /** Code-extension commands shown as `/<extensionId>:<name>`. */
+  extensionCommands?: AppExtensionCommand[];
   /** Expert teams available to the session (v2 backends only; empty hides the section). */
   expertTeams?: AppExpertTeam[];
   /** The active expert-team mode, or null for the standard agent. */
@@ -77,6 +87,7 @@ const props = withDefaults(defineProps<{
   models: () => [],
   starredIds: () => [],
   skills: () => [],
+  extensionCommands: () => [],
   expertTeams: () => [],
   expertTeamStatus: null,
 });
@@ -213,6 +224,7 @@ const {
   textareaRef,
   autosize,
   skills: () => props.skills,
+  extensionCommands: () => props.extensionCommands,
   emitCommand: (cmd) => emit('command', cmd),
   historyPush: (entry) => history.push(entry),
   clearDraft,
@@ -347,7 +359,7 @@ function handleSubmit(): void {
   if (trimmed) {
     const parsed = parseSlash(trimmed);
     const known = parsed
-      ? buildSlashItems(props.skills).some(
+      ? buildSlashItems(props.skills, props.extensionCommands).some(
           (item) => item.name === parsed.cmd || item.name === `/${SKILL_COMMAND_PREFIX}${parsed.cmd.slice(1)}`,
         )
       : false;

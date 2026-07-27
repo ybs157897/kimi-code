@@ -797,7 +797,7 @@ export function wireEventSeq(wire: WireEvent): number {
 }
 
 // ---------------------------------------------------------------------------
-// Expert teams (native /api/v2 surface)
+// Expert teams
 // ---------------------------------------------------------------------------
 
 export function toAppExpertTeam(wire: WireExpertTeamDefinition): AppExpertTeam {

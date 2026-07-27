@@ -33,9 +33,9 @@ import { copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import type { PromptPart } from '@moonshot-ai/kimi-code-sdk';
 import { buildImageCompressionCaption } from '@moonshot-ai/kimi-code-sdk';
 
+import type { AgentPromptPart } from '#/tui/runtime/session-control-port';
 import { getCacheDir } from '#/utils/paths';
 
 import type {
@@ -48,7 +48,7 @@ const PLACEHOLDER_REGEX = /\[(image|video) #(\d+) (?:(\(\d+×\d+\))|([^\]]+))\]/
 
 export interface ExtractionResult {
   /** Flat list of parts in input order; empty array when no media matched. */
-  parts: PromptPart[];
+  parts: AgentPromptPart[];
   /**
    * Did we find at least one matching attachment? When false, callers
    * should keep the prompt on the plain text path.
@@ -64,7 +64,7 @@ export function extractMediaAttachments(
   text: string,
   store: ImageAttachmentStore,
 ): ExtractionResult {
-  const parts: PromptPart[] = [];
+  const parts: AgentPromptPart[] = [];
   const imageAttachmentIds: number[] = [];
   const videoAttachmentIds: number[] = [];
   let cursor = 0;
@@ -187,7 +187,7 @@ export function rewriteMediaPlaceholders(
   };
 }
 
-function pushText(parts: PromptPart[], segment: string): void {
+function pushText(parts: AgentPromptPart[], segment: string): void {
   if (segment.length === 0) return;
   // Keep whitespace-only segments only when they sit between non-empty
   // text elsewhere — the simpler rule "drop everything whitespace-only"
@@ -201,7 +201,7 @@ function pushText(parts: PromptPart[], segment: string): void {
   parts.push({ type: 'text', text: segment });
 }
 
-function imagePartForAttachment(att: ImageAttachment): PromptPart {
+function imagePartForAttachment(att: ImageAttachment): AgentPromptPart {
   const base64 = Buffer.from(att.bytes).toString('base64');
   return {
     type: 'image_url',
@@ -214,7 +214,7 @@ function imagePartForAttachment(att: ImageAttachment): PromptPart {
  * engine resolves the local reference in-turn (upload → `ms://`, or degrade to
  * a `<video path>` tag) before it reaches the model or the persisted history.
  */
-function videoPartForCachePath(cachePath: string): PromptPart {
+function videoPartForCachePath(cachePath: string): AgentPromptPart {
   return {
     type: 'video_url',
     videoUrl: { url: pathToFileURL(cachePath).href },

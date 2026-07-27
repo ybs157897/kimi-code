@@ -1,5 +1,4 @@
 import type { Component, Focusable } from '@moonshot-ai/pi-tui';
-import type { DeviceAuthorization } from '@moonshot-ai/kimi-code-oauth';
 import type { KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
 
 import type { ColorToken, ThemeName } from '#/tui/theme';
@@ -10,6 +9,10 @@ import type { BtwPanelController } from '../controllers/btw-panel';
 import type { StreamingUIController } from '../controllers/streaming-ui';
 import type { TasksBrowserController } from '../controllers/tasks-browser';
 import { tryHandleDanceCommand } from '../easter-eggs/dance';
+import type { TUIRuntime } from '../runtime/tui-runtime';
+import type { RuntimeAuthDeviceCode } from '../runtime/runtime-auth-port';
+import type { SessionIdentity } from '../runtime/session-control-port';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
 import type { ResolvedTheme } from '../theme/colors';
 import type { TUIState } from '../tui-state';
 import type {
@@ -102,7 +105,8 @@ export { handleWebCommand } from './web';
 export interface SlashCommandHost {
   state: TUIState;
   session: Session | undefined;
-  readonly harness: KimiHarness;
+  readonly harness: KimiHarness | undefined;
+  readonly runtime: TUIRuntime;
   cancelInFlight: (() => void) | undefined;
   deferUserMessages: boolean;
 
@@ -120,16 +124,20 @@ export interface SlashCommandHost {
 
   // Session
   requireSession(): Session;
+  requireSessionRuntime(): TUISessionRuntime;
   switchToSession(session: Session, message: string): Promise<void>;
-  reloadCurrentSessionView(session: Session, message: string): Promise<void>;
+  switchToSessionIdentity(identity: SessionIdentity, message: string): Promise<void>;
+  reloadCurrentSessionView(message: string): Promise<void>;
   beginSessionRequest(): void;
   failSessionRequest(message: string): void;
+  sendQueuedMessage(item: QueuedMessage): void;
+  /** Compatibility for the still-legacy `/init` flow, which already owns a raw Session. */
   sendQueuedMessage(session: Session, item: QueuedMessage): void;
   requestQueuedGoalPromotion?(): void;
 
   // UI
   showLoginProgressSpinner(label: string): LoginProgressSpinnerHandle;
-  showLoginAuthorizationPrompt(auth: DeviceAuthorization): LoginProgressSpinnerHandle;
+  showLoginAuthorizationPrompt(auth: RuntimeAuthDeviceCode): LoginProgressSpinnerHandle;
   showProgressSpinner(label: string): LoginProgressSpinnerHandle;
 
   // Theme
@@ -150,14 +158,10 @@ export interface SlashCommandHost {
   createNewSession(): Promise<void>;
   showSessionPicker(): Promise<void>;
   sendNormalUserInput(text: string): void;
-  sendSkillActivation(session: Session, skillName: string, skillArgs: string): void;
-  activatePluginCommand(
-    session: Session,
-    pluginId: string,
-    commandName: string,
-    args: string,
-  ): void;
-  activateExtensionCommand(session: Session, commandName: string, args: string): void;
+  sendSkillActivation(skillName: string, skillArgs: string): void;
+  activatePluginCommand(pluginId: string, commandName: string, args: string): void;
+  activateExtensionCommand(commandName: string, args: string): void;
+  reloadExtensionCommands(): Promise<void>;
   readonly skillCommandMap: Map<string, string>;
   readonly pluginCommandMap: Map<string, string>;
   /** Namespaced names of code-based extension commands (`<ext>:<cmd>`). */
@@ -208,8 +212,18 @@ async function executeSlashCommand(host: SlashCommandHost, input: string): Promi
       host.showError(`Invalid slash command: /${intent.commandName}`);
       return;
     case 'skill': {
-      const session = host.session;
-      if (host.state.appState.model.trim().length === 0 || session === undefined) {
+      if (host.state.appState.model.trim().length === 0) {
+        host.showError(LLM_NOT_SET_MESSAGE);
+        return;
+      }
+      let sessionRuntime: TUISessionRuntime;
+      try {
+        sessionRuntime = host.requireSessionRuntime();
+      } catch {
+        host.showError(LLM_NOT_SET_MESSAGE);
+        return;
+      }
+      if (sessionRuntime.sessionId !== host.state.appState.sessionId) {
         host.showError(LLM_NOT_SET_MESSAGE);
         return;
       }
@@ -217,7 +231,7 @@ async function executeSlashCommand(host: SlashCommandHost, input: string): Promi
         command: intent.commandName,
         skill_name: intent.skillName,
       });
-      host.sendSkillActivation(session, intent.skillName, intent.args);
+      host.sendSkillActivation(intent.skillName, intent.args);
       return;
     }
     case 'plugin-command': {
@@ -225,23 +239,24 @@ async function executeSlashCommand(host: SlashCommandHost, input: string): Promi
         host.showError(LLM_NOT_SET_MESSAGE);
         return;
       }
-      const session = host.session;
-      if (session === undefined) {
+      let sessionRuntime: TUISessionRuntime;
+      try {
+        sessionRuntime = host.requireSessionRuntime();
+      } catch {
+        host.showError(LLM_NOT_SET_MESSAGE);
+        return;
+      }
+      if (sessionRuntime.sessionId !== host.state.appState.sessionId) {
         host.showError(LLM_NOT_SET_MESSAGE);
         return;
       }
       host.track('input_command', { command: `${intent.pluginId}:${intent.commandName}` });
-      host.activatePluginCommand(session, intent.pluginId, intent.commandName, intent.args);
+      host.activatePluginCommand(intent.pluginId, intent.commandName, intent.args);
       return;
     }
     case 'extension-command': {
-      const session = host.session;
-      if (session === undefined) {
-        host.showError('No active session.');
-        return;
-      }
       host.track('input_command', { command: intent.commandName });
-      host.activateExtensionCommand(session, intent.commandName, intent.args);
+      host.activateExtensionCommand(intent.commandName, intent.args);
       return;
     }
     case 'message':

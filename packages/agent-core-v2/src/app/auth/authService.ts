@@ -5,9 +5,9 @@
  * Owns the device-code OAuth flows and the auth readiness view; reads and
  * writes provider configuration through `provider`, refreshes the managed
  * OAuth provider's server-side model configuration through `config`, publishes
- * model-catalog changes through `event`, reports through `telemetry`,
- * logs through `log`, and delegates
- * the device-code protocol, token storage, and token refresh to `IOAuthToolkit`
+ * model-catalog changes through `event`, reports through `telemetry`, logs
+ * through `log`, and delegates the device-code protocol, token storage,
+ * token refresh, managed usage, and feedback calls to `IOAuthToolkit`
  * (provided by `OAuthToolkitService` over `@moonshot-ai/kimi-code-oauth`,
  * which locates token storage through `bootstrap`). Bound at App scope.
  */
@@ -29,8 +29,14 @@ import {
   resolveKimiCodeRuntimeAuth,
   type AuthManagedUsageResult,
   type BearerTokenProvider,
+  type CompleteFeedbackUploadBody,
+  type CreateFeedbackUploadUrlBody,
   type DeviceAuthorization,
+  type FetchCompleteFeedbackUploadResult,
+  type FetchCreateFeedbackUploadUrlResult,
+  type FetchSubmitFeedbackResult,
   type ManagedKimiConfigShape,
+  type SubmitFeedbackBody,
 } from '@moonshot-ai/kimi-code-oauth';
 import type {
   OAuthFlowSnapshot,
@@ -265,18 +271,36 @@ export class OAuthService extends Disposable implements IOAuthService {
   }
 
   getManagedUsage(provider = KIMI_CODE_PROVIDER_NAME): Promise<AuthManagedUsageResult> {
-    // Same resolution path as the managed model refresh: env-aware base url +
-    // oauth ref, so a self-hosted/proxied login environment reports its own
-    // usage endpoint. The toolkit handles token freshness and error mapping.
-    const configured = this.providerService.get(provider);
-    const auth = resolveKimiCodeRuntimeAuth({
-      configuredBaseUrl: configured?.baseUrl,
-      configuredOAuthRef: configured?.oauth,
-    });
-    return this.toolkit.getManagedUsage(provider, {
-      oauthRef: auth.oauthRef,
-      baseUrl: auth.baseUrl,
-    });
+    return this.toolkit.getManagedUsage(provider, this.resolveManagedRuntimeAuth(provider));
+  }
+
+  submitFeedback(
+    body: SubmitFeedbackBody,
+    provider = KIMI_CODE_PROVIDER_NAME,
+  ): Promise<FetchSubmitFeedbackResult> {
+    return this.toolkit.submitFeedback(body, provider, this.resolveManagedRuntimeAuth(provider));
+  }
+
+  createFeedbackUploadUrl(
+    body: CreateFeedbackUploadUrlBody,
+    provider = KIMI_CODE_PROVIDER_NAME,
+  ): Promise<FetchCreateFeedbackUploadUrlResult> {
+    return this.toolkit.createFeedbackUploadUrl(
+      body,
+      provider,
+      this.resolveManagedRuntimeAuth(provider),
+    );
+  }
+
+  completeFeedbackUpload(
+    body: CompleteFeedbackUploadBody,
+    provider = KIMI_CODE_PROVIDER_NAME,
+  ): Promise<FetchCompleteFeedbackUploadResult> {
+    return this.toolkit.completeFeedbackUpload(
+      body,
+      provider,
+      this.resolveManagedRuntimeAuth(provider),
+    );
   }
 
   refreshOAuthProviderModels(): Promise<RefreshOAuthProviderModelsResponse> {
@@ -429,6 +453,14 @@ export class OAuthService extends Disposable implements IOAuthService {
       configuredBaseUrl: config?.baseUrl,
       configuredOAuthRef: oauthRef ?? config?.oauth,
     }).oauthRef;
+  }
+
+  private resolveManagedRuntimeAuth(provider: string) {
+    const configured = this.providerService.get(provider);
+    return resolveKimiCodeRuntimeAuth({
+      configuredBaseUrl: configured?.baseUrl,
+      configuredOAuthRef: configured?.oauth,
+    });
   }
 
   private abortExisting(provider: string): void {

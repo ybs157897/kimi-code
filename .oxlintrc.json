@@ -148,6 +148,7 @@
     "dist/",
     "coverage/",
     "node_modules/",
+    ".kimi-code/experts/",
     "apps/*/scripts/",
     "docs/smoke-archive/",
     "packages/pi-tui/",

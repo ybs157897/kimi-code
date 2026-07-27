@@ -2,8 +2,6 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import type { Session } from '@moonshot-ai/kimi-code-sdk';
-
 import { detectInstallSource } from '#/cli/update/source';
 import { detectShellEnvironment } from '#/utils/process/shell-env';
 import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';
@@ -29,15 +27,17 @@ export async function handleTitleCommand(host: SlashCommandHost, args: string): 
     return;
   }
 
-  const session = host.session;
-  if (session === undefined) {
+  let runtime: ReturnType<SlashCommandHost['requireSessionRuntime']>;
+  try {
+    runtime = host.requireSessionRuntime();
+  } catch {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
 
   const newTitle = title.slice(0, 200);
   try {
-    await host.harness.renameSession({ id: session.id, title: newTitle });
+    await runtime.lifecycle.setTitle(newTitle);
   } catch (error) {
     const msg = formatErrorMessage(error);
     host.showError(`Failed to set title: ${msg}`);
@@ -48,17 +48,18 @@ export async function handleTitleCommand(host: SlashCommandHost, args: string): 
 
 export async function handleForkCommand(host: SlashCommandHost, args: string): Promise<void> {
   void args;
-  const session = host.session;
-  if (session === undefined) {
+  let runtime: ReturnType<SlashCommandHost['requireSessionRuntime']>;
+  try {
+    runtime = host.requireSessionRuntime();
+  } catch {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
 
-  const sourceTitle = forkSourceTitle(host, session);
-  let forked: Session;
+  const sourceTitle = forkSourceTitle(host, runtime.sessionId);
+  let forked: Awaited<ReturnType<typeof runtime.lifecycle.fork>>;
   try {
-    forked = await host.harness.forkSession({
-      id: session.id,
+    forked = await runtime.lifecycle.fork({
       title: `Fork: ${sourceTitle}`,
     });
   } catch (error) {
@@ -68,9 +69,9 @@ export async function handleForkCommand(host: SlashCommandHost, args: string): P
   }
 
   try {
-    await host.switchToSession(
+    await host.switchToSessionIdentity(
       forked,
-      `Session forked (${forked.id}). To return to the original session: kimi -r ${session.id}`,
+      `Session forked (${forked.id}). To return to the original session: kimi -r ${runtime.sessionId}`,
     );
   } catch (error) {
     const msg = formatErrorMessage(error);
@@ -78,32 +79,31 @@ export async function handleForkCommand(host: SlashCommandHost, args: string): P
   }
 }
 
-function forkSourceTitle(host: SlashCommandHost, session: Session): string {
+function forkSourceTitle(host: SlashCommandHost, sessionId: string): string {
   const currentTitle = host.state.appState.sessionTitle?.trim();
   if (currentTitle !== undefined && currentTitle.length > 0) return currentTitle;
-
-  const summaryTitle =
-    typeof session.summary?.title === 'string' ? session.summary.title.trim() : '';
-  return summaryTitle.length > 0 ? summaryTitle : session.id;
+  return sessionId;
 }
 
 export async function handleExportMdCommand(host: SlashCommandHost, args: string): Promise<void> {
-  const session = host.session;
-  if (session === undefined) {
+  let runtime: ReturnType<SlashCommandHost['requireSessionRuntime']>;
+  try {
+    runtime = host.requireSessionRuntime();
+  } catch {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
 
   host.showStatus('Exporting session as Markdown…');
   try {
-    const context = await session.getContext();
+    const context = await runtime.contextView.read();
     if (context.history.length === 0) {
       host.showError('No messages to export.');
       return;
     }
 
     const now = new Date();
-    const shortId = session.id.slice(0, 8);
+    const shortId = runtime.sessionId.slice(0, 8);
     const timestamp = now.toISOString().replaceAll(/[-:]/g, '').replace(/T/, '-').slice(0, 15);
     const defaultName = `kimi-export-${shortId}-${timestamp}.md`;
 
@@ -113,7 +113,7 @@ export async function handleExportMdCommand(host: SlashCommandHost, args: string
       : resolve(host.state.appState.workDir, defaultName);
 
     const md = buildExportMarkdown({
-      sessionId: session.id,
+      sessionId: runtime.sessionId,
       workDir: host.state.appState.workDir,
       history: context.history,
       tokenCount: context.tokenCount,
@@ -132,8 +132,10 @@ export async function handleExportMdCommand(host: SlashCommandHost, args: string
 }
 
 export async function handleExportDebugZipCommand(host: SlashCommandHost): Promise<void> {
-  const session = host.session;
-  if (session === undefined) {
+  let runtime: ReturnType<SlashCommandHost['requireSessionRuntime']>;
+  try {
+    runtime = host.requireSessionRuntime();
+  } catch {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
@@ -142,8 +144,8 @@ export async function handleExportDebugZipCommand(host: SlashCommandHost): Promi
   try {
     const installSource = await detectInstallSource();
     const shellEnv = detectShellEnvironment();
-    const result = await host.harness.exportSession({
-      id: session.id,
+    const result = await host.runtime.sessionExport.export({
+      sessionId: runtime.sessionId,
       version: host.state.appState.version,
       installSource,
       shellEnv,
@@ -158,8 +160,15 @@ export async function handleExportDebugZipCommand(host: SlashCommandHost): Promi
 }
 
 export async function handleInitCommand(host: SlashCommandHost): Promise<void> {
-  const session = host.session;
-  if (host.state.appState.model.trim().length === 0 || session === undefined) {
+  if (host.state.appState.model.trim().length === 0) {
+    host.showError(LLM_NOT_SET_MESSAGE);
+    return;
+  }
+
+  let runtime: ReturnType<SlashCommandHost['requireSessionRuntime']>;
+  try {
+    runtime = host.requireSessionRuntime();
+  } catch {
     host.showError(LLM_NOT_SET_MESSAGE);
     return;
   }
@@ -167,10 +176,10 @@ export async function handleInitCommand(host: SlashCommandHost): Promise<void> {
   host.deferUserMessages = true;
   host.beginSessionRequest();
   try {
-    await session.init();
+    await runtime.init.generateAgentsMd();
     host.track('init_complete');
     host.streamingUI.finalizeTurn((item) => {
-      host.sendQueuedMessage(session, item);
+      host.sendQueuedMessage(item);
     });
   } catch (error) {
     if (isAbortError(error)) {

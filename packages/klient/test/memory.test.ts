@@ -13,6 +13,7 @@ defineKlientConformance('memory', async () => {
   const klient = createKlient({ scope: app });
   return {
     klient,
+    workDir: homeDir,
     cleanup: async () => {
       await klient.close();
       app.dispose();
@@ -30,6 +31,38 @@ describe('memory dispatcher specifics', () => {
       code: 40001,
     });
     await expect(dispatcher.call({}, 'sessionIndex', 'noSuchMethod', [])).rejects.toMatchObject({
+      name: 'RPCError',
+      code: 40001,
+    });
+    await expect(dispatcher.call({}, 'pluginService', 'enabledHooks', [])).rejects.toMatchObject({
+      name: 'RPCError',
+      code: 40001,
+    });
+    await expect(
+      dispatcher.call({ sessionId: 's1' }, 'sessionCronService', 'handleMissed', []),
+    ).rejects.toMatchObject({
+      name: 'RPCError',
+      code: 40001,
+    });
+    await expect(
+      dispatcher.call(
+        { sessionId: 's1', agentId: 'main' },
+        'agentProfileService',
+        'configure',
+        [],
+      ),
+    ).rejects.toMatchObject({
+      name: 'RPCError',
+      code: 40001,
+    });
+    await expect(
+      dispatcher.call(
+        { sessionId: 's1', agentId: 'main' },
+        'agentGoalService',
+        'markComplete',
+        [],
+      ),
+    ).rejects.toMatchObject({
       name: 'RPCError',
       code: 40001,
     });

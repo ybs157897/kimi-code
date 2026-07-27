@@ -155,6 +155,8 @@ const DOMAIN_LAYER = new Map([
   ['permissionPolicy', 3],
   ['permissionRules', 3],
   ['plugin', 3],
+  ['extension', 3],
+  ['sessionExtension', 3],
   ['record', 3],
   ['modelCatalog', 3],
   ['agentProfileCatalog', 3],
@@ -172,6 +174,7 @@ const DOMAIN_LAYER = new Map([
   ['compaction', 4],
   ['plan', 4],
   ['goal', 4],
+  ['goalQueue', 4],
   ['swarm', 4],
   ['usage', 4],
   ['runtime', 4],
@@ -185,6 +188,7 @@ const DOMAIN_LAYER = new Map([
   ['contextMemory', 4],
   ['contextInjector', 4],
   ['agentPlugin', 4],
+  ['agentExtension', 4],
   ['systemReminder', 4],
   ['contextProjector', 4],
   ['contextSize', 4],
@@ -210,6 +214,7 @@ const DOMAIN_LAYER = new Map([
   ['web', 4],
   // L5 — agent task management
   ['agentTask', 5],
+  ['replayView', 5],
   ['mcp', 5],
   ['cron', 5],
   // `btw` forks a single side-question sub-agent via `agentLifecycle`,
@@ -387,6 +392,8 @@ function domainFromRel(rel, { exemptRootFile }) {
     // `src/{scope}/{domain}/…`
     if (segments[0] === 'agent' && segments[1] === 'task') return 'agentTask';
     if (segments[0] === 'agent' && segments[1] === 'plugin') return 'agentPlugin';
+    if (segments[0] === 'agent' && segments[1] === 'extension') return 'agentExtension';
+    if (segments[0] === 'session' && segments[1] === 'extension') return 'sessionExtension';
     return segments[1];
   }
   // Top-level `src/*.ts` facades are not domains — exempt from layering.

@@ -1,8 +1,8 @@
 /**
  * `auth` domain tests — covers the `OAuthService` device-code orchestration,
  * its dependency on the `provider` domain, and the managed OAuth provider
- * model refresh, using a fake `IOAuthToolkit` so no real network or token
- * storage is exercised.
+ * model refresh, usage, and feedback calls, using a fake `IOAuthToolkit` so no
+ * real network or token storage is exercised.
  */
 
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
@@ -79,6 +79,9 @@ interface FakeToolkit {
   readonly getCachedAccessToken: ReturnType<typeof vi.fn>;
   readonly tokenProvider: ReturnType<typeof vi.fn>;
   readonly getManagedUsage: ReturnType<typeof vi.fn>;
+  readonly submitFeedback: ReturnType<typeof vi.fn>;
+  readonly createFeedbackUploadUrl: ReturnType<typeof vi.fn>;
+  readonly completeFeedbackUpload: ReturnType<typeof vi.fn>;
 }
 
 describe('OAuthService', () => {
@@ -155,6 +158,13 @@ describe('OAuthService', () => {
       getCachedAccessToken: vi.fn().mockResolvedValue(undefined),
       tokenProvider: vi.fn().mockReturnValue({ getAccessToken: async () => 'access-token' }),
       getManagedUsage: vi.fn().mockResolvedValue({ kind: 'error', message: 'not configured' }),
+      submitFeedback: vi.fn().mockResolvedValue({ kind: 'error', message: 'not configured' }),
+      createFeedbackUploadUrl: vi
+        .fn()
+        .mockResolvedValue({ kind: 'error', message: 'not configured' }),
+      completeFeedbackUpload: vi
+        .fn()
+        .mockResolvedValue({ kind: 'error', message: 'not configured' }),
     };
     ix = createServices(disposables, {
       base: [registerBootstrapServices, registerTelemetryServices],
@@ -691,6 +701,108 @@ describe('OAuthService', () => {
       oauthRef: EXAMPLE_COM_SCOPED_REF,
       baseUrl: 'https://api.example.com',
     });
+  });
+
+  it('submitFeedback delegates custom managed auth without transforming the ok result', async () => {
+    const body = {
+      session_id: 'session-example',
+      content: 'Feedback details',
+      version: '0.1.0',
+      os: 'example-os',
+      model: 'example-model',
+    };
+    const result = { kind: 'ok' as const, feedbackId: 42 };
+    toolkit.submitFeedback.mockResolvedValue(result);
+    const svc = createService();
+
+    await expect(svc.submitFeedback(body, OAUTH_PROVIDER)).resolves.toBe(result);
+    expect(toolkit.submitFeedback).toHaveBeenCalledWith(body, OAUTH_PROVIDER, {
+      oauthRef: EXAMPLE_COM_SCOPED_REF,
+      baseUrl: 'https://api.example.com',
+    });
+  });
+
+  it('submitFeedback preserves the toolkit error result', async () => {
+    const body = {
+      session_id: 'session-example',
+      content: 'Feedback details',
+      version: '0.1.0',
+      os: 'example-os',
+      model: null,
+    };
+    const result = { kind: 'error' as const, status: 503, message: 'Feedback unavailable.' };
+    toolkit.submitFeedback.mockResolvedValue(result);
+
+    await expect(createService().submitFeedback(body)).resolves.toBe(result);
+  });
+
+  it('createFeedbackUploadUrl delegates custom managed auth without transforming the ok result', async () => {
+    const body = {
+      file_hash: 'hash-example',
+      file_name: 'feedback.zip',
+      file_size: 128,
+      feedback_id: 42,
+    };
+    const result = {
+      kind: 'ok' as const,
+      upload_id: 7,
+      parts: [
+        {
+          part_number: 1,
+          url: 'https://upload.example.com/part',
+          method: 'PUT',
+          size: 128,
+        },
+      ],
+    };
+    toolkit.createFeedbackUploadUrl.mockResolvedValue(result);
+    const svc = createService();
+
+    await expect(svc.createFeedbackUploadUrl(body, OAUTH_PROVIDER)).resolves.toBe(result);
+    expect(toolkit.createFeedbackUploadUrl).toHaveBeenCalledWith(body, OAUTH_PROVIDER, {
+      oauthRef: EXAMPLE_COM_SCOPED_REF,
+      baseUrl: 'https://api.example.com',
+    });
+  });
+
+  it('createFeedbackUploadUrl preserves the toolkit error result', async () => {
+    const body = {
+      file_hash: 'hash-example',
+      file_name: 'feedback.zip',
+      file_size: 128,
+      feedback_id: 42,
+    };
+    const result = { kind: 'error' as const, status: 413, message: 'Upload too large.' };
+    toolkit.createFeedbackUploadUrl.mockResolvedValue(result);
+
+    await expect(createService().createFeedbackUploadUrl(body)).resolves.toBe(result);
+  });
+
+  it('completeFeedbackUpload delegates custom managed auth without transforming the ok result', async () => {
+    const body = {
+      upload_id: 7,
+      parts: [{ part_number: 1, etag: 'etag-example' }],
+    };
+    const result = { kind: 'ok' as const };
+    toolkit.completeFeedbackUpload.mockResolvedValue(result);
+    const svc = createService();
+
+    await expect(svc.completeFeedbackUpload(body, OAUTH_PROVIDER)).resolves.toBe(result);
+    expect(toolkit.completeFeedbackUpload).toHaveBeenCalledWith(body, OAUTH_PROVIDER, {
+      oauthRef: EXAMPLE_COM_SCOPED_REF,
+      baseUrl: 'https://api.example.com',
+    });
+  });
+
+  it('completeFeedbackUpload preserves the toolkit error result', async () => {
+    const body = {
+      upload_id: 7,
+      parts: [{ part_number: 1, etag: 'etag-example' }],
+    };
+    const result = { kind: 'error' as const, status: 409, message: 'Upload incomplete.' };
+    toolkit.completeFeedbackUpload.mockResolvedValue(result);
+
+    await expect(createService().completeFeedbackUpload(body)).resolves.toBe(result);
   });
 
   it('refreshOAuthProviderModels returns an empty result when no Kimi Code provider is configured', async () => {

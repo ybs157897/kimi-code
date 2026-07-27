@@ -265,7 +265,7 @@ TeamCreate
 - **动态组队**：当前由产品 API / `/experts` 激活插件声明的固定拓扑，没有模型可见的 `TeamCreate` / `TeamDelete`、auto-team、动态命名或同角色多实例。
 - **共享任务与审批**：尚未实现 WorkBuddy 风格的团队共享 task list 和 `plan_approval_response`。
 - **交互补全**：尚未实现 WorkBuddy 风格的 `@成员` 补全；Kimi Code 使用自己的 `expert_team.updated` 契约，而不是复刻 `team_created` / `member_status_change` 事件名。
-- **引擎范围**：上述适配落在交互式 Kimi Code CLI 当前使用的 legacy `agent-core` 路径；`agent-core-v2` / kap-server 等入口需要分别收敛相同契约。
+- **引擎范围**：交互式 Kimi Code CLI 通过运行时中立适配器，在 legacy `agent-core` 与实验性的 `agent-core-v2` 上提供该产品能力；kap-server 也暴露相同的插件固定声明专家团模型。这不会消除上面列出的 WorkBuddy 差距。
 
 蜂群（`AgentSwarm`）仍更接近「一个并行 Phase」，不是整套 Teams。
 

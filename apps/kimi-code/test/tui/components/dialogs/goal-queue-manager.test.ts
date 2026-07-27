@@ -6,7 +6,10 @@ import {
   GoalQueueManagerComponent,
   type GoalQueueManagerAction,
 } from '#/tui/components/dialogs/goal-queue-manager';
-import type { GoalQueueSnapshot, UpcomingGoal } from '#/tui/goal-queue-store';
+import type {
+  GoalQueueSnapshot,
+  UpcomingGoal,
+} from '#/tui/runtime/session-goal-queue-port';
 
 const ANSI = /\u001B\[[0-9;]*m/g;
 const strip = (s: string): string => s.replaceAll(ANSI, '');

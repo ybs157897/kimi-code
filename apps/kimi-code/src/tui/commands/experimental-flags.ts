@@ -1,14 +1,13 @@
-import type { ExperimentalFeatureState, ExperimentalFlagMap } from '@moonshot-ai/kimi-code-sdk';
-
+import type { RuntimeFeatureState } from '#/tui/runtime/runtime-feature-flags-port';
 import { experimentalFeatureMap } from '#/utils/experimental-features';
 
 // Resolved experimental features, fetched once from the core over RPC at startup and then read
 // synchronously by the command palette and dispatch. App-local cache, not a source of truth.
-let snapshot: ExperimentalFlagMap = {};
+let snapshot: Record<string, boolean> = {};
 
-/** Replace the cached flag snapshot. Call after fetching via `harness.getExperimentalFeatures()`. */
+/** Replace the cached flag snapshot after reading the active runtime. */
 export function setExperimentalFeatures(
-  features: readonly Pick<ExperimentalFeatureState, 'id' | 'enabled'>[],
+  features: readonly Pick<RuntimeFeatureState, 'id' | 'enabled'>[],
 ): void {
   snapshot = experimentalFeatureMap(features);
 }

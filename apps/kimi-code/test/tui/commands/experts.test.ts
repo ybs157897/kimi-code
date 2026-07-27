@@ -3,6 +3,16 @@ import { describe, expect, it, vi } from 'vitest';
 import { handleExpertsCommand } from '#/tui/commands';
 import type { SlashCommandHost } from '#/tui/commands/dispatch';
 
+/**
+ * Scenario: /experts controls expert-team state through the active TUI runtime.
+ *
+ * Responsibilities: prove activation, deactivation, status rendering, and selector
+ * presentation continue to work without a legacy SDK Session.
+ *
+ * Wiring: a runtime-only command host supplies neutral expert-team and swarm ports.
+ *
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/commands/experts.test.ts
+ */
 function makeHost(options: { swarmMode?: boolean; active?: boolean } = {}) {
   const snapshot = {
     pluginId: 'software-company',
@@ -24,23 +34,27 @@ function makeHost(options: { swarmMode?: boolean; active?: boolean } = {}) {
       },
     ],
   };
-  const session = {
-    listExpertTeams: vi.fn(async () => [
+  const expertTeam = {
+    list: vi.fn(async () => [
       {
         pluginId: 'software-company',
         displayName: 'Software Company',
         description: 'Software delivery team',
         leadAgentName: 'software-team-lead',
         memberAgentNames: ['software-engineer'],
-        members: [],
-        tags: [],
         quickPrompts: [],
       },
     ]),
-    activateExpertTeam: vi.fn(async () => snapshot),
-    getExpertTeamStatus: vi.fn(async () => status),
-    deactivateExpertTeam: vi.fn(async () => {}),
-    setSwarmMode: vi.fn(async () => {}),
+    activate: vi.fn(async () => snapshot),
+    get: vi.fn(async () => status),
+    deactivate: vi.fn(async () => {}),
+  };
+  const swarm = {
+    exit: vi.fn(async () => {}),
+  };
+  const runtime = {
+    expertTeam,
+    swarm,
   };
   const host = {
     state: {
@@ -49,7 +63,8 @@ function makeHost(options: { swarmMode?: boolean; active?: boolean } = {}) {
         expertTeam: options.active ? snapshot : null,
       },
     },
-    session,
+    session: undefined,
+    requireSessionRuntime: vi.fn(() => runtime),
     setAppState: vi.fn((patch: Record<string, unknown>) =>
       Object.assign(host.state.appState, patch),
     ),
@@ -59,17 +74,17 @@ function makeHost(options: { swarmMode?: boolean; active?: boolean } = {}) {
     mountEditorReplacement: vi.fn(),
     restoreEditor: vi.fn(),
   } as unknown as SlashCommandHost;
-  return { host, session, snapshot, status };
+  return { host, expertTeam, swarm, snapshot, status };
 }
 
 describe('handleExpertsCommand', () => {
-  it('activates a team and disables swarm mode first', async () => {
-    const { host, session, snapshot, status } = makeHost({ swarmMode: true });
+  it('activates a team from a runtime-only host and exits swarm mode', async () => {
+    const { host, expertTeam, swarm, snapshot, status } = makeHost({ swarmMode: true });
 
     await handleExpertsCommand(host, 'software-company');
 
-    expect(session.setSwarmMode).toHaveBeenCalledWith(false, 'manual');
-    expect(session.activateExpertTeam).toHaveBeenCalledWith('software-company');
+    expect(swarm.exit).toHaveBeenCalledOnce();
+    expect(expertTeam.activate).toHaveBeenCalledWith('software-company');
     expect(host.setAppState).toHaveBeenCalledWith({
       expertTeam: snapshot,
       expertTeamMembers: status.members,
@@ -82,11 +97,11 @@ describe('handleExpertsCommand', () => {
   });
 
   it('returns to the standard agent with /experts off', async () => {
-    const { host, session } = makeHost({ active: true });
+    const { host, expertTeam } = makeHost({ active: true });
 
     await handleExpertsCommand(host, 'off');
 
-    expect(session.deactivateExpertTeam).toHaveBeenCalledOnce();
+    expect(expertTeam.deactivate).toHaveBeenCalledOnce();
     expect(host.setAppState).toHaveBeenCalledWith({
       expertTeam: null,
       expertTeamMembers: [],
@@ -94,12 +109,12 @@ describe('handleExpertsCommand', () => {
   });
 
   it('shows the complete live roster with /experts status', async () => {
-    const { host, session, status } = makeHost({ active: true });
+    const { host, expertTeam, status } = makeHost({ active: true });
 
     await handleExpertsCommand(host, 'status');
 
-    expect(session.listExpertTeams).not.toHaveBeenCalled();
-    expect(session.getExpertTeamStatus).toHaveBeenCalledOnce();
+    expect(expertTeam.list).not.toHaveBeenCalled();
+    expect(expertTeam.get).toHaveBeenCalledOnce();
     expect(host.setAppState).toHaveBeenCalledWith({
       expertTeam: status,
       expertTeamMembers: status.members,

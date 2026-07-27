@@ -23,7 +23,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (Session: 28 keys · Agent: 68 keys)
+// Index (Session: 29 keys · Agent: 68 keys)
 //   Session
 //     cron.inFlight                             src/session/cron/sessionCronServiceImpl.ts
 //     cron.lastSeenAt                           src/session/cron/sessionCronServiceImpl.ts
@@ -31,6 +31,7 @@
 //     cron.seededFromStore                      src/session/cron/sessionCronServiceImpl.ts
 //     cron.started                              src/session/cron/sessionCronServiceImpl.ts
 //     cron.tasks                                src/session/cron/sessionCronServiceImpl.ts
+//     expertTeam.pendingSpawns                  src/session/expertTeam/expertTeamService.ts
 //     interaction.nextId                        src/session/interaction/interactionService.ts
 //     interaction.pending                       src/session/interaction/interactionService.ts
 //     interaction.recentlyResolved              src/session/interaction/interactionService.ts
@@ -149,6 +150,8 @@ export interface SessionStateSnapshot {
     readonly lastFiredAt?: number;
     readonly tags?: Readonly<Record<string, string>>;
   }>;
+  // src/session/expertTeam/expertTeamService.ts
+  'expertTeam.pendingSpawns': Set<string>;
   // src/session/interaction/interactionService.ts
   'interaction.nextId': number;
   'interaction.pending': Map<string, /* Pending — packages/agent-core-v2/src/session/interaction/interactionService.ts */ {
@@ -689,6 +692,12 @@ export interface SessionStateSnapshot {
     } | /* RetryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'retry';
       readonly trigger?: string;
+    } | /* TeamMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'team_message';
+      readonly teamId: string;
+      readonly fromAgentId: string;
+      readonly toAgentId: string;
+      readonly messageType: 'message' | 'shutdown_request' | 'shutdown_response';
     };
     readonly isError?: boolean;
     readonly note?: string;
@@ -765,6 +774,12 @@ export interface AgentStateSnapshot {
       } | /* RetryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'retry';
         readonly trigger?: string;
+      } | /* TeamMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'team_message';
+        readonly teamId: string;
+        readonly fromAgentId: string;
+        readonly toAgentId: string;
+        readonly messageType: 'message' | 'shutdown_request' | 'shutdown_response';
       };
       readonly phase: /* TurnPhase — packages/agent-core-v2/src/agent/activityView/activityView.ts */ 'running' | 'streaming' | 'tool_call' | 'retrying';
       readonly stream?: 'assistant' | 'tool_call' | 'thinking';
@@ -889,6 +904,12 @@ export interface AgentStateSnapshot {
     } | /* RetryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'retry';
       readonly trigger?: string;
+    } | /* TeamMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+      readonly kind: 'team_message';
+      readonly teamId: string;
+      readonly fromAgentId: string;
+      readonly toAgentId: string;
+      readonly messageType: 'message' | 'shutdown_request' | 'shutdown_response';
     };
     snapshot: () => /* ActivityTurnState — packages/agent-core-v2/src/agent/activityView/activityView.ts */ {
       readonly turnId: number;
@@ -945,6 +966,12 @@ export interface AgentStateSnapshot {
       } | /* RetryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'retry';
         readonly trigger?: string;
+      } | /* TeamMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+        readonly kind: 'team_message';
+        readonly teamId: string;
+        readonly fromAgentId: string;
+        readonly toAgentId: string;
+        readonly messageType: 'message' | 'shutdown_request' | 'shutdown_response';
       };
       readonly phase: /* TurnPhase — packages/agent-core-v2/src/agent/activityView/activityView.ts */ 'running' | 'streaming' | 'tool_call' | 'retrying';
       readonly stream?: 'assistant' | 'tool_call' | 'thinking';
@@ -1010,7 +1037,7 @@ export interface AgentStateSnapshot {
   'llmRequester.lastConfigLogSignature': string | undefined;
   'llmRequester.mediaDegradedTurns': Set<number>;
   'llmRequester.mediaStrippedTurns': Map<number, /* MediaStripSnapshot — packages/agent-core-v2/src/agent/contextProjector/contextProjector.ts */ {
-    readonly "__@mediaStripSnapshotBrand@2667": undefined;
+    readonly "__@mediaStripSnapshotBrand@2753": undefined;
   }>;
   'llmRequester.turnConfigs': Map<number, /* TurnRequestConfig — packages/agent-core-v2/src/agent/llmRequester/llmRequesterService.ts */ {
     readonly resolved: /* ProfileModelContext — packages/agent-core-v2/src/agent/profile/profile.ts */ {

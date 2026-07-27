@@ -13,7 +13,6 @@
  * AskUserQuestion dialog's tab strip) — see .agents/skills/write-tui/DESIGN.md.
  */
 
-import type { ModelAlias } from '@moonshot-ai/kimi-code-sdk';
 import {
   Container,
   Key,
@@ -23,6 +22,7 @@ import {
 } from '@moonshot-ai/pi-tui';
 
 import { currentTheme } from '#/tui/theme';
+import type { RuntimeModelCatalogModel } from '#/tui/runtime/runtime-model-catalog-port';
 import { renderTabStrip } from '#/tui/utils/tab-strip';
 
 import {
@@ -30,16 +30,17 @@ import {
   providerDisplayName,
   type ModelSelection,
   type ModelSelectorOptions,
+  type ThinkingEffort,
 } from './model-selector';
 
 const ALL_TAB_ID = 'all';
 const ALL_TAB_LABEL = 'All';
 
 export interface TabbedModelSelectorOptions {
-  readonly models: Record<string, ModelAlias>;
+  readonly models: Record<string, RuntimeModelCatalogModel>;
   readonly currentValue: string;
   readonly selectedValue?: string;
-  readonly currentThinkingEffort: string;
+  readonly currentThinkingEffort: ThinkingEffort;
   /** When set, the tab for this provider id is initially active instead of the
    * tab derived from `currentValue`. */
   readonly initialTabId?: string;
@@ -156,7 +157,7 @@ function buildTabs(opts: TabbedModelSelectorOptions): readonly ModelTab[] {
     },
   ];
   for (const providerId of providerIds) {
-    const subset: Record<string, ModelAlias> = {};
+    const subset: Record<string, RuntimeModelCatalogModel> = {};
     for (const [alias, model] of entries) {
       if (model.provider === providerId) subset[alias] = model;
     }
@@ -171,7 +172,7 @@ function buildTabs(opts: TabbedModelSelectorOptions): readonly ModelTab[] {
 
 function makeSelector(
   opts: TabbedModelSelectorOptions,
-  subset: Record<string, ModelAlias>,
+  subset: Record<string, RuntimeModelCatalogModel>,
 ): ModelSelectorComponent {
   const candidate = opts.selectedValue ?? opts.currentValue;
   const selectedValue = subset[candidate] !== undefined ? candidate : undefined;

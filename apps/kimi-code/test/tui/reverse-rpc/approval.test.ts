@@ -1,10 +1,19 @@
-import type { ApprovalRequest } from '@moonshot-ai/kimi-code-sdk';
+/**
+ * Scenario: approval requests pass through the runtime-neutral reverse-RPC
+ * contract. Responsibility: preserve cancellation, feedback, and session
+ * auto-resolution. Boundary: ApprovalController plus its request handler.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/reverse-rpc/approval.test.ts
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApprovalController } from '#/tui/reverse-rpc/approval/controller';
 import { createApprovalRequestHandler } from '#/tui/reverse-rpc/approval/handler';
+import type { TUIApprovalRequest } from '#/tui/runtime/session-events-port';
 
-function approvalEvent(overrides: Partial<ApprovalRequest> = {}): ApprovalRequest {
+function approvalEvent(
+  overrides: Partial<TUIApprovalRequest> = {},
+): TUIApprovalRequest {
   return {
     toolCallId: 'tc-1',
     toolName: 'Bash',

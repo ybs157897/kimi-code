@@ -14,7 +14,7 @@ import type {
   GoalQueueMoveDirection,
   GoalQueueSnapshot,
   UpcomingGoal,
-} from '#/tui/goal-queue-store';
+} from '#/tui/runtime/session-goal-queue-port';
 import { currentTheme } from '#/tui/theme';
 import { printableChar } from '#/tui/utils/printable-key';
 import { SearchableList } from '#/tui/utils/searchable-list';

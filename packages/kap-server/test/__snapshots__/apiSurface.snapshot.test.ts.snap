@@ -1,6 +1,6 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`API surface snapshot > matches the documented v2 route table and meta endpoints 1`] = `
+exports[`API surface snapshot > matches the documented route table and meta endpoints 1`] = `
 {
   "meta": [
     [
@@ -146,6 +146,18 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "GET",
+      "/api/v1/sessions/{session_id}/expert-team",
+    ],
+    [
+      "GET",
+      "/api/v1/sessions/{session_id}/expert-teams",
+    ],
+    [
+      "GET",
+      "/api/v1/sessions/{session_id}/extensions/commands",
+    ],
+    [
+      "GET",
       "/api/v1/sessions/{session_id}/fs/{*}",
     ],
     [
@@ -231,14 +243,6 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "GET",
       "/api/v1/workspaces/{workspace_id}/skills",
-    ],
-    [
-      "GET",
-      "/api/v2/sessions/{session_id}/expert-team",
-    ],
-    [
-      "GET",
-      "/api/v2/sessions/{session_id}/expert-teams",
     ],
     [
       "GET",
@@ -334,7 +338,23 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "POST",
+      "/api/v1/sessions/{session_id}/expert-team/activate",
+    ],
+    [
+      "POST",
+      "/api/v1/sessions/{session_id}/expert-team/deactivate",
+    ],
+    [
+      "POST",
       "/api/v1/sessions/{session_id}/export",
+    ],
+    [
+      "POST",
+      "/api/v1/sessions/{session_id}/extensions/commands/activate",
+    ],
+    [
+      "POST",
+      "/api/v1/sessions/{session_id}/extensions/reload",
     ],
     [
       "POST",
@@ -379,14 +399,6 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "POST",
       "/api/v1/workspaces",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/expert-team/activate",
-    ],
-    [
-      "POST",
-      "/api/v2/sessions/{session_id}/expert-team/deactivate",
     ],
     [
       "PUT",

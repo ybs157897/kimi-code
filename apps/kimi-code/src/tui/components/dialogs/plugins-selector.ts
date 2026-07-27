@@ -7,10 +7,14 @@ import {
   visibleWidth,
   type Focusable,
 } from '@moonshot-ai/pi-tui';
-import type { PluginInfo, PluginMcpServerInfo, PluginSummary } from '@moonshot-ai/kimi-code-sdk';
 import chalk from 'chalk';
 
 import { SELECT_POINTER } from '#/tui/constant/symbols';
+import type {
+  PluginInfoView,
+  PluginMcpServerView,
+  PluginSummaryView,
+} from '#/tui/runtime/session-plugins-port';
 import { currentTheme } from '#/tui/theme';
 import type { ColorPalette } from '#/tui/theme/colors';
 import { formatPluginSourceLabel, pluginTrustLabel } from '#/tui/utils/plugin-source-label';
@@ -62,7 +66,7 @@ export type PluginMcpSelection =
   | { readonly kind: 'back'; readonly pluginId: string };
 
 export interface PluginMcpSelectorOptions {
-  readonly info: PluginInfo;
+  readonly info: PluginInfoView;
   readonly selectedServer?: string;
   readonly serverHint?: {
     readonly server: string;
@@ -265,7 +269,7 @@ export class PluginInstallTrustConfirmComponent extends ChoicePickerComponent {
   }
 }
 
-function overviewPluginDescription(plugin: PluginSummary): string {
+function overviewPluginDescription(plugin: PluginSummaryView): string {
   const state = plugin.state === 'ok' ? '' : ` · state ${plugin.state}`;
   const skills = `${plugin.skillCount} skill${plugin.skillCount === 1 ? '' : 's'}`;
   const mcp =
@@ -278,7 +282,7 @@ function overviewPluginDescription(plugin: PluginSummary): string {
   return `id ${plugin.id} · ${skills}${mcp}${source}${trust}${state}${diagnostics}`;
 }
 
-function pluginStatus(plugin: PluginSummary): string | undefined {
+function pluginStatus(plugin: PluginSummaryView): string | undefined {
   if (plugin.state !== 'ok') return plugin.state;
   return plugin.enabled ? 'enabled' : 'disabled';
 }
@@ -329,7 +333,7 @@ export type PluginsPanelSelection =
   | { readonly kind: 'open-url'; readonly url: string; readonly label: string };
 
 export interface PluginsPanelOptions {
-  readonly installed: readonly PluginSummary[];
+  readonly installed: readonly PluginSummaryView[];
   readonly installedIds: ReadonlySet<string>;
   readonly initialTab?: PluginsPanelTabId;
   readonly selectedId?: string;
@@ -620,7 +624,7 @@ export class PluginsPanelComponent extends Container implements Focusable {
   }
 
   private installedUpdateStatus(
-    plugin: PluginSummary,
+    plugin: PluginSummaryView,
   ): { entry: PluginMarketplaceEntry; local: string; latest: string } | undefined {
     if (this.market.status !== 'loaded') return undefined;
     const entry = this.market.entries.find((e) => e.id === plugin.id);
@@ -629,7 +633,7 @@ export class PluginsPanelComponent extends Container implements Focusable {
     return status.kind === 'update' ? { entry, local: status.local, latest: status.latest } : undefined;
   }
 
-  private renderInstalledRow(plugin: PluginSummary, index: number, width: number): string[] {
+  private renderInstalledRow(plugin: PluginSummaryView, index: number, width: number): string[] {
     const colors = currentTheme.palette;
     const selected = index === this.selectedIndex;
     const pointer = selected ? SELECT_POINTER : ' ';
@@ -739,7 +743,7 @@ export class PluginsPanelComponent extends Container implements Focusable {
   }
 }
 
-function buildMcpItems(info: PluginInfo): PluginsOverviewItem[] {
+function buildMcpItems(info: PluginInfoView): PluginsOverviewItem[] {
   const items: PluginsOverviewItem[] = info.mcpServers.map((server) => ({
     value: `${MCP_SERVER_PREFIX}${server.name}`,
     kind: 'plugin',
@@ -756,7 +760,7 @@ function buildMcpItems(info: PluginInfo): PluginsOverviewItem[] {
   return items;
 }
 
-function mcpServerDescription(server: PluginMcpServerInfo): string {
+function mcpServerDescription(server: PluginMcpServerView): string {
   const action = server.enabled ? 'Enter/Space disable' : 'Enter/Space enable';
   if (server.transport === 'http' || server.transport === 'sse') {
     return `${action} · ${server.transport.toUpperCase()} · ${server.url ?? server.runtimeName}`;

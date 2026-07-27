@@ -1,8 +1,11 @@
-import type { ApprovalRequest, ApprovalResponse, ToolInputDisplay } from '@moonshot-ai/kimi-code-sdk';
-
 import type { ApprovalPanelResponse } from '#/tui/components/dialogs/approval-panel';
 import { goalStartOptions } from '#/tui/components/dialogs/goal-start-permission-prompt';
 import type { ApprovalPanelChoice, ApprovalPanelData, DisplayBlock } from '#/tui/reverse-rpc/types';
+import type {
+  TUIApprovalDisplay,
+  TUIApprovalRequest,
+  TUIApprovalResponse,
+} from '#/tui/runtime/session-events-port';
 
 const DEFAULT_APPROVAL_CHOICES: ApprovalPanelChoice[] = [
   { label: 'Approve once', response: 'approved' },
@@ -16,7 +19,9 @@ const PLAN_REJECT_CHOICES: ApprovalPanelChoice[] = [
   { label: 'Revise', response: 'rejected', selected_label: 'Revise', requires_feedback: true },
 ];
 
-export function adaptApprovalRequest(event: ApprovalRequest): ApprovalPanelData {
+export function adaptApprovalRequest<GenericDetail>(
+  event: TUIApprovalRequest<GenericDetail>,
+): ApprovalPanelData {
   const resolved = resolveDisplay(event.toolName, event.display, event.action);
   return {
     id: event.toolCallId,
@@ -34,9 +39,9 @@ interface ResolvedDisplay {
   description: string;
 }
 
-function resolveDisplay(
+function resolveDisplay<GenericDetail>(
   toolName: string,
-  display: ToolInputDisplay,
+  display: TUIApprovalDisplay<GenericDetail>,
   action: string,
 ): ResolvedDisplay {
   if (display.kind === 'generic' && isRecord(display.detail)) {
@@ -152,7 +157,7 @@ function inferFileOp(toolName: string): 'read' | 'write' | 'edit' | 'glob' | 'gr
   return 'read';
 }
 
-export function adaptPanelResponse(response: ApprovalPanelResponse): ApprovalResponse {
+export function adaptPanelResponse(response: ApprovalPanelResponse): TUIApprovalResponse {
   if (response.response === 'approved_for_session') {
     return {
       decision: 'approved',
@@ -173,7 +178,10 @@ export function adaptPanelResponse(response: ApprovalPanelResponse): ApprovalRes
   };
 }
 
-function describeApproval(display: ToolInputDisplay, action: string): string {
+function describeApproval<GenericDetail>(
+  display: TUIApprovalDisplay<GenericDetail>,
+  action: string,
+): string {
   switch (display.kind) {
     case 'plan_review':
       return '';
@@ -229,7 +237,9 @@ function detectDanger(command: string): string | undefined {
   return undefined;
 }
 
-function adaptDisplay(display: ToolInputDisplay): DisplayBlock[] {
+function adaptDisplay<GenericDetail>(
+  display: TUIApprovalDisplay<GenericDetail>,
+): DisplayBlock[] {
   switch (display.kind) {
     case 'command': {
       const command = display.command ?? '';
@@ -341,7 +351,10 @@ function adaptDisplay(display: ToolInputDisplay): DisplayBlock[] {
   }
 }
 
-function adaptChoices(toolName: string, display: ToolInputDisplay): ApprovalPanelChoice[] {
+function adaptChoices<GenericDetail>(
+  toolName: string,
+  display: TUIApprovalDisplay<GenericDetail>,
+): ApprovalPanelChoice[] {
   if (toolName === 'ExitPlanMode' || display.kind === 'plan_review') {
     return adaptPlanReviewChoices(display);
   }
@@ -353,7 +366,7 @@ function adaptChoices(toolName: string, display: ToolInputDisplay): ApprovalPane
 }
 
 function adaptGoalStartChoices(
-  display: Extract<ToolInputDisplay, { kind: 'goal_start' }>,
+  display: Extract<TUIApprovalDisplay<never>, { kind: 'goal_start' }>,
 ): ApprovalPanelChoice[] {
   // Reuse the exact options the /goal start menu shows. Each mode option starts
   // the goal under that permission mode (the policy reads selected_label); "Do
@@ -375,7 +388,9 @@ function adaptGoalStartChoices(
   );
 }
 
-function adaptPlanReviewChoices(display: ToolInputDisplay): ApprovalPanelChoice[] {
+function adaptPlanReviewChoices<GenericDetail>(
+  display: TUIApprovalDisplay<GenericDetail>,
+): ApprovalPanelChoice[] {
   const optionChoices =
     display.kind === 'plan_review' && display.options !== undefined && display.options.length >= 2
       ? display.options.map((option) => ({

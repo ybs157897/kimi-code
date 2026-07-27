@@ -1,6 +1,6 @@
-import type { BackgroundTaskInfo } from '@moonshot-ai/kimi-code-sdk';
+import type { AgentTask } from '../runtime/session-control-port';
 
-function isDetachableForegroundTask(t: BackgroundTaskInfo): boolean {
+function isDetachableForegroundTask(t: AgentTask): boolean {
   return (
     t.detached === false &&
     t.status === 'running' &&
@@ -14,11 +14,11 @@ function isDetachableForegroundTask(t: BackgroundTaskInfo): boolean {
  * started first.
  */
 export function pickForegroundTasks(
-  tasks: readonly BackgroundTaskInfo[],
-): BackgroundTaskInfo[] {
+  tasks: readonly AgentTask[],
+): AgentTask[] {
   return tasks
     .filter(isDetachableForegroundTask)
-    .sort((a, b) => b.startedAt - a.startedAt);
+    .toSorted((a, b) => b.startedAt - a.startedAt);
 }
 
 /**
@@ -26,7 +26,7 @@ export function pickForegroundTasks(
  * only need one; `Ctrl+B` uses {@link pickForegroundTasks} to detach them all.
  */
 export function pickForegroundTask(
-  tasks: readonly BackgroundTaskInfo[],
-): BackgroundTaskInfo | undefined {
+  tasks: readonly AgentTask[],
+): AgentTask | undefined {
   return pickForegroundTasks(tasks)[0];
 }

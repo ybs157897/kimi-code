@@ -29,7 +29,6 @@
  * `setOptions`.
  */
 
-import type { ProviderConfig } from '@moonshot-ai/kimi-code-sdk';
 import {
   getOpenPlatformById,
   isOpenPlatformId,
@@ -46,6 +45,7 @@ import {
 
 import { DEFAULT_OAUTH_PROVIDER_NAME } from '#/constant/app';
 import { CURRENT_MARK, SELECT_POINTER } from '#/tui/constant/symbols';
+import type { RuntimeProviderConfigView } from '#/tui/runtime/runtime-model-config-port';
 import { currentTheme } from '#/tui/theme';
 import { printableChar } from '#/tui/utils/printable-key';
 import { pageView, type PageView } from '#/tui/utils/paging';
@@ -57,7 +57,7 @@ interface ConfirmState {
 
 export interface ProviderManagerOptions {
   /** All currently configured providers (`config.providers`). */
-  readonly providers: Record<string, ProviderConfig>;
+  readonly providers: Readonly<Record<string, RuntimeProviderConfigView>>;
   /** Provider id of the currently active model. */
   readonly activeProviderId?: string;
   readonly onAdd: () => void;
@@ -93,13 +93,14 @@ const ADD_ROW_LABEL = '[ Add New Platform ]';
 const PAGE_SIZE = 8;
 const HEADER_HINT = '↑↓ navigate · D delete · Esc cancel';
 
-// Narrows a `ProviderConfig` blob to a `CustomRegistrySource` payload.
+// Narrows the runtime-neutral provider source to a `CustomRegistrySource`.
 // Mirrors `readCustomRegistrySource` in `kimi-tui.ts`. We can't import
 // that helper because it lives in the host and would create a cyclic
 // dependency on the component's container; duplicating ~15 lines is cheap.
-function readCustomRegistrySource(provider: unknown): CustomRegistrySource | undefined {
-  if (typeof provider !== 'object' || provider === null) return undefined;
-  const source = (provider as { readonly source?: unknown }).source;
+function readCustomRegistrySource(
+  provider: RuntimeProviderConfigView,
+): CustomRegistrySource | undefined {
+  const source = provider.source;
   if (typeof source !== 'object' || source === null) return undefined;
   const candidate = source as {
     readonly kind?: unknown;
@@ -160,10 +161,7 @@ function buildRows(opts: ProviderManagerOptions): readonly Row[] {
       continue;
     }
 
-    const baseUrl =
-      typeof cfg === 'object' && cfg !== null && 'baseUrl' in cfg && typeof cfg.baseUrl === 'string'
-        ? cfg.baseUrl
-        : undefined;
+    const baseUrl = cfg.baseUrl;
 
     const customSource = readCustomRegistrySource(cfg);
     if (customSource !== undefined) {

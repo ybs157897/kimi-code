@@ -10,6 +10,10 @@ import type {
   SessionListQuery,
   SessionSummary,
 } from '@moonshot-ai/agent-core-v2/app/sessionIndex/sessionIndex';
+import type {
+  ExportSessionPayload,
+  ExportSessionResult,
+} from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExport';
 import type { SessionMeta } from '@moonshot-ai/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { Page } from '@moonshot-ai/agent-core-v2/persistence/interface/queryStore';
 import type {
@@ -34,6 +38,7 @@ import type {
 import type { ModelRecord } from '@moonshot-ai/agent-core-v2/kosong/model/model';
 import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
 import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
+import type { BindAgentInput } from '@moonshot-ai/agent-core-v2/agent/profile/profile';
 
 import type { AnonymousProviderInput, GenerateEvent, GenerateInput, GenerateParams, ProviderInput } from './kosong-types.js';
 import type {
@@ -75,6 +80,21 @@ export type OAuthFlowStart = Awaited<ReturnType<IOAuthService['startLogin']>>;
 export type OAuthFlowSnapshot = NonNullable<Awaited<ReturnType<IOAuthService['getFlow']>>>;
 export type OAuthLoginCancelResponse = Awaited<ReturnType<IOAuthService['cancelLogin']>>;
 export type OAuthLogoutResponse = Awaited<ReturnType<IOAuthService['logout']>>;
+export type AuthManagedUsageResult = Awaited<ReturnType<IOAuthService['getManagedUsage']>>;
+export type SubmitFeedbackBody = Parameters<IOAuthService['submitFeedback']>[0];
+export type SubmitFeedbackResult = Awaited<ReturnType<IOAuthService['submitFeedback']>>;
+export type CreateFeedbackUploadUrlBody = Parameters<
+  IOAuthService['createFeedbackUploadUrl']
+>[0];
+export type CreateFeedbackUploadUrlResult = Awaited<
+  ReturnType<IOAuthService['createFeedbackUploadUrl']>
+>;
+export type CompleteFeedbackUploadBody = Parameters<
+  IOAuthService['completeFeedbackUpload']
+>[0];
+export type CompleteFeedbackUploadResult = Awaited<
+  ReturnType<IOAuthService['completeFeedbackUpload']>
+>;
 
 export type ModelCatalogItem = Awaited<ReturnType<IModelCatalog['listModels']>>[number];
 export type ProviderCatalogItem = Awaited<
@@ -100,14 +120,19 @@ export interface GlobalSessionsFacade {
   countActive(workspaceIds: readonly string[]): Promise<number>;
   /**
    * Create a session rooted at `workDir` (the workspace is registered
-   * implicitly), optionally titled. Returns the persisted metadata. No agent
-   * is created — `session(id).agent('main')` materializes it on first use.
+   * implicitly), optionally titled. A main-agent binding is applied inside
+   * lifecycle creation, before tool and extension activation.
    */
   create(input: {
     workDir: string;
     additionalDirs?: readonly string[];
+    mainAgentBinding?: BindAgentInput;
     title?: string;
   }): Promise<SessionMeta>;
+}
+
+export interface GlobalSessionExportFacade {
+  export(input: ExportSessionPayload): Promise<ExportSessionResult>;
 }
 
 export interface GlobalWorkspacesFacade {
@@ -157,10 +182,24 @@ export interface GlobalKosongFacade {
 export interface GlobalAuthFacade {
   status(provider?: string): Promise<AuthStatus>;
   summarize(): Promise<readonly AuthStatus[]>;
+  ensureReady(model?: string): Promise<void>;
   startLogin(provider?: string): Promise<OAuthFlowStart>;
   flow(provider?: string): Promise<OAuthFlowSnapshot | undefined>;
   cancelLogin(provider?: string): Promise<OAuthLoginCancelResponse>;
   logout(provider?: string): Promise<OAuthLogoutResponse>;
+  getManagedUsage(provider?: string): Promise<AuthManagedUsageResult>;
+  submitFeedback(
+    body: SubmitFeedbackBody,
+    provider?: string,
+  ): Promise<SubmitFeedbackResult>;
+  createFeedbackUploadUrl(
+    body: CreateFeedbackUploadUrlBody,
+    provider?: string,
+  ): Promise<CreateFeedbackUploadUrlResult>;
+  completeFeedbackUpload(
+    body: CompleteFeedbackUploadBody,
+    provider?: string,
+  ): Promise<CompleteFeedbackUploadResult>;
   /**
    * @deprecated Use `kosong.refreshProviders({ scope: 'oauth' })` — the
    * kosong facade owns provider-model refresh; this alias remains for one
@@ -212,6 +251,7 @@ export interface KlientEnvInfo {
 
 export interface GlobalFacade {
   readonly sessions: GlobalSessionsFacade;
+  readonly sessionExport: GlobalSessionExportFacade;
   readonly workspaces: GlobalWorkspacesFacade;
   readonly config: GlobalConfigFacade;
   readonly kosong: GlobalKosongFacade;
@@ -268,9 +308,9 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       get: (id) => call('sessionIndex', 'get', [id]) as Promise<SessionSummary | undefined>,
       countActive: (workspaceIds) =>
         call('sessionIndex', 'countActive', [workspaceIds]) as Promise<number>,
-      create: async ({ workDir, additionalDirs, title }) => {
+      create: async ({ workDir, additionalDirs, mainAgentBinding, title }) => {
         const handle = (await scoped({}, 'sessionLifecycleService', 'create', [
-          { workDir, additionalDirs },
+          { workDir, additionalDirs, mainAgentBinding },
         ])) as { id: string };
         const scope = { sessionId: handle.id };
         if (title !== undefined) {
@@ -278,6 +318,11 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         }
         return scoped(scope, 'sessionMetadata', 'read', []) as Promise<SessionMeta>;
       },
+    },
+
+    sessionExport: {
+      export: (input) =>
+        call('sessionExportService', 'export', [input]) as Promise<ExportSessionResult>,
     },
 
     workspaces: {
@@ -369,6 +414,8 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
     auth: {
       status: (provider) => call('oauthService', 'status', [provider]) as Promise<AuthStatus>,
       summarize: () => call('authSummaryService', 'summarize', []) as Promise<readonly AuthStatus[]>,
+      ensureReady: (model) =>
+        call('authSummaryService', 'ensureReady', [model]) as Promise<void>,
       startLogin: (provider) =>
         call('oauthService', 'startLogin', [provider]) as Promise<OAuthFlowStart>,
       flow: (provider) =>
@@ -377,6 +424,20 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
         call('oauthService', 'cancelLogin', [provider]) as Promise<OAuthLoginCancelResponse>,
       logout: (provider) =>
         call('oauthService', 'logout', [provider]) as Promise<OAuthLogoutResponse>,
+      getManagedUsage: (provider) =>
+        call('oauthService', 'getManagedUsage', [provider]) as Promise<AuthManagedUsageResult>,
+      submitFeedback: (body, provider) =>
+        call('oauthService', 'submitFeedback', [body, provider]) as Promise<SubmitFeedbackResult>,
+      createFeedbackUploadUrl: (body, provider) =>
+        call('oauthService', 'createFeedbackUploadUrl', [
+          body,
+          provider,
+        ]) as Promise<CreateFeedbackUploadUrlResult>,
+      completeFeedbackUpload: (body, provider) =>
+        call('oauthService', 'completeFeedbackUpload', [
+          body,
+          provider,
+        ]) as Promise<CompleteFeedbackUploadResult>,
       refreshProviderModels: () =>
         call('oauthService', 'refreshOAuthProviderModels', []) as Promise<RefreshProviderModelsResponse>,
     },

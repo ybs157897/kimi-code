@@ -892,7 +892,7 @@ export type WireEvent =
   | WireEventUnknown;
 
 // ---------------------------------------------------------------------------
-// Expert teams (native /api/v2 surface; v2 backends only)
+// Expert teams
 // ---------------------------------------------------------------------------
 
 export type WireLocalizedText = string | Record<string, string>;

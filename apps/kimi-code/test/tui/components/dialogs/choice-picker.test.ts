@@ -129,8 +129,6 @@ describe('ChoicePickerComponent', () => {
           displayName: 'Software Company',
           leadAgentName: 'software-team-lead',
           memberAgentNames: ['software-engineer'],
-          members: [],
-          tags: [],
           quickPrompts: [],
           description: 'Software delivery team',
         },

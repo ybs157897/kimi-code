@@ -6,6 +6,8 @@ import { buildRestUrl, buildWsUrl } from '../config';
 import { traceKeyEvent } from '../../debug/trace';
 import type {
   AppConfig,
+  AppExtensionCommand,
+  AppExtensionReloadResult,
   AppExpertTeam,
   AppExpertTeamStatus,
   AppGoal,
@@ -195,6 +197,17 @@ interface WireSkillDescriptor {
   disable_model_invocation?: boolean;
 }
 
+interface WireExtensionCommand {
+  extension_id: string;
+  name: string;
+  description: string;
+}
+
+interface WireExtensionReloadResult {
+  active: string[];
+  errors: Array<{ path: string; error: string }>;
+}
+
 interface WireArchiveResult {
   archived: true;
 }
@@ -304,8 +317,6 @@ function isCompactionReason(reason: string): boolean {
 
 export class DaemonKimiWebApi implements KimiWebApi {
   private readonly http: DaemonHttpClient;
-  /** Native v2-engine surfaces (expert teams) live under /api/v2. */
-  private readonly httpV2: DaemonHttpClient;
   private readonly config: KimiApiConfig;
 
   constructor(config: KimiApiConfig) {
@@ -317,7 +328,6 @@ export class DaemonKimiWebApi implements KimiWebApi {
       clientUiMode: config.clientUiMode,
     };
     this.http = new DaemonHttpClient(config.serverHttpUrl, identity);
-    this.httpV2 = new DaemonHttpClient(config.serverHttpUrl, identity, '/api/v2');
   }
 
   // -------------------------------------------------------------------------
@@ -913,25 +923,63 @@ export class DaemonKimiWebApi implements KimiWebApi {
   }
 
   // -------------------------------------------------------------------------
-  // Expert teams (native /api/v2 surface; v2 backends only)
+  // Code extensions — callback-free command metadata and control operations
+  // -------------------------------------------------------------------------
+
+  async listExtensionCommands(sessionId: string): Promise<AppExtensionCommand[]> {
+    const data = await this.http.get<{ commands: WireExtensionCommand[] }>(
+      `/sessions/${encodeURIComponent(sessionId)}/extensions/commands`,
+    );
+    return data.commands.map((command) => ({
+      extensionId: command.extension_id,
+      name: command.name,
+      description: command.description,
+    }));
+  }
+
+  async reloadExtensions(sessionId: string): Promise<AppExtensionReloadResult> {
+    const data = await this.http.post<WireExtensionReloadResult>(
+      `/sessions/${encodeURIComponent(sessionId)}/extensions/reload`,
+    );
+    return { active: data.active, errors: data.errors };
+  }
+
+  async activateExtensionCommand(
+    sessionId: string,
+    extensionId: string,
+    name: string,
+    args?: string,
+  ): Promise<{ activated: boolean }> {
+    return this.http.post<{ activated: boolean }>(
+      `/sessions/${encodeURIComponent(sessionId)}/extensions/commands/activate`,
+      {
+        extension_id: extensionId,
+        name,
+        args,
+      },
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Expert teams
   // -------------------------------------------------------------------------
 
   async listExpertTeams(sessionId: string): Promise<AppExpertTeam[]> {
-    const data = await this.httpV2.get<{ experts: WireExpertTeamDefinition[] }>(
+    const data = await this.http.get<{ experts: WireExpertTeamDefinition[] }>(
       `/sessions/${encodeURIComponent(sessionId)}/expert-teams`,
     );
     return (data.experts ?? []).map(toAppExpertTeam);
   }
 
   async getExpertTeam(sessionId: string): Promise<AppExpertTeamStatus | null> {
-    const data = await this.httpV2.get<{ expert_team: WireExpertTeamSnapshot | null }>(
+    const data = await this.http.get<{ expert_team: WireExpertTeamSnapshot | null }>(
       `/sessions/${encodeURIComponent(sessionId)}/expert-team`,
     );
     return data.expert_team === null ? null : toAppExpertTeamStatus(data.expert_team);
   }
 
   async activateExpertTeam(sessionId: string, pluginId: string): Promise<AppExpertTeamStatus> {
-    const data = await this.httpV2.post<{ expert_team: WireExpertTeamSnapshot }>(
+    const data = await this.http.post<{ expert_team: WireExpertTeamSnapshot }>(
       `/sessions/${encodeURIComponent(sessionId)}/expert-team/activate`,
       { plugin_id: pluginId },
     );
@@ -939,7 +987,7 @@ export class DaemonKimiWebApi implements KimiWebApi {
   }
 
   async deactivateExpertTeam(sessionId: string): Promise<void> {
-    await this.httpV2.post<{ deactivated: true }>(
+    await this.http.post<{ deactivated: true }>(
       `/sessions/${encodeURIComponent(sessionId)}/expert-team/deactivate`,
     );
   }

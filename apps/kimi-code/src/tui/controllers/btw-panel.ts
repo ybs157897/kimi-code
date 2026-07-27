@@ -1,13 +1,10 @@
 import { Spacer } from '@moonshot-ai/pi-tui';
-import type {
-  Event,
-  KimiHarness,
-  Session,
-  TurnEndedEvent,
-} from '@moonshot-ai/kimi-code-sdk';
 
 import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/kimi-tui';
 import { BtwPanelComponent } from '../components/panes/btw-panel';
+import type { TUIAgentEvent } from '../runtime/agent-events-port';
+import type { SessionControlPort } from '../runtime/session-control-port';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
 import { formatErrorMessage } from '../utils/event-payload';
 import { formatHookResultPlain } from '../utils/hook-result-format';
 import { createMarkdownTheme } from '../theme/pi-tui-theme';
@@ -17,9 +14,9 @@ const BTW_BUSY_NOTICE = 'Wait for /btw to finish before sending another question
 
 export interface BtwPanelHost {
   state: TUIState;
-  session: Session | undefined;
-  readonly harness: KimiHarness;
+  readonly sessionControl: SessionControlPort;
 
+  requireSessionRuntime(): TUISessionRuntime;
   showError(msg: string): void;
 }
 
@@ -99,7 +96,7 @@ export class BtwPanelController {
     return true;
   }
 
-  routeEvent(event: Event): boolean {
+  routeEvent(event: TUIAgentEvent): boolean {
     const panel = this.panelsByAgentId.get(event.agentId);
     if (panel === undefined) return false;
 
@@ -166,22 +163,31 @@ export class BtwPanelController {
   }
 
   private promptAgent(agentId: string, prompt: string, panel: BtwPanelComponent): void {
-    const session = this.host.session;
-    if (session === undefined) {
+    let sessionId: string;
+    try {
+      sessionId = this.host.requireSessionRuntime().sessionId;
+    } catch {
       panel.markFailed(NO_ACTIVE_SESSION_MESSAGE);
       this.host.state.ui.requestRender();
       return;
     }
-    void this.withInteractiveAgent(agentId, () => session.prompt(prompt)).catch((error: unknown) => {
-      panel.markFailed(`Failed to send /btw prompt: ${formatErrorMessage(error)}`);
-      this.host.state.ui.requestRender();
-    });
+    void this.host.sessionControl
+      .agent(sessionId, agentId)
+      .prompt(prompt)
+      .catch((error: unknown) => {
+        panel.markFailed(`Failed to send /btw prompt: ${formatErrorMessage(error)}`);
+        this.host.state.ui.requestRender();
+      });
   }
 
   private async cancelAgent(agentId: string): Promise<void> {
-    const session = this.host.session;
-    if (session === undefined) return;
-    await this.withInteractiveAgent(agentId, () => session.cancel()).catch((error: unknown) => {
+    let sessionId: string;
+    try {
+      sessionId = this.host.requireSessionRuntime().sessionId;
+    } catch {
+      return;
+    }
+    await this.host.sessionControl.agent(sessionId, agentId).cancel().catch((error: unknown) => {
       this.host.showError(`Failed to cancel /btw: ${formatErrorMessage(error)}`);
     });
   }
@@ -189,13 +195,11 @@ export class BtwPanelController {
   private shouldCancelOnUnmount(panel: BtwPanelComponent): boolean {
     return panel.isRunning() || panel.isEmpty();
   }
-
-  private withInteractiveAgent<T>(agentId: string, fn: () => Promise<T>): Promise<T> {
-    return this.host.harness.withInteractiveAgent(agentId, fn);
-  }
 }
 
-function formatBtwTurnEnd(event: TurnEndedEvent): string {
+function formatBtwTurnEnd(
+  event: Extract<TUIAgentEvent, { readonly type: 'turn.ended' }>,
+): string {
   if (event.reason === 'cancelled') {
     return 'Interrupted by user';
   }

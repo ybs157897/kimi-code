@@ -14,6 +14,7 @@ import type { Hooks } from '#/hooks';
 
 import type { DeepReadonly, ModelDef } from './model';
 import type { Op } from './op';
+import type { WireRecord } from './record';
 
 export type WireHooks = {
   readonly onDidRestore: Record<string, never>;
@@ -28,6 +29,7 @@ export interface IWireService {
   seal(): Promise<void>;
   restore(): Promise<void>;
   flush(): Promise<void>;
+  readRecords(): Promise<readonly WireRecord[]>;
 
   getModel<S>(model: ModelDef<S>): DeepReadonly<S>;
 }

@@ -23,14 +23,32 @@ import { IBootstrapService } from '@moonshot-ai/agent-core-v2/app/bootstrap/boot
 import { IEventService } from '@moonshot-ai/agent-core-v2/app/event/event';
 import { IHostFolderBrowser } from '@moonshot-ai/agent-core-v2/app/hostFolderBrowser/hostFolderBrowser';
 import { ISessionLifecycleService } from '@moonshot-ai/agent-core-v2/app/sessionLifecycle/sessionLifecycle';
+import { ISessionExportService } from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExport';
 import { ISessionMetadata } from '@moonshot-ai/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import { ISessionInteractionService } from '@moonshot-ai/agent-core-v2/session/interaction/interaction';
+import { ISessionInitService } from '@moonshot-ai/agent-core-v2/session/sessionInit/sessionInit';
+import { ISessionBtwService } from '@moonshot-ai/agent-core-v2/session/btw/btw';
 import { ISessionApprovalService } from '@moonshot-ai/agent-core-v2/session/approval/approval';
+import { ISessionCronService } from '@moonshot-ai/agent-core-v2/session/cron/sessionCronService';
 import { ISessionQuestionService } from '@moonshot-ai/agent-core-v2/session/question/question';
+import { ISessionExpertTeamService } from '@moonshot-ai/agent-core-v2/session/expertTeam/expertTeam';
+import { ISessionExtensionService } from '@moonshot-ai/agent-core-v2/session/extension/sessionExtension';
+import { ISessionGoalQueueService } from '@moonshot-ai/agent-core-v2/session/goalQueue/sessionGoalQueue';
+import { ISessionSkillCatalog } from '@moonshot-ai/agent-core-v2/session/sessionSkillCatalog/skillCatalog';
+import { ISessionSecondaryModelWarningService } from '@moonshot-ai/agent-core-v2/session/subagent/secondaryModelWarning';
+import { ISessionWorkspaceCommandService } from '@moonshot-ai/agent-core-v2/session/workspaceCommand/workspaceCommand';
+import { ISessionWorkspaceContext } from '@moonshot-ai/agent-core-v2/session/workspaceContext/workspaceContext';
 import { IAgentRPCService } from '@moonshot-ai/agent-core-v2/agent/rpc/rpc';
+import { IAgentExtensionService } from '@moonshot-ai/agent-core-v2/agent/extension/agentExtension';
+import { IAgentGoalService } from '@moonshot-ai/agent-core-v2/agent/goal/goal';
+import { IAgentPermissionModeService } from '@moonshot-ai/agent-core-v2/agent/permissionMode/permissionMode';
+import { IAgentSwarmService } from '@moonshot-ai/agent-core-v2/agent/swarm/swarm';
 import { IAgentActivityView } from '@moonshot-ai/agent-core-v2/agent/activityView/activityView';
+import { IAgentFullCompactionService } from '@moonshot-ai/agent-core-v2/agent/fullCompaction/fullCompaction';
+import { IAgentMcpService } from '@moonshot-ai/agent-core-v2/agent/mcp/mcp';
 import { IAgentPlanService } from '@moonshot-ai/agent-core-v2/agent/plan/plan';
 import { IAgentProfileService } from '@moonshot-ai/agent-core-v2/agent/profile/profile';
+import { IAgentReplayView } from '@moonshot-ai/agent-core-v2/agent/replayView/agentReplayView';
 import { IAgentShellCommandService } from '@moonshot-ai/agent-core-v2/agent/shellCommand/shellCommand';
 import { IAgentTaskService } from '@moonshot-ai/agent-core-v2/agent/task/task';
 import { IAgentUsageService } from '@moonshot-ai/agent-core-v2/agent/usage/usage';
@@ -50,15 +68,33 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   pluginService: IPluginService,
   hostFolderBrowser: IHostFolderBrowser,
   bootstrapService: IBootstrapService,
+  sessionExportService: ISessionExportService,
   sessionLifecycleService: ISessionLifecycleService,
   sessionMetadata: ISessionMetadata,
   sessionInteractionService: ISessionInteractionService,
+  sessionInitService: ISessionInitService,
+  sessionBtwService: ISessionBtwService,
   sessionApprovalService: ISessionApprovalService,
+  sessionCronService: ISessionCronService,
   sessionQuestionService: ISessionQuestionService,
+  sessionExpertTeamService: ISessionExpertTeamService,
+  sessionExtensionService: ISessionExtensionService,
+  sessionGoalQueueService: ISessionGoalQueueService,
+  sessionSkillCatalog: ISessionSkillCatalog,
+  sessionSecondaryModelWarningService: ISessionSecondaryModelWarningService,
+  sessionWorkspaceContext: ISessionWorkspaceContext,
+  sessionWorkspaceCommandService: ISessionWorkspaceCommandService,
   agentRPCService: IAgentRPCService,
+  agentFullCompactionService: IAgentFullCompactionService,
+  agentMcpService: IAgentMcpService,
+  agentPermissionModeService: IAgentPermissionModeService,
+  agentExtensionService: IAgentExtensionService,
+  agentGoalService: IAgentGoalService,
+  agentSwarmService: IAgentSwarmService,
   agentActivityView: IAgentActivityView,
   agentShellCommandService: IAgentShellCommandService,
   agentProfileService: IAgentProfileService,
+  agentReplayView: IAgentReplayView,
   agentUsageService: IAgentUsageService,
   agentPlanService: IAgentPlanService,
   agentTaskService: IAgentTaskService,

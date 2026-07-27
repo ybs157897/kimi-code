@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { buildPluginSlashCommands, pluginCommandName } from '#/tui/commands/plugin-commands';
+import {
+  buildPluginSlashCommands,
+  type PluginCommandDefinition,
+  pluginCommandName,
+} from '#/tui/commands/plugin-commands';
 
 describe('pluginCommandName', () => {
   it('namespaces a command with its plugin id', () => {
@@ -10,7 +14,7 @@ describe('pluginCommandName', () => {
 
 describe('buildPluginSlashCommands', () => {
   it('namespaces commands and maps them to their bodies', () => {
-    const { commands, commandMap } = buildPluginSlashCommands([
+    const definitions = [
       {
         pluginId: 'my-plugin',
         name: 'deploy',
@@ -18,7 +22,10 @@ describe('buildPluginSlashCommands', () => {
         body: 'Deploy $ARGUMENTS',
         path: '/p/deploy.md',
       },
-    ]);
+    ] satisfies readonly PluginCommandDefinition[];
+
+    const { commands, commandMap } = buildPluginSlashCommands(definitions);
+
     expect(commands).toEqual([{ name: 'my-plugin:deploy', aliases: [], description: 'Deploy' }]);
     expect(commandMap.get('my-plugin:deploy')).toBe('Deploy $ARGUMENTS');
   });

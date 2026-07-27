@@ -1,18 +1,30 @@
-import { buildSkillSlashCommands, isUserActivatableSkill } from '#/tui/commands/index';
-import type { SkillSummary } from '@moonshot-ai/kimi-code-sdk';
+/**
+ * Scenario: runtime-neutral skill summaries become deterministic slash commands.
+ * Responsibilities: activatable filtering, namespacing, ordering, and lookup.
+ * Wiring: pure command builders only; there are no runtime collaborators.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/commands/skills.test.ts
+ */
+
+import {
+  buildSkillSlashCommands,
+  isUserActivatableSkill,
+} from '#/tui/commands/index';
+import type { SkillSummaryView } from '#/tui/runtime/session-skills-port';
 import { describe, expect, it } from 'vitest';
 
 function skill(
   name: string,
-  type?: SkillSummary['type'],
-  extra: Partial<SkillSummary> = {},
-): SkillSummary {
+  type?: SkillSummaryView['type'],
+  extra: Partial<SkillSummaryView> = {},
+): SkillSummaryView {
   return {
     name,
     type,
     description: `${name} skill`,
+    path: `/skills/${name}/SKILL.md`,
+    source: 'user',
     ...extra,
-  } as SkillSummary;
+  };
 }
 
 describe('skill slash commands', () => {

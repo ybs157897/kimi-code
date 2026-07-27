@@ -16,7 +16,11 @@ import { defineState } from '#/_base/state/stateRegistry';
 import { IBuiltinSkillSource } from '#/app/skillCatalog/builtinSkillSource';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import type { ISkillSource, SkillContribution } from '#/app/skillCatalog/skillSource';
-import type { SkillCatalog } from '#/app/skillCatalog/types';
+import {
+  summarizeSkill,
+  type SkillCatalog,
+  type SkillSummary,
+} from '#/app/skillCatalog/types';
 import { IUserFileSkillSource } from '#/app/skillCatalog/userFileSkillSource';
 import { ISessionStateService } from '#/session/state/sessionState';
 
@@ -82,6 +86,11 @@ export class SessionSkillCatalogService
 
   get catalog(): SkillCatalog {
     return this.merged;
+  }
+
+  async listSkills(): Promise<readonly SkillSummary[]> {
+    await this.ready;
+    return this.merged.listSkills().map(summarizeSkill);
   }
 
   async load(): Promise<void> {

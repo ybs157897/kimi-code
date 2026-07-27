@@ -125,7 +125,7 @@ describe('server-v2 boot', () => {
     expect(server.core.accessor.get(IBootstrapService).clientVersion).toBe('9.9.9-host');
   });
 
-  it('seeds a default product User-Agent that opts.seeds can override', async () => {
+  it('lets host request headers override the default User-Agent while keeping seeds last', async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-ua-'));
     server = await startServer({
       host: '127.0.0.1',
@@ -136,8 +136,8 @@ describe('server-v2 boot', () => {
     const defaults = server.core.accessor.get(IHostRequestHeaders);
     expect(defaults.headers['User-Agent']).toBe(`kimi-code-cli/${getServerVersion()}`);
 
-    // Restart on the same homeDir with a host-provided seed; it must win over
-    // the default (the CLI passes full Kimi identity headers this way).
+    // The embedding-host option overrides the default and carries additional
+    // product identity headers without exposing scope seeds.
     await server.close();
     server = undefined;
     server = await startServer({
@@ -145,6 +145,25 @@ describe('server-v2 boot', () => {
       port: 0,
       homeDir: home,
       logLevel: 'silent',
+      requestHeaders: {
+        'User-Agent': 'custom-host/9.9',
+        'X-Example-Host': 'web',
+      },
+    });
+    const hostHeaders = server.core.accessor.get(IHostRequestHeaders);
+    expect(hostHeaders.headers['User-Agent']).toBe('custom-host/9.9');
+    expect(hostHeaders.headers['X-Example-Host']).toBe('web');
+
+    // Low-level seeds remain available to tests and composition roots, and
+    // retain final precedence over the host option.
+    await server.close();
+    server = undefined;
+    server = await startServer({
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+      requestHeaders: { 'User-Agent': 'host-option/1.0' },
       seeds: hostRequestHeadersSeed({ 'User-Agent': 'custom-host/9.9' }),
     });
     const overridden = server.core.accessor.get(IHostRequestHeaders);

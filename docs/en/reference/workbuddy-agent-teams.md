@@ -265,7 +265,7 @@ The desktop UI drives the status bar (`●` working / `✓` done, …) and `@mem
 - **Dynamic teams**: Product APIs and `/experts` activate a fixed plugin-declared topology. There are no model-visible `TeamCreate` / `TeamDelete` tools, auto-team mode, dynamic naming, or multiple instances of one role.
 - **Shared tasks and approval**: WorkBuddy-style shared team tasks and `plan_approval_response` are not implemented.
 - **Interactive completion**: WorkBuddy-style `@member` completion is not implemented. Kimi Code uses its own `expert_team.updated` contract instead of copying the `team_created` / `member_status_change` event names.
-- **Engine scope**: This adapter is on the legacy `agent-core` path used by the interactive Kimi Code CLI. The `agent-core-v2` / kap-server entry points need to converge on the same contract separately.
+- **Engine scope**: The interactive Kimi Code CLI routes this product surface through runtime-neutral adapters for both legacy `agent-core` and experimental `agent-core-v2`; kap-server exposes the same fixed, plugin-declared expert-team model. This does not remove the WorkBuddy gaps listed above.
 
 `AgentSwarm` remains closer to one parallel phase, not the full Teams product.
 

@@ -1,5 +1,5 @@
 /**
- * Format a `BackgroundTaskInfo` snapshot into the transcript card data
+ * Format an `AgentTask` snapshot into the transcript card data
  * consumed by `BackgroundAgentStatusComponent`.
  *
  * Background tasks have several statuses (running / completed / failed /
@@ -9,8 +9,7 @@
  * — into the dim detail line so the user still sees it.
  */
 
-import type { BackgroundTaskInfo, BackgroundTaskStatus } from '@moonshot-ai/kimi-code-sdk';
-
+import type { AgentTask, AgentTaskStatus } from '#/tui/runtime/session-control-port';
 import type { BackgroundAgentStatusData, BackgroundAgentStatusPhase } from '@/tui/types';
 
 const MAX_DETAIL_LENGTH = 240;
@@ -25,7 +24,7 @@ function truncate(value: string | undefined): string | undefined {
 
 export type BackgroundTaskTranscriptPhase = 'started' | 'updated' | 'terminal';
 
-function phaseFromStatus(status: BackgroundTaskStatus): BackgroundAgentStatusPhase {
+function phaseFromStatus(status: AgentTaskStatus): BackgroundAgentStatusPhase {
   switch (status) {
     case 'running':
       return 'started';
@@ -39,13 +38,13 @@ function phaseFromStatus(status: BackgroundTaskStatus): BackgroundAgentStatusPha
   }
 }
 
-function subjectFor(info: BackgroundTaskInfo): string {
+function subjectFor(info: AgentTask): string {
   if (info.kind === 'agent') return 'agent task';
   if (info.kind === 'question') return 'question task';
   return 'bash task';
 }
 
-function headlineFor(info: BackgroundTaskInfo): string {
+function headlineFor(info: AgentTask): string {
   const subject = subjectFor(info);
   switch (info.status) {
     case 'running':
@@ -63,7 +62,7 @@ function headlineFor(info: BackgroundTaskInfo): string {
   }
 }
 
-function detailFor(info: BackgroundTaskInfo): string | undefined {
+function detailFor(info: AgentTask): string | undefined {
   const parts: string[] = [];
   const description = truncate(info.description);
   if (description !== undefined) parts.push(description);
@@ -96,7 +95,7 @@ function detailFor(info: BackgroundTaskInfo): string | undefined {
  * status nuance (exit code, kill reason, etc.).
  */
 export function formatBackgroundTaskTranscript(
-  info: BackgroundTaskInfo,
+  info: AgentTask,
 ): BackgroundAgentStatusData {
   return {
     phase: phaseFromStatus(info.status),

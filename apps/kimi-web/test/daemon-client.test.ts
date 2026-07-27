@@ -1,6 +1,6 @@
 // apps/kimi-web/test/daemon-client.test.ts
 // DaemonKimiWebApi public REST adapter: session export binary/error contracts,
-// getSessionGoal wire → app mapping, and raw stream-coordinate delivery.
+// expert-team/extension route wiring, getSessionGoal mapping, and raw stream delivery.
 // Wiring: real client/projector; fetch or WebSocket is stubbed at the network boundary.
 // Run: pnpm --filter @moonshot-ai/kimi-web exec vitest run test/daemon-client.test.ts
 
@@ -173,6 +173,131 @@ describe('DaemonKimiWebApi.exportSession', () => {
     expect(trace).not.toContain(secret);
     expect(trace).toContain('web_log_bytes');
     expect(trace).toContain('web_log_entries');
+  });
+});
+
+describe('DaemonKimiWebApi expert teams', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('uses the stable /api/v1 product surface', async () => {
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(envelope({ experts: [] }))
+      .mockResolvedValueOnce(envelope({ expert_team: null }))
+      .mockResolvedValueOnce(
+        envelope({
+          expert_team: {
+            binding: {
+              plugin_id: 'delivery-experts',
+              display_name: 'Delivery Experts',
+              lead_agent_name: 'delivery-lead',
+              lead_profile_name: 'expert:delivery-experts:delivery-lead',
+              member_agent_names: ['architect'],
+              activated_at: '2026-07-27T00:00:00.000Z',
+            },
+          },
+        }),
+      )
+      .mockResolvedValueOnce(envelope({ deactivated: true }));
+
+    const api = createApi();
+    await api.listExpertTeams('sess/1');
+    await api.getExpertTeam('sess/1');
+    await api.activateExpertTeam('sess/1', 'delivery-experts');
+    await api.deactivateExpertTeam('sess/1');
+
+    expect(vi.mocked(fetch).mock.calls.map(([url]) => url)).toEqual([
+      'http://daemon.test/api/v1/sessions/sess%2F1/expert-teams',
+      'http://daemon.test/api/v1/sessions/sess%2F1/expert-team',
+      'http://daemon.test/api/v1/sessions/sess%2F1/expert-team/activate',
+      'http://daemon.test/api/v1/sessions/sess%2F1/expert-team/deactivate',
+    ]);
+  });
+});
+
+describe('DaemonKimiWebApi extension commands', () => {
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it('maps the callback-free command catalog from the session endpoint', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      envelope({
+        commands: [
+          {
+            extension_id: 'release-tools',
+            name: 'prepare',
+            description: 'Prepare a release',
+          },
+        ],
+      }),
+    );
+
+    const commands = await createApi().listExtensionCommands('sess/1');
+
+    expect(commands).toEqual([
+      {
+        extensionId: 'release-tools',
+        name: 'prepare',
+        description: 'Prepare a release',
+      },
+    ]);
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe(
+      'http://daemon.test/api/v1/sessions/sess%2F1/extensions/commands',
+    );
+  });
+
+  it('posts reload to the addressed session and returns diagnostics', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      envelope({
+        active: ['release-tools'],
+        errors: [{ path: '/workspace/broken.ts', error: 'invalid module' }],
+      }),
+    );
+
+    const result = await createApi().reloadExtensions('sess/1');
+
+    expect(result).toEqual({
+      active: ['release-tools'],
+      errors: [{ path: '/workspace/broken.ts', error: 'invalid module' }],
+    });
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe(
+      'http://daemon.test/api/v1/sessions/sess%2F1/extensions/reload',
+    );
+    expect(vi.mocked(fetch).mock.calls[0]?.[1]).toMatchObject({ method: 'POST' });
+  });
+
+  it('serializes extension command identity and optional arguments on activation', async () => {
+    vi.mocked(fetch).mockResolvedValue(envelope({ activated: true }));
+
+    const result = await createApi().activateExtensionCommand(
+      'sess/1',
+      'release-tools',
+      'prepare',
+      'version 2',
+    );
+
+    expect(result).toEqual({ activated: true });
+    expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe(
+      'http://daemon.test/api/v1/sessions/sess%2F1/extensions/commands/activate',
+    );
+    const body = vi.mocked(fetch).mock.calls[0]?.[1]?.body;
+    expect(typeof body).toBe('string');
+    if (typeof body !== 'string') throw new TypeError('expected a JSON request body');
+    expect(JSON.parse(body)).toEqual({
+      extension_id: 'release-tools',
+      name: 'prepare',
+      args: 'version 2',
+    });
   });
 });
 

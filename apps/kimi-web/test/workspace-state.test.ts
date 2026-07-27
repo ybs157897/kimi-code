@@ -119,6 +119,7 @@ function createDeps(): UseWorkspaceStateDeps {
     taskPoller: {},
     sideChat: {},
     modelProvider: { resolveThinkingForPrompt: async () => undefined },
+    extensionState: { loadCommandsForSession: vi.fn() },
     pushOperationFailure: vi.fn(),
     activity: computed(() => 'running'),
     sessionsKnownEmpty: new Set(),

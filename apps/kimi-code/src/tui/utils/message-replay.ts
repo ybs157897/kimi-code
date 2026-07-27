@@ -1,21 +1,24 @@
 import type {
-  AgentReplayRecord,
-  BackgroundTaskInfo,
-  ContentPart,
-  ContextMessage,
-  PromptOrigin,
-  ResumedAgentState,
-  ToolCall,
-} from '@moonshot-ai/kimi-code-sdk';
-import { limitAgentReplayByTurns } from '@moonshot-ai/kimi-code-sdk';
-
-import type {
   AppState,
   BackgroundAgentMetadata,
   SkillActivationTrigger,
   ToolCallBlockData,
   TranscriptEntry,
 } from '#/tui/types';
+import type {
+  TUIAgentReplay,
+  TUIAgentReplayRecord,
+  TUIReplayContextMessage,
+  TUIReplayPromptOrigin,
+} from '#/tui/runtime/agent-events-port';
+import type {
+  AgentTask,
+  AgentTaskStatus,
+} from '#/tui/runtime/session-control-port';
+import type {
+  TUIContentPart,
+  TUIToolCall,
+} from '#/tui/runtime/session-context-view-port';
 
 import { mediaUrlPartToText } from './media-url';
 import { nextTranscriptId } from './transcript-id';
@@ -56,12 +59,12 @@ export interface ReplayBackgroundProjection {
   readonly backgroundAgentMetadata: ReadonlyMap<string, BackgroundAgentMetadata>;
 }
 
-export function appStateFromResumeAgent(agent: ResumedAgentState): Partial<AppState> {
+export function appStateFromResumeAgent(agent: TUIAgentReplay): Partial<AppState> {
   const maxContextTokens = agent.config.modelCapabilities?.max_context_tokens ?? 0;
   const contextTokens = agent.context.tokenCount;
   const contextUsage = maxContextTokens > 0 ? contextTokens / maxContextTokens : 0;
   return {
-    model: agent.config.modelAlias ?? agent.config.provider?.model ?? '',
+    model: agent.config.modelAlias ?? agent.config.providerModel ?? '',
     contextTokens,
     maxContextTokens,
     contextUsage,
@@ -71,7 +74,7 @@ export function appStateFromResumeAgent(agent: ResumedAgentState): Partial<AppSt
   };
 }
 
-export function isTerminalBackgroundTask(info: BackgroundTaskInfo): boolean {
+export function isTerminalBackgroundTask(info: AgentTask): boolean {
   return (
     info.status === 'completed' ||
     info.status === 'failed' ||
@@ -81,7 +84,7 @@ export function isTerminalBackgroundTask(info: BackgroundTaskInfo): boolean {
   );
 }
 
-export function countActiveBackgroundTasks(tasks: ReadonlyMap<string, BackgroundTaskInfo>): {
+export function countActiveBackgroundTasks(tasks: ReadonlyMap<string, AgentTask>): {
   bashTasks: number;
   agentTasks: number;
 } {
@@ -99,7 +102,7 @@ export function countActiveBackgroundTasks(tasks: ReadonlyMap<string, Background
 }
 
 export function replayBackgroundProjection(
-  background: readonly BackgroundTaskInfo[],
+  background: readonly AgentTask[],
 ): ReplayBackgroundProjection {
   const backgroundAgentMetadata = new Map<string, BackgroundAgentMetadata>();
   for (const info of background) {
@@ -130,13 +133,15 @@ export function createReplayRenderContext(): ReplayRenderContext {
 }
 
 export function limitReplayRecordsByTurn(
-  records: readonly AgentReplayRecord[],
+  records: readonly TUIAgentReplayRecord[],
   maxTurns: number,
-): readonly AgentReplayRecord[] {
-  // Defensive slice — the core already trims the replay when the caller passes
-  // `replayTurnLimit` on resume; the boundary predicate lives in agent-core
-  // (`limitAgentReplayByTurns`) and is re-exported through the SDK.
-  return limitAgentReplayByTurns(records, maxTurns);
+): readonly TUIAgentReplayRecord[] {
+  if (maxTurns <= 0) return [];
+  const turnStarts = records.flatMap((record, index) =>
+    isReplayUserTurnRecord(record) ? [index] : [],
+  );
+  if (turnStarts.length <= maxTurns) return records;
+  return records.slice(turnStarts[turnStarts.length - maxTurns]);
 }
 
 export function replayEntry(
@@ -159,7 +164,7 @@ export function replayEntry(
 
 export function collectReplayMessageContent(
   target: ReplayRenderContext['assistant'],
-  content: readonly ContentPart[],
+  content: readonly TUIContentPart[],
 ): void {
   for (const part of content) {
     switch (part.type) {
@@ -178,7 +183,7 @@ export function collectReplayMessageContent(
 }
 
 export function toolCallFromReplayMessage(
-  rawToolCall: ToolCall,
+  rawToolCall: TUIToolCall,
   context: ReplayRenderContext,
 ): ToolCallBlockData | undefined {
   const id = rawToolCall.id;
@@ -193,25 +198,31 @@ export function toolCallFromReplayMessage(
   };
 }
 
-export function toolResultOutput(content: readonly ContentPart[]): string {
+export function toolResultOutput(content: readonly TUIContentPart[]): string {
   if (content.some((part) => part.type !== 'text')) {
     return JSON.stringify(content);
   }
   return contentPartsToText(content);
 }
 
-export function contentPartsToText(content: readonly ContentPart[]): string {
+export function contentPartsToText(content: readonly TUIContentPart[]): string {
   return content.map(contentPartToText).join('');
 }
 
 export function backgroundOrigin(
-  message: ContextMessage,
-): Extract<PromptOrigin, { kind: 'background_task' }> | undefined {
-  return message.origin?.kind === 'background_task' ? message.origin : undefined;
+  message: TUIReplayContextMessage,
+): ReplayBackgroundOrigin | undefined {
+  const origin = message.origin;
+  if (origin?.kind !== 'background_task' && origin?.kind !== 'task') return undefined;
+  return {
+    taskId: origin.taskId,
+    status: origin.status,
+    notificationId: origin.notificationId,
+  };
 }
 
 export function skillActivationFromOrigin(
-  origin: PromptOrigin | undefined,
+  origin: TUIReplayPromptOrigin | undefined,
 ): SkillActivationProjection | undefined {
   if (origin?.kind !== 'skill_activation') return undefined;
   return {
@@ -223,7 +234,7 @@ export function skillActivationFromOrigin(
 }
 
 export function pluginCommandFromOrigin(
-  origin: PromptOrigin | undefined,
+  origin: TUIReplayPromptOrigin | undefined,
 ): PluginCommandProjection | undefined {
   if (origin?.kind !== 'plugin_command') return undefined;
   return {
@@ -273,7 +284,7 @@ function parseReplayToolArguments(value: string | null): Record<string, unknown>
   }
 }
 
-function contentPartToText(part: ContentPart): string {
+function contentPartToText(part: TUIContentPart): string {
   switch (part.type) {
     case 'text':
       return part.text;
@@ -297,4 +308,37 @@ function formatHookResultBlock(event: string, body: string, blocked: boolean): s
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
+}
+
+export interface ReplayBackgroundOrigin {
+  readonly taskId: string;
+  readonly status: AgentTaskStatus;
+  readonly notificationId: string;
+}
+
+function isReplayUserTurnRecord(record: TUIAgentReplayRecord): boolean {
+  if (record.type !== 'message' || record.message.role !== 'user') return false;
+  const origin = record.message.origin;
+  switch (origin?.kind) {
+    case undefined:
+    case 'user':
+      return true;
+    case 'skill_activation':
+    case 'plugin_command':
+      return origin.trigger === 'user-slash';
+    case 'shell_command':
+      return origin.phase === 'input';
+    case 'system_trigger':
+      return origin.name === 'goal_continuation';
+    case 'background_task':
+    case 'task':
+    case 'compaction_summary':
+    case 'cron_job':
+    case 'cron_missed':
+    case 'hook_result':
+    case 'injection':
+    case 'retry':
+    case 'team_message':
+      return false;
+  }
 }

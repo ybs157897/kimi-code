@@ -30,6 +30,8 @@ import { restoreTerminalModes } from '#/utils/terminal-restore';
 
 import type { CLIOptions } from './options';
 import { createCliTelemetryBootstrap, initializeCliTelemetry } from './telemetry';
+import { isKimiV2Enabled } from './experimental-v2';
+import { runV2Shell } from './v2/run-v2-shell';
 import { createKimiCodeHostIdentity } from './version';
 
 export async function runShell(
@@ -37,6 +39,11 @@ export async function runShell(
   version: string,
   runOptions: { readonly migrateOnly?: boolean } = {},
 ): Promise<void> {
+  if (runOptions.migrateOnly !== true && isKimiV2Enabled()) {
+    await runV2Shell(opts, version);
+    return;
+  }
+
   const startedAt = Date.now();
   const configStartedAt = startedAt;
   let tuiConfig: TuiConfig;

@@ -1,21 +1,29 @@
-import type { BackgroundTaskInfo, Session } from '@moonshot-ai/kimi-code-sdk';
-import type { Component, ProcessTerminal, TUI } from '@moonshot-ai/pi-tui';
+import type { Component, Terminal, TUI } from '@moonshot-ai/pi-tui';
 
 import { TaskOutputViewer } from '../components/dialogs/task-output-viewer';
 import { TasksBrowserApp, type TasksFilter } from '../components/dialogs/tasks-browser';
 import type { Theme } from '#/tui/theme';
 import type { CustomEditor } from '../components/editor/custom-editor';
+import type { AgentTask, SessionAgentControlPort } from '../runtime/session-control-port';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
+
+type TasksBrowserRuntime = Pick<TUISessionRuntime, 'sessionId'> & {
+  readonly agent: Pick<
+    SessionAgentControlPort,
+    'listTasks' | 'getTaskOutput' | 'stopTask'
+  >;
+};
 
 export interface TasksBrowserHost {
   readonly state: {
     readonly tasksBrowser: TasksBrowserState | undefined;
     readonly theme: Theme;
-    readonly terminal: ProcessTerminal;
+    readonly terminal: Terminal;
     readonly ui: TUI;
     readonly editor: CustomEditor;
   };
-  readonly backgroundTasks: ReadonlyMap<string, BackgroundTaskInfo>;
-  readonly session: Session | undefined;
+  readonly backgroundTasks: ReadonlyMap<string, AgentTask>;
+  requireSessionRuntime(): TasksBrowserRuntime;
   showError(msg: string): void;
   setTasksBrowser(value: TasksBrowserState | undefined): void;
 }
@@ -23,6 +31,7 @@ export interface TasksBrowserHost {
 export type TasksBrowserState = {
   component: TasksBrowserApp;
   savedChildren: readonly Component[];
+  tasks: readonly AgentTask[];
   filter: TasksFilter;
   selectedTaskId: string | undefined;
   tailOutput: string | undefined;
@@ -31,6 +40,8 @@ export type TasksBrowserState = {
   flashMessage: string | undefined;
   flashTimer: NodeJS.Timeout | undefined;
   pollTimer: NodeJS.Timeout | undefined;
+  runtime: TasksBrowserRuntime;
+  sessionId: string;
   viewer:
     | {
         component: TaskOutputViewer;
@@ -50,22 +61,26 @@ export class TasksBrowserController {
     const { state } = this.host;
     if (state.tasksBrowser !== undefined) return;
 
-    const session = this.host.session;
-    if (session === undefined) {
+    let runtime: TasksBrowserRuntime;
+    try {
+      runtime = this.host.requireSessionRuntime();
+    } catch {
       this.host.showError('No active session.');
       return;
     }
+    const { sessionId } = runtime;
 
-    let tasks: readonly BackgroundTaskInfo[] = [];
+    let tasks: readonly AgentTask[] = [];
     try {
-      tasks = await session.listBackgroundTasks({ activeOnly: false });
+      tasks = await runtime.agent.listTasks({ activeOnly: false });
     } catch (error) {
+      if (!this.isCurrentRuntime(runtime, sessionId)) return;
       this.host.showError(
         `Failed to load tasks: ${error instanceof Error ? error.message : String(error)}`,
       );
       return;
     }
-    if (state.tasksBrowser !== undefined) return;
+    if (!this.isCurrentRuntime(runtime, sessionId) || state.tasksBrowser !== undefined) return;
 
     const filter: TasksFilter = 'all';
     const selectedTaskId = this.pickInitialSelection(tasks, filter);
@@ -95,6 +110,7 @@ export class TasksBrowserController {
     this.host.setTasksBrowser({
       component,
       savedChildren,
+      tasks,
       filter,
       selectedTaskId,
       tailOutput: undefined,
@@ -103,6 +119,8 @@ export class TasksBrowserController {
       flashMessage: undefined,
       flashTimer: undefined,
       pollTimer,
+      runtime,
+      sessionId,
       viewer: undefined,
     });
 
@@ -131,8 +149,12 @@ export class TasksBrowserController {
   repaint(): void {
     const browser = this.host.state.tasksBrowser;
     if (browser === undefined) return;
-    const tasks = [...this.host.backgroundTasks.values()];
-    this.pushProps(tasks);
+    if (!this.isCurrentRuntime(browser.runtime, browser.sessionId)) return;
+    const tasks = new Map(browser.tasks.map((task) => [task.taskId, task]));
+    for (const task of this.host.backgroundTasks.values()) {
+      tasks.set(task.taskId, task);
+    }
+    this.pushProps([...tasks.values()]);
   }
 
   async refreshOutputViewer(opts: { silent?: boolean } = {}): Promise<void> {
@@ -141,14 +163,21 @@ export class TasksBrowserController {
     const viewer = browser?.viewer;
     if (browser === undefined || viewer === undefined) return;
 
-    const session = this.host.session;
-    if (session === undefined) return;
+    const { runtime, sessionId } = browser;
+    if (!this.isCurrentRuntime(runtime, sessionId)) return;
 
     const myRefreshId = ++viewer.refreshId;
     let output: string;
     try {
-      output = await session.getBackgroundTaskOutput(viewer.taskId);
+      output = await runtime.agent.getTaskOutput(viewer.taskId);
     } catch (error) {
+      if (
+        !this.isCurrentRuntime(runtime, sessionId) ||
+        state.tasksBrowser !== browser ||
+        state.tasksBrowser.viewer !== viewer
+      ) {
+        return;
+      }
       if (!opts.silent) {
         const message = error instanceof Error ? error.message : String(error);
         this.flash(`Output refresh failed: ${message}`);
@@ -156,12 +185,19 @@ export class TasksBrowserController {
       return;
     }
     const current = state.tasksBrowser?.viewer;
-    if (current === undefined || current !== viewer || current.refreshId !== myRefreshId) {
+    if (
+      !this.isCurrentRuntime(runtime, sessionId) ||
+      current === undefined ||
+      current !== viewer ||
+      current.refreshId !== myRefreshId
+    ) {
       return;
     }
     if (output === viewer.output) return;
     viewer.output = output;
-    const info = this.host.backgroundTasks.get(viewer.taskId);
+    const info =
+      this.host.backgroundTasks.get(viewer.taskId) ??
+      browser.tasks.find((task) => task.taskId === viewer.taskId);
     viewer.component.setProps({
       taskId: viewer.taskId,
       info,
@@ -176,7 +212,7 @@ export class TasksBrowserController {
   // ---------------------------------------------------------------------------
 
   private pickInitialSelection(
-    tasks: readonly BackgroundTaskInfo[],
+    tasks: readonly AgentTask[],
     filter: TasksFilter,
   ): string | undefined {
     const candidates =
@@ -199,13 +235,14 @@ export class TasksBrowserController {
     const browser = state.tasksBrowser;
     if (browser === undefined) return;
 
-    const session = this.host.session;
-    if (session === undefined) return;
+    const { runtime, sessionId } = browser;
+    if (!this.isCurrentRuntime(runtime, sessionId)) return;
 
-    let tasks: readonly BackgroundTaskInfo[];
+    let tasks: readonly AgentTask[];
     try {
-      tasks = await session.listBackgroundTasks({ activeOnly: false });
+      tasks = await runtime.agent.listTasks({ activeOnly: false });
     } catch (error) {
+      if (!this.isCurrentRuntime(runtime, sessionId)) return;
       if (!opts.silent) {
         this.flash(
           `Refresh failed: ${error instanceof Error ? error.message : String(error)}`,
@@ -213,13 +250,20 @@ export class TasksBrowserController {
       }
       return;
     }
-    if (state.tasksBrowser !== browser) return;
+    if (
+      !this.isCurrentRuntime(runtime, sessionId) ||
+      state.tasksBrowser !== browser
+    ) {
+      return;
+    }
     this.pushProps(tasks);
   }
 
-  private pushProps(tasks: readonly BackgroundTaskInfo[]): void {
+  private pushProps(tasks: readonly AgentTask[]): void {
     const browser = this.host.state.tasksBrowser;
     if (browser === undefined) return;
+    if (!this.isCurrentRuntime(browser.runtime, browser.sessionId)) return;
+    browser.tasks = tasks;
     browser.component.setProps({
       tasks,
       filter: browser.filter,
@@ -271,6 +315,7 @@ export class TasksBrowserController {
   private handleSelect(taskId: string): void {
     const browser = this.host.state.tasksBrowser;
     if (browser === undefined) return;
+    if (!this.isCurrentRuntime(browser.runtime, browser.sessionId)) return;
     if (browser.selectedTaskId === taskId) return;
     browser.selectedTaskId = taskId;
     browser.tailOutput = undefined;
@@ -282,11 +327,19 @@ export class TasksBrowserController {
   private handleToggleFilter(): void {
     const browser = this.host.state.tasksBrowser;
     if (browser === undefined) return;
+    if (!this.isCurrentRuntime(browser.runtime, browser.sessionId)) return;
     browser.filter = browser.filter === 'all' ? 'active' : 'all';
     this.repaint();
   }
 
   private handleRefresh(): void {
+    const browser = this.host.state.tasksBrowser;
+    if (
+      browser === undefined ||
+      !this.isCurrentRuntime(browser.runtime, browser.sessionId)
+    ) {
+      return;
+    }
     this.flash('Refreshing…', 600);
     void this.refresh();
   }
@@ -295,17 +348,26 @@ export class TasksBrowserController {
     const browser = this.host.state.tasksBrowser;
     if (browser === undefined) return;
 
-    const session = this.host.session;
-    if (session === undefined) {
-      this.flash('No active session.');
-      return;
-    }
+    const { runtime, sessionId } = browser;
+    if (!this.isCurrentRuntime(runtime, sessionId)) return;
 
     this.flash(`Stopping ${taskId}…`, 1500);
     try {
-      await session.stopBackgroundTask(taskId, { reason: 'User initiated stop' });
+      await runtime.agent.stopTask(taskId, 'User initiated stop');
+      if (
+        !this.isCurrentRuntime(runtime, sessionId) ||
+        this.host.state.tasksBrowser !== browser
+      ) {
+        return;
+      }
       await this.refresh({ silent: true });
     } catch (error) {
+      if (
+        !this.isCurrentRuntime(runtime, sessionId) ||
+        this.host.state.tasksBrowser !== browser
+      ) {
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       this.flash(`Stop failed: ${message}`);
     }
@@ -317,24 +379,35 @@ export class TasksBrowserController {
     if (browser === undefined) return;
     if (browser.viewer !== undefined) return;
 
-    const session = this.host.session;
-    if (session === undefined) {
-      this.flash('No active session.');
-      return;
-    }
+    const { runtime, sessionId } = browser;
+    if (!this.isCurrentRuntime(runtime, sessionId)) return;
 
     let output: string;
     try {
-      output = await session.getBackgroundTaskOutput(taskId);
+      output = await runtime.agent.getTaskOutput(taskId);
     } catch (error) {
+      if (
+        !this.isCurrentRuntime(runtime, sessionId) ||
+        state.tasksBrowser !== browser
+      ) {
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
       this.flash(`Cannot open output: ${message}`);
       return;
     }
     const current = state.tasksBrowser;
-    if (current === undefined || current !== browser) return;
+    if (
+      !this.isCurrentRuntime(runtime, sessionId) ||
+      current === undefined ||
+      current !== browser
+    ) {
+      return;
+    }
 
-    const info = this.host.backgroundTasks.get(taskId);
+    const info =
+      this.host.backgroundTasks.get(taskId) ??
+      browser.tasks.find((task) => task.taskId === taskId);
     const viewer = new TaskOutputViewer(
       {
         taskId,
@@ -372,49 +445,49 @@ export class TasksBrowserController {
     const browser = state.tasksBrowser;
     if (browser === undefined) return;
 
-    const session = this.host.session;
-    if (session === undefined) {
-      browser.tailLoading = false;
-      this.repaint();
-      return;
-    }
+    const { runtime, sessionId } = browser;
+    if (!this.isCurrentRuntime(runtime, sessionId)) return;
 
     const requestId = ++browser.tailRequestId;
-    void session
-      .getBackgroundTaskOutput(taskId, { tail: 4000 })
+    void runtime.agent
+      .getTaskOutput(taskId, 4000)
       .then((output) => {
         const current = state.tasksBrowser;
         if (current === undefined) return;
+        if (!this.isCurrentRuntime(runtime, sessionId)) return;
         if (current !== browser || current.tailRequestId !== requestId) return;
         if (current.selectedTaskId !== taskId) return;
         current.tailOutput = output;
         current.tailLoading = false;
-        this.repaint();
+        this.pushProps(current.tasks);
       })
       .catch(() => {
         const current = state.tasksBrowser;
         if (current === undefined) return;
+        if (!this.isCurrentRuntime(runtime, sessionId)) return;
         if (current !== browser || current.tailRequestId !== requestId) return;
         if (current.selectedTaskId !== taskId) return;
         current.tailOutput = '';
         current.tailLoading = false;
-        this.repaint();
+        this.pushProps(current.tasks);
       });
   }
 
   private flash(message: string, durationMs = 2500): void {
     const browser = this.host.state.tasksBrowser;
     if (browser === undefined) return;
+    if (!this.isCurrentRuntime(browser.runtime, browser.sessionId)) return;
     if (browser.flashTimer !== undefined) clearTimeout(browser.flashTimer);
     browser.flashMessage = message;
     browser.flashTimer = setTimeout(() => {
       const current = this.host.state.tasksBrowser;
       if (current !== browser) return;
+      if (!this.isCurrentRuntime(browser.runtime, browser.sessionId)) return;
       current.flashMessage = undefined;
       current.flashTimer = undefined;
-      this.repaint();
+      this.pushProps(current.tasks);
     }, durationMs);
-    this.repaint();
+    this.pushProps(browser.tasks);
   }
 
   private closeOutputViewer(): void {
@@ -429,5 +502,14 @@ export class TasksBrowserController {
     }
     this.host.state.ui.setFocus(browser.component);
     this.host.state.ui.requestRender(true);
+  }
+
+  private isCurrentRuntime(runtime: TasksBrowserRuntime, sessionId: string): boolean {
+    try {
+      const current = this.host.requireSessionRuntime();
+      return current === runtime && current.sessionId === sessionId;
+    } catch {
+      return false;
+    }
   }
 }

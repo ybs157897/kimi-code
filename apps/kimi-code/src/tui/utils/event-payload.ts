@@ -1,5 +1,3 @@
-import { isKimiError } from '@moonshot-ai/kimi-code-sdk';
-
 import {
   STREAMING_ARGS_FIELD_RE,
   STREAMING_ARGS_PREVIEW_MAX_CHARS,
@@ -90,13 +88,7 @@ export function isTodoItemShape(
 }
 
 export function formatErrorMessage(error: unknown): string {
-  if (isKimiError(error)) {
-    return formatErrorPayload({
-      code: error.code,
-      message: error.message,
-      details: error.details,
-    });
-  }
+  if (isErrorPayloadLike(error)) return formatErrorPayload(error);
   return error instanceof Error ? error.message : String(error);
 }
 
@@ -104,6 +96,23 @@ interface ErrorPayloadLike {
   readonly code: string;
   readonly message: string;
   readonly details?: Record<string, unknown>;
+}
+
+function isErrorPayloadLike(error: unknown): error is ErrorPayloadLike {
+  if (typeof error !== 'object' || error === null || Array.isArray(error)) return false;
+  const candidate = error as {
+    readonly code?: unknown;
+    readonly message?: unknown;
+    readonly details?: unknown;
+  };
+  if (typeof candidate.code !== 'string' || candidate.code.trim().length === 0) return false;
+  if (typeof candidate.message !== 'string') return false;
+  return (
+    candidate.details === undefined ||
+    (typeof candidate.details === 'object' &&
+      candidate.details !== null &&
+      !Array.isArray(candidate.details))
+  );
 }
 
 export function formatErrorPayload(error: ErrorPayloadLike): string {

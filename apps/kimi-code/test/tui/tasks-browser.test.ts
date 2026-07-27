@@ -1,13 +1,31 @@
-import type { Terminal } from '@moonshot-ai/pi-tui';
-import type { BackgroundTaskInfo, BackgroundTaskStatus } from '@moonshot-ai/kimi-code-sdk';
-import { describe, expect, it, vi } from 'vitest';
+/**
+ * Scenarios: task-browser runtime routing plus dialog rendering and input.
+ * Responsibilities: list/poll/tail/open/stop behavior, stale-session isolation,
+ * detached filtering, and keyboard interaction. The runtime agent is the only
+ * stubbed boundary. Run with:
+ * pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/tasks-browser.test.ts
+ */
 
+import { TUI, type Terminal } from '@moonshot-ai/pi-tui';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { CustomEditor } from '@/tui/components/editor/custom-editor';
 import {
   TasksBrowserApp,
   type TasksBrowserProps,
   type TasksFilter,
 } from '@/tui/components/dialogs/tasks-browser';
-import { darkColors } from '@/tui/theme/colors';
+import {
+  TasksBrowserController,
+  type TasksBrowserHost,
+  type TasksBrowserState,
+} from '@/tui/controllers/tasks-browser';
+import type {
+  AgentTask,
+  AgentTaskListInput,
+  AgentTaskStatus,
+} from '@/tui/runtime/session-control-port';
+import { currentTheme } from '@/tui/theme';
 
 const ANSI_SGR = /\[[0-9;]*m/g;
 function strip(text: string): string {
@@ -41,7 +59,7 @@ function fakeTerminal(rows: number, columns = 120): Terminal {
   };
 }
 
-function task(overrides: Partial<BackgroundTaskInfo> = {}): BackgroundTaskInfo {
+function task(overrides: Partial<AgentTask> = {}): AgentTask {
   return {
     taskId: 'bash-abcd1234',
     kind: 'process',
@@ -53,7 +71,7 @@ function task(overrides: Partial<BackgroundTaskInfo> = {}): BackgroundTaskInfo {
     startedAt: Date.now() - 60_000,
     endedAt: null,
     ...overrides,
-  } as BackgroundTaskInfo;
+  };
 }
 
 function makeProps(overrides: Partial<TasksBrowserProps> = {}): TasksBrowserProps {
@@ -82,6 +100,311 @@ function makeApp(
 ): TasksBrowserApp {
   return new TasksBrowserApp(makeProps(props), fakeTerminal(rows, columns));
 }
+
+type TasksRuntime = ReturnType<TasksBrowserHost['requireSessionRuntime']>;
+
+function runtimeRig(options: {
+  readonly sessionId?: string;
+  readonly tasks?: readonly AgentTask[];
+  readonly output?: string;
+} = {}) {
+  const listTasks = vi.fn(
+    async (_input?: AgentTaskListInput): Promise<readonly AgentTask[]> =>
+      options.tasks ?? [],
+  );
+  const getTaskOutput = vi.fn(
+    async (_taskId: string, _tail?: number): Promise<string> => options.output ?? '',
+  );
+  const stopTask = vi.fn(async (_taskId: string, _reason?: string): Promise<void> => {});
+  const runtime = {
+    sessionId: options.sessionId ?? 'session-a',
+    agent: { listTasks, getTaskOutput, stopTask },
+  } satisfies TasksRuntime;
+  return { runtime, listTasks, getTaskOutput, stopTask };
+}
+
+interface ControllerRig {
+  readonly controller: TasksBrowserController;
+  readonly errors: string[];
+  readonly ui: TUI;
+  readonly editor: CustomEditor;
+  setRuntime(runtime: TasksRuntime): void;
+  getBrowser(): TasksBrowserState | undefined;
+}
+
+const controllerRigs: ControllerRig[] = [];
+
+function controllerRig(initialRuntime: TasksRuntime): ControllerRig {
+  const terminal = fakeTerminal(30);
+  const ui = new TUI(terminal);
+  const editor = new CustomEditor(ui, { disablePasteBurst: false });
+  const backgroundTasks = new Map<string, AgentTask>();
+  const errors: string[] = [];
+  let activeRuntime = initialRuntime;
+  let browser: TasksBrowserState | undefined;
+
+  ui.addChild(editor);
+  ui.setFocus(editor);
+
+  const host: TasksBrowserHost = {
+    state: {
+      get tasksBrowser() {
+        return browser;
+      },
+      theme: currentTheme,
+      terminal,
+      ui,
+      editor,
+    },
+    backgroundTasks,
+    requireSessionRuntime: () => activeRuntime,
+    showError: (message) => {
+      errors.push(message);
+    },
+    setTasksBrowser: (value) => {
+      browser = value;
+    },
+  };
+  const controller = new TasksBrowserController(host);
+  const rig: ControllerRig = {
+    controller,
+    errors,
+    ui,
+    editor,
+    setRuntime: (runtime) => {
+      activeRuntime = runtime;
+    },
+    getBrowser: () => browser,
+  };
+  controllerRigs.push(rig);
+  return rig;
+}
+
+async function settlePromises(): Promise<void> {
+  await Promise.resolve();
+  await Promise.resolve();
+}
+
+function deferred<T>(): {
+  readonly promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolvePromise: ((value: T) => void) | undefined;
+  const promise = new Promise<T>((resolve) => {
+    resolvePromise = resolve;
+  });
+  return {
+    promise,
+    resolve: (value) => {
+      resolvePromise?.(value);
+    },
+  };
+}
+
+afterEach(() => {
+  for (const rig of controllerRigs.splice(0)) {
+    rig.controller.close();
+  }
+  vi.restoreAllMocks();
+});
+
+describe('TasksBrowserController — runtime task operations', () => {
+  it('lists all runtime tasks when the browser opens', async () => {
+    const runtime = runtimeRig({
+      tasks: [task({ taskId: 'bash-runtime', detached: true })],
+    });
+    const rig = controllerRig(runtime.runtime);
+
+    await rig.controller.show();
+
+    expect(runtime.listTasks).toHaveBeenCalledWith({ activeOnly: false });
+    expect(strip(rig.getBrowser()!.component.render(120).join('\n'))).toContain(
+      'bash-runtime',
+    );
+  });
+
+  it('refreshes the visible list when the registered poll runs', async () => {
+    const runtime = runtimeRig();
+    runtime.listTasks
+      .mockResolvedValueOnce([task({ taskId: 'bash-initial', detached: true })])
+      .mockResolvedValueOnce([task({ taskId: 'bash-polled', detached: true })]);
+    const intervalSpy = vi.spyOn(globalThis, 'setInterval');
+    const rig = controllerRig(runtime.runtime);
+
+    await rig.controller.show();
+    const poll = intervalSpy.mock.calls[0]?.[0];
+    if (typeof poll !== 'function') throw new Error('task poll was not registered');
+    poll();
+    await settlePromises();
+
+    expect(strip(rig.getBrowser()!.component.render(120).join('\n'))).toContain(
+      'bash-polled',
+    );
+  });
+
+  it('loads a bounded output tail for the initially selected task', async () => {
+    const runtime = runtimeRig({
+      tasks: [task({ taskId: 'bash-tail', detached: true })],
+      output: 'tail output',
+    });
+    const rig = controllerRig(runtime.runtime);
+
+    await rig.controller.show();
+    await settlePromises();
+
+    expect(runtime.getTaskOutput).toHaveBeenCalledWith('bash-tail', 4000);
+    expect(strip(rig.getBrowser()!.component.render(120).join('\n'))).toContain(
+      'tail output',
+    );
+  });
+
+  it('opens the output viewer with the complete runtime output', async () => {
+    const runtime = runtimeRig({
+      tasks: [task({ taskId: 'bash-output', detached: true })],
+    });
+    runtime.getTaskOutput.mockImplementation(
+      async (_taskId: string, tail?: number): Promise<string> =>
+        tail === undefined ? 'complete output' : 'tail output',
+    );
+    const rig = controllerRig(runtime.runtime);
+
+    await rig.controller.show();
+    await settlePromises();
+    rig.getBrowser()!.component.handleInput('o');
+    await settlePromises();
+
+    expect(runtime.getTaskOutput).toHaveBeenNthCalledWith(2, 'bash-output');
+    expect(strip(rig.ui.children[0]!.render(120).join('\n'))).toContain(
+      'complete output',
+    );
+  });
+
+  it('stops the selected task through the runtime agent after confirmation', async () => {
+    const runtime = runtimeRig({
+      tasks: [task({ taskId: 'bash-stop', detached: true })],
+    });
+    const rig = controllerRig(runtime.runtime);
+
+    await rig.controller.show();
+    rig.getBrowser()!.component.handleInput('s');
+    rig.getBrowser()!.component.handleInput('y');
+    await settlePromises();
+
+    expect(runtime.stopTask).toHaveBeenCalledWith(
+      'bash-stop',
+      'User initiated stop',
+    );
+  });
+
+  it('reports the runtime list error when opening fails', async () => {
+    const runtime = runtimeRig();
+    runtime.listTasks.mockRejectedValueOnce(new Error('list unavailable'));
+    const rig = controllerRig(runtime.runtime);
+
+    await rig.controller.show();
+
+    expect(rig.errors).toEqual(['Failed to load tasks: list unavailable']);
+    expect(rig.getBrowser()).toBeUndefined();
+  });
+
+  it('does not mount stale list results after the active runtime switches', async () => {
+    const pending = deferred<readonly AgentTask[]>();
+    const first = runtimeRig({ sessionId: 'session-a' });
+    first.listTasks.mockImplementationOnce(() => pending.promise);
+    const second = runtimeRig({ sessionId: 'session-b' });
+    const rig = controllerRig(first.runtime);
+
+    const showing = rig.controller.show();
+    rig.setRuntime(second.runtime);
+    pending.resolve([task({ taskId: 'bash-stale', detached: true })]);
+    await showing;
+
+    expect(rig.getBrowser()).toBeUndefined();
+    expect(rig.ui.children).toEqual([rig.editor]);
+  });
+
+  it('does not apply a pending refresh after the active runtime switches', async () => {
+    const pending = deferred<readonly AgentTask[]>();
+    const first = runtimeRig({
+      sessionId: 'session-a',
+      tasks: [task({ taskId: 'bash-current', detached: true })],
+    });
+    const second = runtimeRig({ sessionId: 'session-b' });
+    const rig = controllerRig(first.runtime);
+
+    await rig.controller.show();
+    first.listTasks.mockImplementationOnce(() => pending.promise);
+    rig.getBrowser()!.component.handleInput('r');
+    rig.setRuntime(second.runtime);
+    pending.resolve([task({ taskId: 'bash-stale', detached: true })]);
+    await settlePromises();
+
+    const rendered = strip(rig.getBrowser()!.component.render(120).join('\n'));
+    expect(rendered).toContain('bash-current');
+    expect(rendered).not.toContain('bash-stale');
+  });
+
+  it('does not apply pending tail output after the active runtime switches', async () => {
+    const pending = deferred<string>();
+    const first = runtimeRig({
+      sessionId: 'session-a',
+      tasks: [task({ taskId: 'bash-current', detached: true })],
+    });
+    first.getTaskOutput.mockImplementationOnce(() => pending.promise);
+    const second = runtimeRig({ sessionId: 'session-b' });
+    const rig = controllerRig(first.runtime);
+
+    await rig.controller.show();
+    rig.setRuntime(second.runtime);
+    pending.resolve('stale tail');
+    await settlePromises();
+
+    expect(rig.getBrowser()!.tailOutput).toBeUndefined();
+  });
+
+  it('does not open a viewer after the active runtime switches', async () => {
+    const pending = deferred<string>();
+    const first = runtimeRig({
+      sessionId: 'session-a',
+      tasks: [task({ taskId: 'bash-current', detached: true })],
+      output: 'tail output',
+    });
+    first.getTaskOutput
+      .mockResolvedValueOnce('tail output')
+      .mockImplementationOnce(() => pending.promise);
+    const second = runtimeRig({ sessionId: 'session-b' });
+    const rig = controllerRig(first.runtime);
+
+    await rig.controller.show();
+    await settlePromises();
+    rig.getBrowser()!.component.handleInput('o');
+    rig.setRuntime(second.runtime);
+    pending.resolve('stale complete output');
+    await settlePromises();
+
+    expect(rig.getBrowser()!.viewer).toBeUndefined();
+  });
+
+  it('does not refresh the old browser after a stop completes in another runtime', async () => {
+    const pending = deferred<void>();
+    const first = runtimeRig({
+      sessionId: 'session-a',
+      tasks: [task({ taskId: 'bash-current', detached: true })],
+    });
+    first.stopTask.mockImplementationOnce(() => pending.promise);
+    const second = runtimeRig({ sessionId: 'session-b' });
+    const rig = controllerRig(first.runtime);
+
+    await rig.controller.show();
+    rig.getBrowser()!.component.handleInput('s');
+    rig.getBrowser()!.component.handleInput('y');
+    rig.setRuntime(second.runtime);
+    pending.resolve(undefined);
+    await settlePromises();
+
+    expect(first.listTasks).toHaveBeenCalledTimes(1);
+  });
+});
 
 describe('TasksBrowserApp — full-screen rendering', () => {
   it('fills exactly terminal.rows lines (height takeover)', () => {
@@ -253,8 +576,8 @@ describe('TasksBrowserApp — full-screen rendering', () => {
     expect(out).not.toContain('bash-bg-done');
   });
 
-  it('renders without throwing for every BackgroundTaskStatus', () => {
-    const statuses: BackgroundTaskStatus[] = [
+  it('renders without throwing for every AgentTaskStatus', () => {
+    const statuses: AgentTaskStatus[] = [
       'running',
       'completed',
       'failed',

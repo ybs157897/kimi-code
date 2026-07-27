@@ -22,6 +22,7 @@ import { IEventBus } from '@moonshot-ai/agent-core-v2/app/event/eventBus';
 
 import type { EventSourceRef, IDisposable, ScopeRef } from '../../core/channel.js';
 import { RPCError } from '../../core/errors.js';
+import { globalContract, isStreamingContract } from '../../contract/index.js';
 import { IEventService, serviceTokens } from './serviceRegistry.js';
 
 /** Structural minimum of an engine `Scope` / `IScopeHandle`. */
@@ -85,6 +86,13 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
     return resolved.like.accessor.get(token) as Record<string, unknown>;
   }
 
+  function requireProcedure(service: string, method: string, streaming: boolean): void {
+    const procedure = globalContract[service]?.[method];
+    if (procedure === undefined || isStreamingContract(procedure) !== streaming) {
+      throw new RPCError(REQUEST_INVALID, `method not found: ${service}.${method}`);
+    }
+  }
+
   /** Mirrors kap-server's WS `eventMap` per scope kind. */
   function subscribeStream(
     resolved: ResolvedScope,
@@ -144,6 +152,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
 
   return {
     async call(scope, service, method, args) {
+      requireProcedure(service, method, false);
       const resolved = await resolveScope(scope);
       const instance = resolveService(resolved, service);
       const member = instance[method];
@@ -159,6 +168,7 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
     },
 
     stream(scope, service, method, args): AsyncIterable<unknown> {
+      requireProcedure(service, method, true);
       // Special case: modelResolver.generate routes to
       // getRequester(modelId).request(input, signal, params) because the
       // catalog has no `generate` method — the facade synthesises the call.

@@ -10,7 +10,7 @@ features, styling, and behavior match `kimi web` one-to-one.
   `go:embed`) is served by the Wails asset server.
 - **API**: the shell starts a loopback reverse proxy and injects its origin
   into the page as `window.__KIMI_DESKTOP_SERVER_ORIGIN__`. The proxy
-  forwards REST (`/api/v1`, `/api/v2`) and the `/api/v1/ws` WebSocket to a
+  forwards REST (`/api/v1`) and the `/api/v1/ws` WebSocket to a
   local kap-server, answers CORS itself, and strips the browser `Origin`
   header upstream (the server treats Origin-less requests as non-browser
   clients — the same trick the Vite dev proxy uses).

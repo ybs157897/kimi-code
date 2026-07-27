@@ -195,6 +195,7 @@ describe('AgentPluginService plugin session-start wiring', () => {
       catalog,
       ready: Promise.resolve(),
       onDidChange: sinkChange.event,
+      listSkills: async () => [],
       load: async () => {},
       reload: async () => {},
     };
@@ -241,6 +242,7 @@ describe('AgentPluginService plugin session-start wiring', () => {
       catalog,
       ready: Promise.resolve(),
       onDidChange: sinkChange.event,
+      listSkills: async () => [],
       load: async () => {},
       reload: async () => {},
     };

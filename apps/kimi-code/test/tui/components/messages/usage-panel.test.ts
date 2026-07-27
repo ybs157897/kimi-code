@@ -1,7 +1,17 @@
-import { visibleWidth } from '@moonshot-ai/pi-tui';
-import { afterEach, describe, expect, it } from 'vitest';
+/**
+ * Scenario: `/usage` renders session-local usage through the active TUI runtime.
+ * Responsibility: the panel consumes neutral usage DTOs and the command queries
+ * session status plus managed-account usage through runtime ports.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/messages/usage-panel.test.ts
+ */
 
+import { visibleWidth } from '@moonshot-ai/pi-tui';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { showUsage } from '#/tui/commands/info';
 import { buildUsageReportLines, UsagePanelComponent } from '#/tui/components/messages/usage-panel';
+import type { RuntimeManagedUsageResult } from '#/tui/runtime/runtime-auth-port';
+import type { AgentRuntimeStatus, AgentUsageStatus } from '#/tui/runtime/session-control-port';
 import { currentTheme, darkColors, lightColors } from '#/tui/theme';
 
 afterEach(() => {
@@ -12,19 +22,84 @@ function strip(text: string): string {
   return text.replaceAll(/\u001B\[[0-9;]*m/g, '');
 }
 
+interface RenderablePanel {
+  render(width: number): string[];
+}
+
+interface UsageHostOptions {
+  readonly provider?: string;
+  readonly getManagedUsage?: (
+    provider?: string,
+  ) => Promise<RuntimeManagedUsageResult>;
+}
+
+function makeUsageHost(
+  getStatus: () => Promise<AgentRuntimeStatus>,
+  options: UsageHostOptions = {},
+) {
+  const panels: RenderablePanel[] = [];
+  const requestRender = vi.fn();
+  const getManagedUsage =
+    options.getManagedUsage ??
+    vi.fn(async (): Promise<RuntimeManagedUsageResult> => ({
+      kind: 'error',
+      message: 'Managed usage unavailable.',
+    }));
+  const requireSessionRuntime = vi.fn(() => ({
+    agent: { getStatus },
+  }));
+  const model = options.provider === undefined ? '' : 'example-model';
+  const host = {
+    state: {
+      appState: {
+        model,
+        availableModels:
+          options.provider === undefined
+            ? {}
+            : {
+                [model]: {
+                  provider: options.provider,
+                  model: 'example-model',
+                  maxContextSize: 10_000,
+                },
+              },
+        contextUsage: 0,
+        contextTokens: 0,
+        maxContextTokens: 0,
+      },
+      transcriptContainer: {
+        addChild: (panel: RenderablePanel) => panels.push(panel),
+      },
+      ui: { requestRender },
+    },
+    harness: { auth: {} },
+    runtime: { auth: { getManagedUsage } },
+    requireSessionRuntime,
+  } as unknown as Parameters<typeof showUsage>[0];
+
+  return {
+    host,
+    panels,
+    requestRender,
+    requireSessionRuntime,
+    getManagedUsage,
+  };
+}
+
 describe('UsagePanelComponent', () => {
   it('formats session, context, and managed usage sections', () => {
-    const lines = buildUsageReportLines({
-      sessionUsage: {
-        byModel: {
-          kimi: {
-            inputOther: 1000,
-            inputCacheRead: 500,
-            inputCacheCreation: 500,
-            output: 250,
-          },
+    const sessionUsage: AgentUsageStatus = {
+      byModel: {
+        kimi: {
+          inputOther: 1000,
+          inputCacheRead: 500,
+          inputCacheCreation: 500,
+          output: 250,
         },
       },
+    };
+    const lines = buildUsageReportLines({
+      sessionUsage,
       contextUsage: 0.25,
       contextTokens: 2500,
       maxContextTokens: 10000,
@@ -228,5 +303,96 @@ describe('UsagePanelComponent', () => {
     currentTheme.setPalette(lightColors);
     component.invalidate();
     expect(bodyOf()).toContain(lightColors.text);
+  });
+});
+
+describe('showUsage', () => {
+  it('queries the active runtime status once and renders its usage and context', async () => {
+    const getStatus = vi.fn(async (): Promise<AgentRuntimeStatus> => ({
+      model: 'kimi',
+      thinkingEffort: 'high',
+      permission: 'manual',
+      planMode: false,
+      contextTokens: 2500,
+      maxContextTokens: 10000,
+      contextUsage: 0.25,
+      usage: {
+        byModel: {
+          kimi: {
+            inputOther: 1000,
+            inputCacheRead: 500,
+            inputCacheCreation: 500,
+            output: 250,
+          },
+        },
+      },
+    }));
+    const { host, panels, requestRender, requireSessionRuntime } = makeUsageHost(getStatus);
+
+    await showUsage(host);
+
+    expect(requireSessionRuntime).toHaveBeenCalledOnce();
+    expect(getStatus).toHaveBeenCalledOnce();
+    expect(requestRender).toHaveBeenCalledOnce();
+    expect(panels).toHaveLength(1);
+    const output = panels[0]!.render(120).map(strip).join('\n');
+    expect(output).toContain('kimi  input 2k  output 250');
+    expect(output).toContain('(2.4k / 9.8k)');
+  });
+
+  it('renders managed account usage returned by runtime auth', async () => {
+    const getStatus = vi.fn(async (): Promise<AgentRuntimeStatus> => ({
+      thinkingEffort: 'off',
+      permission: 'manual',
+      planMode: false,
+      contextTokens: 0,
+      maxContextTokens: 0,
+      contextUsage: 0,
+    }));
+    const getManagedUsage = vi.fn(
+      async (): Promise<RuntimeManagedUsageResult> => ({
+        kind: 'ok',
+        summary: {
+          label: 'Monthly',
+          used: 25,
+          limit: 100,
+          resetHint: 'resets next month',
+        },
+        limits: [],
+        extraUsage: {
+          balanceCents: 1500,
+          totalCents: 5000,
+          monthlyChargeLimitEnabled: false,
+          monthlyChargeLimitCents: 0,
+          monthlyUsedCents: 700,
+          currency: 'USD',
+        },
+      }),
+    );
+    const { host, panels } = makeUsageHost(getStatus, {
+      provider: 'managed:kimi-code',
+      getManagedUsage,
+    });
+
+    await showUsage(host);
+
+    expect(getManagedUsage).toHaveBeenCalledWith('managed:kimi-code');
+    const output = panels[0]!.render(120).map(strip).join('\n');
+    expect(output).toContain('Plan usage');
+    expect(output).toContain('25% used');
+    expect(output).toContain('Extra Usage');
+    expect(output).toContain('$15.00');
+  });
+
+  it('renders the runtime status error in the usage panel', async () => {
+    const getStatus = vi.fn(async (): Promise<AgentRuntimeStatus> => {
+      throw new Error('No active session');
+    });
+    const { host, panels } = makeUsageHost(getStatus);
+
+    await showUsage(host);
+
+    expect(getStatus).toHaveBeenCalledOnce();
+    expect(panels[0]!.render(120).map(strip).join('\n')).toContain('No active session');
   });
 });

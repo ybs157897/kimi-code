@@ -80,9 +80,6 @@ importers:
       '@moonshot-ai/acp-adapter':
         specifier: workspace:^
         version: link:../../packages/acp-adapter
-      '@moonshot-ai/agent-core-v2':
-        specifier: workspace:^
-        version: link:../../packages/agent-core-v2
       '@moonshot-ai/kap-server':
         specifier: workspace:^
         version: link:../../packages/kap-server
@@ -721,6 +718,9 @@ importers:
       jimp:
         specifier: ^1.6.1
         version: 1.6.1
+      jiti:
+        specifier: ^2.6.1
+        version: 2.6.1
       js-yaml:
         specifier: ^4.1.1
         version: 4.1.1
@@ -967,12 +967,18 @@ importers:
       '@moonshot-ai/agent-core':
         specifier: workspace:^
         version: link:../agent-core
+      '@moonshot-ai/agent-core-v2':
+        specifier: workspace:^
+        version: link:../agent-core-v2
       '@moonshot-ai/kaos':
         specifier: workspace:^
         version: link:../kaos
       '@moonshot-ai/kimi-code-oauth':
         specifier: workspace:^
         version: link:../oauth
+      '@moonshot-ai/klient':
+        specifier: workspace:^
+        version: link:../klient
       '@moonshot-ai/kosong':
         specifier: workspace:^
         version: link:../kosong

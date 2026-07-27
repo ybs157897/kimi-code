@@ -786,6 +786,80 @@ describe('foldWireRecordFacts (cold facts)', () => {
     expect(stillPlanning.meta.modes).toEqual({ plan: {} });
   });
 
+  it('folds expert-team records into meta and lifecycle markers', () => {
+    const base = baseWithMarker();
+    const binding = {
+      pluginId: 'expert-team',
+      displayName: 'Expert Team',
+      leadAgentName: 'lead',
+      activatedAt: '2026-07-27T00:00:00.000Z',
+    };
+    const team = {
+      id: 'analysis',
+      name: 'analysis',
+      createdAt: '2026-07-27T00:01:00.000Z',
+      members: [],
+    };
+    const active = foldWireRecordFacts(
+      [
+        { type: 'expert_team.activate', snapshot: { binding }, time: 1000 },
+        { type: 'expert_team.create', team, time: 2000 },
+        {
+          type: 'expert_team.member_upsert',
+          member: {
+            name: 'researcher',
+            agentId: 'researcher@analysis',
+            status: 'running',
+            taskId: 'task-1',
+          },
+          time: 3000,
+        },
+      ],
+      base,
+    );
+    expect(active.meta.modes?.expertTeam).toEqual({
+      ...binding,
+      team: {
+        ...team,
+        members: [
+          {
+            name: 'researcher',
+            agentId: 'researcher@analysis',
+            status: 'running',
+            taskId: 'task-1',
+          },
+        ],
+      },
+    });
+    expect(
+      active.items
+        .filter((item) => item.kind === 'marker')
+        .map((item) => item.kind === 'marker' && item.marker),
+    ).toEqual(['compaction', 'expert-team.activate', 'expert-team.create']);
+
+    const ended = foldWireRecordFacts(
+      [
+        { type: 'expert_team.activate', snapshot: { binding }, time: 1000 },
+        { type: 'expert_team.create', team, time: 2000 },
+        { type: 'expert_team.delete', time: 3000 },
+        { type: 'expert_team.deactivate', time: 4000 },
+      ],
+      base,
+    );
+    expect(ended.meta.modes?.expertTeam).toBeUndefined();
+    expect(
+      ended.items
+        .filter((item) => item.kind === 'marker')
+        .map((item) => item.kind === 'marker' && item.marker),
+    ).toEqual([
+      'compaction',
+      'expert-team.activate',
+      'expert-team.create',
+      'expert-team.delete',
+      'expert-team.deactivate',
+    ]);
+  });
+
   it('folds plan.revision records into the plan badge and a timeline marker', () => {
     const base = baseWithMarker();
     const revision = {

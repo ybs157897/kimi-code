@@ -17,6 +17,7 @@ import { formatErrorMessage } from '../utils/event-payload';
 import type { ImageAttachmentStore } from '../utils/image-attachment-store';
 import { extractMediaAttachments } from '../utils/image-placeholder';
 import type { PendingExit, QueuedMessage, SteerInputItem } from '../types';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
 import type { TUIState } from '../tui-state';
 import type { BtwPanelController } from './btw-panel';
 
@@ -33,7 +34,8 @@ export interface EditorKeyboardHost {
 
   handleUserInput(text: string): void;
   readonly btwPanelController: BtwPanelController;
-  steerMessage(session: Session, input: readonly SteerInputItem[]): void;
+  requireSessionRuntime(): Pick<TUISessionRuntime, 'agent' | 'context'>;
+  steerMessage(input: readonly SteerInputItem[]): void;
   validateMediaCapabilities(extraction: {
     hasMedia: boolean;
     imageAttachmentIds: readonly number[];
@@ -212,7 +214,9 @@ export class EditorKeyboardController {
     };
 
     editor.onShiftTab = () => {
-      if (host.session === undefined) {
+      try {
+        host.requireSessionRuntime();
+      } catch {
         host.showError(NO_ACTIVE_SESSION_MESSAGE);
         return;
       }
@@ -300,13 +304,22 @@ export class EditorKeyboardController {
         ) {
           return;
         }
-        host.state.queuedMessages = queued.filter((m) => m.mode === 'bash');
-        if (!editorIsBash) editor.setText('');
-        const session = host.session;
-        if (host.state.appState.model.trim().length === 0 || session === undefined) {
+        if (host.state.appState.model.trim().length === 0) {
           host.showError(LLM_NOT_SET_MESSAGE);
+        } else if (host.state.appState.sessionId.length === 0) {
+          host.showError(NO_ACTIVE_SESSION_MESSAGE);
         } else {
-          host.steerMessage(session, items);
+          try {
+            host.requireSessionRuntime();
+          } catch {
+            host.showError(NO_ACTIVE_SESSION_MESSAGE);
+            host.updateQueueDisplay();
+            host.state.ui.requestRender();
+            return;
+          }
+          host.state.queuedMessages = queued.filter((m) => m.mode === 'bash');
+          if (!editorIsBash) editor.setText('');
+          host.steerMessage(items);
         }
       }
       host.updateQueueDisplay();
@@ -411,16 +424,19 @@ export class EditorKeyboardController {
     // Cancel any running `!` shell command (treated as a streaming phase) in
     // addition to the agent turn, so Esc / Ctrl+C interrupts it too.
     this.host.cancelRunningShellCommand();
-    void this.host.session?.cancel();
+    if (this.host.state.appState.sessionId.length === 0) return;
+    void this.host.requireSessionRuntime().agent.cancel();
   }
 
   private cancelCurrentCompaction(): void {
-    const session = this.host.session;
-    if (session === undefined) return;
-    void session.cancelCompaction().catch((error: unknown) => {
-      const message = formatErrorMessage(error);
-      this.host.showError(`Failed to cancel compaction: ${message}`);
-    });
+    if (this.host.state.appState.sessionId.length === 0) return;
+    void this.host
+      .requireSessionRuntime()
+      .context.cancelCompaction()
+      .catch((error: unknown) => {
+        const message = formatErrorMessage(error);
+        this.host.showError(`Failed to cancel compaction: ${message}`);
+      });
   }
 
   private async handleClipboardImagePaste(): Promise<boolean> {
@@ -461,8 +477,9 @@ export class EditorKeyboardController {
       maxEdge: this.host.harness?.imageLimits?.maxEdgePx(),
       telemetry: {
         client: {
-          track: (event, properties) =>
-            this.host.track(event, properties === undefined ? undefined : { ...properties }),
+          track: (event, properties) => {
+            this.host.track(event, properties === undefined ? undefined : { ...properties });
+          },
         },
         source: 'tui_paste',
       },

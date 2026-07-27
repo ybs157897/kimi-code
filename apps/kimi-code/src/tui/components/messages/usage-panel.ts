@@ -6,7 +6,6 @@
 
 import type { Component } from '@moonshot-ai/pi-tui';
 import { truncateToWidth, visibleWidth } from '@moonshot-ai/pi-tui';
-import type { SessionUsage, TokenUsage } from '@moonshot-ai/kimi-code-sdk';
 
 import {
   formatTokenCount,
@@ -15,6 +14,7 @@ import {
   safeUsageRatio,
   usagePercent,
 } from '#/utils/usage/usage-format';
+import type { AgentTokenUsage, AgentUsageStatus } from '#/tui/runtime/session-control-port';
 import { currentTheme } from '#/tui/theme';
 import type { ColorToken } from '#/tui/theme';
 
@@ -47,7 +47,7 @@ export interface ManagedUsageReport {
 }
 
 export interface UsageReportOptions {
-  readonly sessionUsage?: SessionUsage;
+  readonly sessionUsage?: AgentUsageStatus;
   readonly sessionUsageError?: string;
   readonly contextUsage: number;
   readonly contextTokens: number;
@@ -65,7 +65,7 @@ function usageNumber(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value > 0 ? value : 0;
 }
 
-function usageInputTotal(usage: TokenUsage): number {
+function usageInputTotal(usage: AgentTokenUsage): number {
   return (
     usageNumber(usage.inputOther) +
     usageNumber(usage.inputCacheRead) +
@@ -74,16 +74,14 @@ function usageInputTotal(usage: TokenUsage): number {
 }
 
 function buildSessionUsageSection(
-  usage: SessionUsage | undefined,
+  usage: AgentUsageStatus | undefined,
   error: string | undefined,
   value: Colorize,
   muted: Colorize,
   errorStyle: Colorize,
 ): string[] {
   if (error !== undefined) return [errorStyle(`  ${error}`)];
-  const byModel = (usage as { readonly byModel?: Record<string, TokenUsage> } | undefined)
-    ?.byModel;
-  const entries = Object.entries(byModel ?? {});
+  const entries = Object.entries(usage?.byModel ?? {});
   if (entries.length === 0) return [muted('  No token usage recorded yet.')];
 
   const lines: string[] = [];

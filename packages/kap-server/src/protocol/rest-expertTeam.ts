@@ -1,8 +1,9 @@
 /**
- * Native `/api/v2` expert-team REST wire schemas.
+ * `/api/v1` expert-team REST wire schemas.
  *
- * The engine owns camelCase domain state; this boundary projects stable
- * snake_case HTTP payloads for discovery, activation, progress, and exit.
+ * The engine owns camelCase domain state; this product boundary projects
+ * stable snake_case HTTP payloads for discovery, activation, progress, and
+ * exit.
  */
 
 import { z } from 'zod';

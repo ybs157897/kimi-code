@@ -2,10 +2,10 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { ErrorCodes, KimiError } from '@moonshot-ai/kimi-code-sdk';
 
 import {
   appendGoalQueueItem,
+  GoalQueueStoreError,
   moveGoalQueueItem,
   readGoalQueue,
   removeGoalQueueItem,
@@ -128,12 +128,23 @@ describe('goal queue store', () => {
     expect(movedDown.goals.map((goal) => goal.objective)).toEqual(['Third', 'First', 'Second']);
   });
 
-  it('rejects empty and over-long objectives', async () => {
-    await expect(appendGoalQueueItem(session(), { objective: '  ' })).rejects.toMatchObject({
-      code: ErrorCodes.GOAL_OBJECTIVE_EMPTY,
+  it('rejects an empty objective with the public store error', async () => {
+    const result = appendGoalQueueItem(session(), { objective: '  ' });
+
+    await expect(result).rejects.toBeInstanceOf(GoalQueueStoreError);
+    await expect(result).rejects.toMatchObject({
+      code: 'objective_empty',
+      message: 'Goal objective cannot be empty',
     });
-    await expect(appendGoalQueueItem(session(), { objective: 'x'.repeat(4001) })).rejects.toMatchObject({
-      code: ErrorCodes.GOAL_OBJECTIVE_TOO_LONG,
+  });
+
+  it('rejects an over-long objective with the public store error', async () => {
+    const result = appendGoalQueueItem(session(), { objective: 'x'.repeat(4001) });
+
+    await expect(result).rejects.toBeInstanceOf(GoalQueueStoreError);
+    await expect(result).rejects.toMatchObject({
+      code: 'objective_too_long',
+      message: 'Goal objective cannot exceed 4000 characters',
     });
   });
 
@@ -150,7 +161,13 @@ describe('goal queue store', () => {
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, QUEUE_FILE), partial, 'utf-8');
 
-    await expect(readGoalQueue(session())).rejects.toThrow('Invalid JSON in goal queue');
+    const result = readGoalQueue(session());
+
+    await expect(result).rejects.toBeInstanceOf(GoalQueueStoreError);
+    await expect(result).rejects.toMatchObject({
+      code: 'invalid_json',
+      message: expect.stringContaining('Invalid JSON in goal queue'),
+    });
     await expect(readFile(join(dir, QUEUE_FILE), 'utf-8')).resolves.toBe(partial);
   });
 
@@ -161,11 +178,12 @@ describe('goal queue store', () => {
   });
 
   it('throws a goal-not-found error when the target item is missing', async () => {
-    await expect(removeGoalQueueItem(session(), { goalId: 'missing' })).rejects.toBeInstanceOf(
-      KimiError,
-    );
-    await expect(removeGoalQueueItem(session(), { goalId: 'missing' })).rejects.toMatchObject({
-      code: ErrorCodes.GOAL_NOT_FOUND,
+    const result = removeGoalQueueItem(session(), { goalId: 'missing' });
+
+    await expect(result).rejects.toBeInstanceOf(GoalQueueStoreError);
+    await expect(result).rejects.toMatchObject({
+      code: 'not_found',
+      message: 'No queued goal found',
     });
   });
 });

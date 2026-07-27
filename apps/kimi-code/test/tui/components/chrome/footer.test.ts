@@ -1,10 +1,18 @@
+/**
+ * Scenario: the footer renders active runtime state and model metadata.
+ * Responsibilities: live theme/dance rendering, thinking labels, expert
+ * counts, and effective model display fallbacks remain presentation-only.
+ * Wiring: the component and theme are real; no external boundary is stubbed.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/chrome/footer.test.ts
+ */
+
 import chalk from 'chalk';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { FooterComponent } from '#/tui/components/chrome/footer';
 import { setRainbowDance, type RainbowDanceController } from '#/tui/easter-eggs/dance';
+import type { RuntimeModelCatalogModel } from '#/tui/runtime/runtime-model-catalog-port';
 import { currentTheme, darkColors, lightColors } from '#/tui/theme';
-import type { ModelAlias } from '@moonshot-ai/kimi-code-sdk';
 import type { AppState } from '#/tui/types';
 
 const TRUECOLOR_PATTERN = /\[38;2;(\d+);(\d+);(\d+)m/g;
@@ -108,7 +116,7 @@ describe('FooterComponent', () => {
   });
 
   it('shows the effort for an effort-capable model', () => {
-    const effortModel: ModelAlias = {
+    const effortModel: RuntimeModelCatalogModel = {
       provider: 'managed:kimi-code',
       model: 'kimi-k2',
       maxContextSize: 262144,
@@ -126,7 +134,7 @@ describe('FooterComponent', () => {
   });
 
   it('does not show the effort for a legacy boolean model', () => {
-    const plainModel: ModelAlias = {
+    const plainModel: RuntimeModelCatalogModel = {
       provider: 'managed:kimi-code',
       model: 'kimi-k2',
       maxContextSize: 262144,
@@ -165,7 +173,7 @@ describe('FooterComponent', () => {
 
 describe('FooterComponent overrides', () => {
   it('shows the overridden effort list', () => {
-    const effortModelWithOverride: ModelAlias = {
+    const effortModelWithOverride: RuntimeModelCatalogModel = {
       provider: 'managed:kimi-code',
       model: 'kimi-k2',
       maxContextSize: 262144,
@@ -203,5 +211,29 @@ describe('FooterComponent displayName override', () => {
 
     expect(footer.render(120).join('\n')).toContain('Custom Name');
     expect(footer.render(120).join('\n')).not.toContain('Remote Name');
+  });
+
+  it('falls back to the catalog model name when displayName is absent', () => {
+    const state: AppState = {
+      ...appState,
+      model: 'active-alias',
+      availableModels: {
+        'active-alias': {
+          provider: 'example-provider',
+          model: 'runtime-model-name',
+          maxContextSize: 262144,
+        },
+      },
+    };
+
+    expect(new FooterComponent(state).render(120).join('\n')).toContain(
+      'runtime-model-name',
+    );
+  });
+
+  it('falls back to the active alias when the catalog entry is absent', () => {
+    const rendered = new FooterComponent(appState).render(120).join('\n');
+
+    expect(rendered).toContain('kimi-k2');
   });
 });

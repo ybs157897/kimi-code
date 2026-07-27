@@ -21,10 +21,10 @@ import {
   STREAMING_ARGS_PREVIEW_MAX_CHARS,
 } from '#/tui/constant/streaming';
 import { FAILURE_MARK, STATUS_BULLET, SUCCESS_MARK } from '#/tui/constant/symbols';
+import type { AgentTokenUsage } from '#/tui/runtime/session-control-port';
 import { currentTheme } from '#/tui/theme';
 import { createMarkdownTheme } from '#/tui/theme/pi-tui-theme';
 import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
-import type { TokenUsage } from '@moonshot-ai/kimi-code-sdk';
 import { appendStreamingArgsPreview } from '#/tui/utils/event-payload';
 import { decodeMcpToolName } from '#/tui/utils/mcp-tool-name';
 import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
@@ -142,16 +142,18 @@ function formatSubagentContextTokens(contextTokens: number | undefined): string 
   return `${formatTokenCount(contextTokens)} tok`;
 }
 
-function usageInputTotal(usage: TokenUsage): number {
+function usageInputTotal(usage: Partial<AgentTokenUsage>): number {
   return (usage.inputOther ?? 0) + (usage.inputCacheRead ?? 0) + (usage.inputCacheCreation ?? 0);
 }
 
-function usageTotal(usage: TokenUsage | undefined): number {
+function usageTotal(usage: Partial<AgentTokenUsage> | undefined): number {
   if (usage === undefined) return 0;
-  return usageInputTotal(usage) + usage.output;
+  return usageInputTotal(usage) + (usage.output ?? 0);
 }
 
-function formatSubagentTokens(usage: TokenUsage | undefined): string | undefined {
+function formatSubagentTokens(
+  usage: Partial<AgentTokenUsage> | undefined,
+): string | undefined {
   const total = usageTotal(usage);
   if (total <= 0) return undefined;
   return `${formatTokenCount(total)} tok`;
@@ -594,7 +596,7 @@ export class ToolCallComponent extends Container {
    */
   private backgroundTaskTerminalPhase: 'done' | 'failed' | undefined;
   private subagentContextTokens: number | undefined;
-  private subagentUsage: TokenUsage | undefined;
+  private subagentUsage: AgentTokenUsage | undefined;
   private subagentResultSummary: string | undefined;
   private subagentError: string | undefined;
   private streamingProgressTimer: ReturnType<typeof setInterval> | undefined;
@@ -1137,7 +1139,7 @@ export class ToolCallComponent extends Container {
    */
   onSubagentCompleted(payload: {
     contextTokens?: number | undefined;
-    usage?: TokenUsage | undefined;
+    usage?: AgentTokenUsage | undefined;
     resultSummary: string;
   }): void {
     this.subagentPhase = 'done';
@@ -1161,7 +1163,7 @@ export class ToolCallComponent extends Container {
   /** Handles SDK `agent.status.updated` from the child agent. */
   updateSubagentMetrics(payload: {
     contextTokens?: number | undefined;
-    usage?: TokenUsage | undefined;
+    usage?: AgentTokenUsage | undefined;
   }): void {
     if (payload.contextTokens !== undefined && payload.contextTokens > 0) {
       this.subagentContextTokens = payload.contextTokens;

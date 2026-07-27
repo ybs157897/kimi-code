@@ -37,6 +37,7 @@ function stripAnsi(text: string): string {
 }
 
 interface ReplayDriver {
+  readonly harness: ReturnType<typeof makeHarness>;
   readonly state: TUIState;
   readonly streamingUI: StreamingUIController;
   readonly sessionEventHandler: SessionEventHandler;
@@ -201,6 +202,12 @@ function makeSession(
     setThinking: vi.fn(async () => {}),
     setPermission: vi.fn(async () => {}),
     setPlanMode: vi.fn(async () => {}),
+    listExpertTeams: vi.fn(async () => []),
+    getExpertTeamStatus: vi.fn(async () => null),
+    activateExpertTeam: vi.fn(async () => {
+      throw new Error('Not configured in this test.');
+    }),
+    deactivateExpertTeam: vi.fn(async () => {}),
     onEvent: vi.fn(() => vi.fn()),
     listMcpServers: vi.fn(async () => []),
     listSkills: vi.fn(async () => []),
@@ -216,11 +223,15 @@ function makeHarness(initialSession: Session) {
   const interactiveAgentScope = new AsyncLocalStorage<string>();
   return {
     getConfig: vi.fn(async () => ({
+      providers: {},
       models: {
-        k2: { model: 'moonshot-v1', maxContextSize: 100 },
+        k2: { provider: 'test', model: 'moonshot-v1', maxContextSize: 100 },
       },
     })),
     setConfig: vi.fn(async () => ({ providers: {} })),
+    getSession: vi.fn((sessionId: string) =>
+      sessionId === initialSession.id ? initialSession : undefined,
+    ),
     createSession: vi.fn(async () => initialSession),
     resumeSession: vi.fn(async () => initialSession),
     forkSession: vi.fn(async () => initialSession),
@@ -263,6 +274,7 @@ async function replayIntoDriver(
   const initial = makeSession([]);
   const resumed = makeSession(replay, overrides);
   const driver = await makeDriver(initial);
+  driver.harness.getSession.mockReturnValue(resumed);
   await driver.switchToSession(resumed, 'Resumed session (ses-replay).');
   return driver;
 }
@@ -1102,6 +1114,7 @@ describe('KimiTUI resume message replay', () => {
       },
     ]);
     const driver = await makeDriver(initial);
+    driver.harness.getSession.mockReturnValue(resumed);
     driver.state.toolOutputExpanded = true;
     await driver.switchToSession(resumed, 'Resumed session (ses-replay).');
 

@@ -1,7 +1,11 @@
-import type { ExpertTeamStatusSnapshot } from '@moonshot-ai/kimi-code-sdk';
-
 import { ExpertTeamSelectorComponent } from '../components/dialogs/expert-team-selector';
 import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/kimi-tui';
+import type {
+  SessionExpertTeamMember,
+  SessionExpertTeamMemberStatus,
+  SessionExpertTeamSnapshot,
+} from '../runtime/session-expert-team-port';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
 import { formatErrorMessage } from '../utils/event-payload';
 import type { SlashCommandHost } from './dispatch';
 
@@ -9,22 +13,24 @@ export async function handleExpertsCommand(
   host: SlashCommandHost,
   args: string,
 ): Promise<void> {
-  const session = host.session;
-  if (session === undefined) {
+  let runtime: TUISessionRuntime;
+  try {
+    runtime = host.requireSessionRuntime();
+  } catch {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
 
   const input = args.trim();
   if (input.toLowerCase() === 'status') {
-    await showExpertTeamStatus(host);
+    await showExpertTeamStatus(host, runtime);
     return;
   }
 
-  const teams = await session.listExpertTeams();
+  const teams = await runtime.expertTeam.list();
   if (input.length > 0) {
     if (input.toLowerCase() === 'off' || input.toLowerCase() === 'standard') {
-      await applyExpertTeam(host, null);
+      await applyExpertTeam(host, runtime, null);
       return;
     }
     const team = teams.find((candidate) => candidate.pluginId === input);
@@ -32,7 +38,7 @@ export async function handleExpertsCommand(
       host.showError(`Expert team plugin "${input}" was not found.`);
       return;
     }
-    await applyExpertTeam(host, team.pluginId);
+    await applyExpertTeam(host, runtime, team.pluginId);
     return;
   }
 
@@ -54,7 +60,7 @@ export async function handleExpertsCommand(
       current: host.state.appState.expertTeam ?? null,
       onSelect: (pluginId) => {
         host.restoreEditor();
-        void applyExpertTeam(host, pluginId);
+        void applyExpertTeam(host, runtime, pluginId);
       },
       onCancel: () => {
         host.restoreEditor();
@@ -66,28 +72,25 @@ export async function handleExpertsCommand(
 
 async function applyExpertTeam(
   host: SlashCommandHost,
+  runtime: TUISessionRuntime,
   pluginId: string | null,
 ): Promise<void> {
-  const session = host.session;
-  if (session === undefined) {
-    host.showError(NO_ACTIVE_SESSION_MESSAGE);
-    return;
-  }
   try {
     if (pluginId === null) {
-      await session.deactivateExpertTeam();
+      await runtime.expertTeam.deactivate();
       host.setAppState({ expertTeam: null, expertTeamMembers: [] });
       host.showNotice('Expert team: OFF', 'Restored the standard Kimi agent.');
       return;
     }
     if (host.state.appState.swarmMode) {
-      await session.setSwarmMode(false, 'manual');
+      await runtime.swarm.exit();
     }
-    const expertTeam = await session.activateExpertTeam(pluginId);
-    const status = await session.getExpertTeamStatus();
+    const expertTeam = await runtime.expertTeam.activate(pluginId);
+    const status = await runtime.expertTeam.get();
+    const members = toAppStateMembers(status?.members ?? []);
     host.setAppState({
       expertTeam,
-      expertTeamMembers: status?.members ?? [],
+      expertTeamMembers: members,
       swarmMode: false,
     });
     host.state.swarmModeEntry = undefined;
@@ -100,21 +103,20 @@ async function applyExpertTeam(
   }
 }
 
-async function showExpertTeamStatus(host: SlashCommandHost): Promise<void> {
-  const session = host.session;
-  if (session === undefined) {
-    host.showError(NO_ACTIVE_SESSION_MESSAGE);
-    return;
-  }
+async function showExpertTeamStatus(
+  host: SlashCommandHost,
+  runtime: TUISessionRuntime,
+): Promise<void> {
   try {
-    const status = await session.getExpertTeamStatus();
+    const status = await runtime.expertTeam.get();
     if (status === null) {
       host.showNotice('Expert team: OFF', 'The standard Kimi agent is active.');
       return;
     }
+    const members = status.members ?? [];
     host.setAppState({
       expertTeam: status,
-      expertTeamMembers: status.members,
+      expertTeamMembers: toAppStateMembers(members),
     });
     host.showNotice(`Expert team: ${status.displayName}`, formatExpertTeamStatus(status));
   } catch (error) {
@@ -122,14 +124,23 @@ async function showExpertTeamStatus(host: SlashCommandHost): Promise<void> {
   }
 }
 
-function formatExpertTeamStatus(status: ExpertTeamStatusSnapshot): string {
+function formatExpertTeamStatus(status: SessionExpertTeamSnapshot): string {
+  const roster = status.members ?? [];
   const members =
-    status.members.length === 0
+    roster.length === 0
       ? ['- none']
-      : status.members.map((member) => `- [${formatMemberPhase(member.status)}] ${member.name}`);
+      : roster.map((member) => `- [${formatMemberPhase(member.status)}] ${member.name}`);
   return [`Lead: ${status.leadAgentName}`, 'Members:', ...members].join('\n');
 }
 
-function formatMemberPhase(phase: ExpertTeamStatusSnapshot['members'][number]['status']): string {
+function formatMemberPhase(phase: SessionExpertTeamMemberStatus): string {
   return phase === 'not_started' ? 'not started' : phase;
+}
+
+function toAppStateMembers(
+  members: readonly SessionExpertTeamMember[],
+): NonNullable<Parameters<SlashCommandHost['setAppState']>[0]['expertTeamMembers']> {
+  return members as NonNullable<
+    Parameters<SlashCommandHost['setAppState']>[0]['expertTeamMembers']
+  >;
 }

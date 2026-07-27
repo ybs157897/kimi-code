@@ -18,21 +18,21 @@ import {
   visibleWidth,
   type Focusable,
 } from '@moonshot-ai/pi-tui';
-import type { BackgroundTaskInfo, BackgroundTaskStatus } from '@moonshot-ai/kimi-code-sdk';
 
 import { currentTheme } from '#/tui/theme';
+import type { AgentTask, AgentTaskStatus } from '@/tui/runtime/session-control-port';
 import { printableChar } from '@/tui/utils/printable-key';
 
 const ELLIPSIS = '…';
 
 export interface TaskOutputViewerProps {
   readonly taskId: string;
-  readonly info: BackgroundTaskInfo | undefined;
+  readonly info: AgentTask | undefined;
   readonly output: string;
   readonly onClose: () => void;
 }
 
-const STATUS_LABEL: Record<BackgroundTaskStatus, string> = {
+const STATUS_LABEL: Record<AgentTaskStatus, string> = {
   running: 'running',
   completed: 'completed',
   failed: 'failed',
@@ -41,7 +41,7 @@ const STATUS_LABEL: Record<BackgroundTaskStatus, string> = {
   lost: 'lost',
 };
 
-function statusColor(status: BackgroundTaskStatus): 'success' | 'textMuted' | 'error' {
+function statusColor(status: AgentTaskStatus): 'success' | 'textMuted' | 'error' {
   switch (status) {
     case 'running':
       return 'success';
@@ -196,7 +196,11 @@ export class TaskOutputViewer extends Container implements Focusable {
     const segments: string[] = [];
     if (info !== undefined) {
       segments.push(currentTheme.fg(statusColor(info.status), STATUS_LABEL[info.status]));
-      if (info.kind === 'process' && info.exitCode !== null) {
+      if (
+        info.kind === 'process' &&
+        info.exitCode !== undefined &&
+        info.exitCode !== null
+      ) {
         segments.push(currentTheme.fg('textMuted', `exit ${String(info.exitCode)}`));
       }
       if (info.description && info.description.length > 0) {

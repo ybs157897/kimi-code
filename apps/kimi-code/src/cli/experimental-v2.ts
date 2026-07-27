@@ -1,9 +1,9 @@
 /**
- * Experimental agent-core-v2 engine gate for `kimi -p` (print mode).
+ * Experimental agent-core-v2 engine gate for CLI print and shell modes.
  *
  * When the master switch `KIMI_CODE_EXPERIMENTAL_FLAG` is truthy, print mode
- * routes to the native agent-core-v2 runner instead of the default v1
- * harness (see `run-prompt.ts`). Read directly from the env (matching
+ * routes to the SDK Runtime + Klient v2 runners instead of the default v1
+ * harness (see `run-prompt.ts` and `run-shell.ts`). Read directly from the env (matching
  * `cli/update/rollout.ts`) because the CLI must not depend on the core flag
  * registry. Unset / any non-truthy value keeps the v1 harness.
  *

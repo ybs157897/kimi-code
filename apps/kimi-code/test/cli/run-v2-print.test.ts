@@ -1,12 +1,60 @@
+/**
+ * Scenario: v2 print background policy and Runtime + Klient rendering.
+ * Responsibilities: preserve print completion behavior and render the public
+ * Klient event contract in text/stream-json modes. Runtime creation is the
+ * only stubbed host boundary.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/cli/run-v2-print.test.ts
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 
+import type { CLIOptions } from '#/cli/options';
 import {
   applyPrintBackgroundPolicy,
   createPrintTurnEndings,
   PrintSteeredTurnFailedError,
+  runV2Print,
   type PrintTurnEnding,
   type PrintTurnEndings,
 } from '#/cli/v2/run-v2-print';
+
+const hostMocks = vi.hoisted(() => ({
+  createKimiV2Runtime: vi.fn(),
+  createKimiDefaultHeaders: vi.fn(() => ({ 'User-Agent': 'kimi-test' })),
+  createKimiDeviceId: vi.fn(
+    (_homeDir: string, options?: { readonly onFirstLaunch?: () => void }) => {
+      options?.onFirstLaunch?.();
+      return 'device-test';
+    },
+  ),
+  getCachedAccessToken: vi.fn(async () => 'access-test'),
+}));
+
+vi.mock('@moonshot-ai/kimi-code-sdk/v2', () => ({
+  createKimiV2Runtime: hostMocks.createKimiV2Runtime,
+}));
+
+vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@moonshot-ai/kimi-code-sdk')>();
+  return {
+    ...actual,
+    KimiAuthFacade: class {
+      getCachedAccessToken = hostMocks.getCachedAccessToken;
+    },
+    resolveConfigPath: () => '/tmp/kimi-v2-host-test/config.toml',
+    resolveKimiHome: () => '/tmp/kimi-v2-host-test',
+  };
+});
+
+vi.mock('@moonshot-ai/kimi-code-oauth', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@moonshot-ai/kimi-code-oauth')>();
+  return {
+    ...actual,
+    createKimiDefaultHeaders: hostMocks.createKimiDefaultHeaders,
+    createKimiDeviceId: hostMocks.createKimiDeviceId,
+  };
+});
 
 function ending(
   turnId: number,
@@ -453,3 +501,456 @@ describe('createPrintTurnEndings', () => {
     await expect(pending).resolves.toMatchObject({ turnId: 4 });
   });
 });
+
+describe('runV2Print (Runtime + Klient host contract)', () => {
+  it('runs a text prompt when listeners attach asynchronously, preserving the response', async () => {
+    const rig = createPrintHostRig([
+      { type: 'assistant.delta', turnId: 1, delta: 'hello from klient' },
+      { type: 'turn.ended', turnId: 1, reason: 'completed' },
+    ]);
+    const stdout = testWriter();
+    const stderr = testWriter();
+
+    await runV2Print(
+      printOptions({ skillsDirs: ['/skills'] }),
+      '1.2.3-test',
+      { stdout, stderr },
+    );
+
+    expect(hostMocks.createKimiV2Runtime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        homeDir: '/tmp/kimi-v2-host-test',
+        clientVersion: '1.2.3-test',
+        skillDirs: ['/skills'],
+        mode: 'print',
+      }),
+    );
+    expect(rig.runtime.klient.global.sessions.create).toHaveBeenCalledWith({
+      workDir: process.cwd(),
+      additionalDirs: undefined,
+      mainAgentBinding: {
+        profile: 'agent',
+        model: 'k2',
+      },
+    });
+    expect(rig.agent.setModel).not.toHaveBeenCalled();
+    expect(rig.agent.setPermission).toHaveBeenCalledWith('auto');
+    expect(rig.agent.prompt).toHaveBeenCalledWith({
+      input: [{ type: 'text', text: 'hello' }],
+    });
+    expect(stdout.text()).toContain('hello from klient');
+    expect(stderr.text()).toContain('kimi version 1.2.3-test');
+    expect(rig.runtime.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('owns Cloud Telemetry context and shutdown through the Runtime facade', async () => {
+    const rig = createPrintHostRig([
+      { type: 'turn.ended', turnId: 1, reason: 'completed' },
+    ]);
+
+    await runV2Print(printOptions({ model: 'k2-selected' }), '1.2.3-test', {
+      stdout: testWriter(),
+      stderr: testWriter(),
+    });
+
+    const runtimeOptions = hostMocks.createKimiV2Runtime.mock.calls.at(-1)?.[0];
+    expect(runtimeOptions).toMatchObject({
+      telemetry: {
+        enabled: true,
+        deviceId: 'device-test',
+        appName: 'kimi-code-cli',
+        uiMode: 'print',
+        model: 'k2-selected',
+      },
+    });
+    await expect(runtimeOptions.telemetry.getAccessToken()).resolves.toBe('access-test');
+    expect(rig.runtime.telemetry.setContext).toHaveBeenCalledWith({
+      sessionId: 'ses_klient',
+      model: 'k2-selected',
+    });
+    expect(rig.runtime.telemetry.track).toHaveBeenCalledWith('first_launch');
+    expect(rig.runtime.telemetry.track).toHaveBeenCalledWith('exit', {
+      duration_ms: expect.any(Number),
+    });
+    expect(rig.runtime.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('seeds an agent file and binds its resolved profile through Klient', async () => {
+    const rig = createPrintHostRig(
+      [{ type: 'turn.ended', turnId: 1, reason: 'completed' }],
+      { agentFileProfileName: 'file-reviewer' },
+    );
+
+    await runV2Print(
+      printOptions({ agentFiles: ['./reviewer.md'] }),
+      '1.2.3-test',
+      { stdout: testWriter(), stderr: testWriter() },
+    );
+
+    expect(hostMocks.createKimiV2Runtime).toHaveBeenCalledWith(
+      expect.objectContaining({ agentFiles: ['./reviewer.md'] }),
+    );
+    expect(rig.runtime.agentFiles.resolveProfileName).toHaveBeenCalledWith({
+      file: './reviewer.md',
+      workDir: process.cwd(),
+    });
+    expect(rig.runtime.klient.global.sessions.create).toHaveBeenCalledWith({
+      workDir: process.cwd(),
+      additionalDirs: undefined,
+      mainAgentBinding: {
+        profile: 'file-reviewer',
+        model: 'k2',
+      },
+    });
+    expect(rig.agent.profile.bind).not.toHaveBeenCalled();
+  });
+
+  it('creates a headless goal, waits for its terminal snapshot, and writes the summary', async () => {
+    const completedGoal = goalSnapshot({ status: 'complete', turnsUsed: 2 });
+    const rig = createPrintHostRig(
+      [
+        { type: 'assistant.delta', turnId: 1, delta: 'goal done' },
+        { type: 'turn.ended', turnId: 1, reason: 'completed' },
+      ],
+      { goalAfterPrompt: completedGoal },
+    );
+    const stdout = testWriter();
+
+    await runV2Print(
+      printOptions({
+        prompt: '/goal replace Ship the v2 host',
+        outputFormat: 'stream-json',
+      }),
+      '1.2.3-test',
+      { stdout, stderr: testWriter() },
+    );
+
+    expect(rig.agent.goal.create).toHaveBeenCalledWith({
+      objective: 'Ship the v2 host',
+      replace: true,
+    });
+    expect(rig.agent.prompt).toHaveBeenCalledWith({
+      input: [{ type: 'text', text: 'Ship the v2 host' }],
+    });
+    expect(stdout.jsonLines()).toContainEqual(
+      expect.objectContaining({
+        type: 'goal.summary',
+        status: 'complete',
+        turnsUsed: 2,
+      }),
+    );
+  });
+
+  it('keeps the Klient host alive for a scheduled cron turn before exiting', async () => {
+    const rig = createPrintHostRig(
+      [
+        { type: 'turn.ended', turnId: 1, reason: 'completed' },
+        { type: 'turn.ended', turnId: 2, reason: 'completed' },
+      ],
+      { cronNextFireTimes: [Date.now() - 1, null] },
+    );
+
+    await runV2Print(printOptions(), '1.2.3-test', {
+      stdout: testWriter(),
+      stderr: testWriter(),
+    });
+
+    expect(rig.session.cron.getNextFireTime).toHaveBeenCalledTimes(2);
+  });
+
+  it('renders the required Klient events when stream-json is selected', async () => {
+    createPrintHostRig([
+      { type: 'turn.step.started', turnId: 1, step: 1 },
+      { type: 'assistant.delta', turnId: 1, delta: 'discarded' },
+      {
+        type: 'turn.step.retrying',
+        turnId: 1,
+        step: 1,
+        failedAttempt: 1,
+        nextAttempt: 2,
+        maxAttempts: 3,
+        delayMs: 250,
+        errorName: 'OverloadedError',
+        errorMessage: 'try later',
+        statusCode: 503,
+      },
+      { type: 'assistant.delta', turnId: 1, delta: 'kept' },
+      {
+        type: 'tool.call.delta',
+        turnId: 1,
+        toolCallId: 'call_1',
+        name: 'Read',
+        argumentsPart: '{"path":"a.ts"}',
+      },
+      {
+        type: 'tool.progress',
+        turnId: 1,
+        toolCallId: 'call_1',
+        update: { kind: 'progress', text: 'reading' },
+      },
+      {
+        type: 'tool.result',
+        turnId: 1,
+        toolCallId: 'call_1',
+        output: 'file text',
+      },
+      {
+        type: 'hook.result',
+        turnId: 1,
+        hookEvent: 'PostToolUse',
+        content: 'hook output',
+      },
+      { type: 'turn.step.interrupted', turnId: 1, step: 2, reason: 'stop' },
+      { type: 'turn.ended', turnId: 1, reason: 'completed' },
+    ]);
+    const stdout = testWriter();
+    const stderr = testWriter();
+
+    await runV2Print(printOptions({ outputFormat: 'stream-json' }), '1.2.3-test', {
+      stdout,
+      stderr,
+    });
+
+    expect(stdout.jsonLines()).toEqual([
+      { role: 'meta', type: 'system.version', version: '1.2.3-test' },
+      {
+        role: 'meta',
+        type: 'turn.step.retrying',
+        failed_attempt: 1,
+        next_attempt: 2,
+        max_attempts: 3,
+        delay_ms: 250,
+        error_name: 'OverloadedError',
+        error_message: 'try later',
+        status_code: 503,
+      },
+      {
+        role: 'assistant',
+        content: 'kept',
+        tool_calls: [
+          {
+            type: 'function',
+            id: 'call_1',
+            function: { name: 'Read', arguments: '{"path":"a.ts"}' },
+          },
+        ],
+      },
+      { role: 'tool', tool_call_id: 'call_1', content: 'file text' },
+      { role: 'assistant', content: 'PostToolUse hook\n\nhook output' },
+      {
+        role: 'meta',
+        type: 'session.resume_hint',
+        session_id: 'ses_klient',
+        command: 'kimi -r ses_klient',
+        content: 'To resume this session: kimi -r ses_klient',
+      },
+    ]);
+    expect(stderr.text()).toBe('reading\n');
+  });
+});
+
+interface TestAgentEvent {
+  readonly type: string;
+  readonly [key: string]: unknown;
+}
+
+interface PrintHostRigOptions {
+  readonly agentFileProfileName?: string;
+  readonly goalAfterPrompt?: ReturnType<typeof goalSnapshot>;
+  readonly cronNextFireTimes?: readonly (number | null)[];
+}
+
+function createPrintHostRig(
+  promptEvents: readonly TestAgentEvent[],
+  options: PrintHostRigOptions = {},
+) {
+  const listeners = new Map<string, Set<(event: never) => void>>();
+  const pendingListeners: Array<{
+    readonly name: string;
+    readonly listener: (event: never) => void;
+  }> = [];
+  const emit = (event: TestAgentEvent): void => {
+    for (const listener of listeners.get(event.type) ?? []) {
+      listener(event as never);
+    }
+  };
+  const profileState = {
+    cwd: process.cwd(),
+    modelAlias: undefined as string | undefined,
+    modelCapabilities: {
+      image_in: false,
+      video_in: false,
+      audio_in: false,
+      thinking: false,
+      tool_use: true,
+      max_context_tokens: 1,
+    },
+    profileName: undefined as string | undefined,
+    thinkingLevel: 'off',
+    systemPrompt: '',
+  };
+  let goal: ReturnType<typeof goalSnapshot> | null = null;
+  const agent = {
+    events: {
+      on: vi.fn((name: string, listener: (event: never) => void) => {
+        pendingListeners.push({ name, listener });
+        return {
+          dispose: () => {
+            listeners.get(name)?.delete(listener);
+          },
+        };
+      }),
+    },
+    getModel: vi.fn(async () => {
+      for (const pending of pendingListeners.splice(0)) {
+        const entries = listeners.get(pending.name) ?? new Set();
+        entries.add(pending.listener);
+        listeners.set(pending.name, entries);
+      }
+      return '';
+    }),
+    setModel: vi.fn(async (model: string) => {
+      profileState.modelAlias = model;
+      profileState.profileName ??= 'agent';
+      return { model };
+    }),
+    setPermission: vi.fn(async () => {}),
+    getTasks: vi.fn(async () => []),
+    prompt: vi.fn(async () => {
+      for (const event of promptEvents) emit(event);
+      if (options.goalAfterPrompt !== undefined) goal = options.goalAfterPrompt;
+      return { turn_id: 1 };
+    }),
+    profile: {
+      get: vi.fn(async () => ({ ...profileState })),
+      bind: vi.fn(async (input: { readonly profile: string; readonly model?: string }) => {
+        profileState.profileName = input.profile;
+        profileState.modelAlias = input.model;
+      }),
+    },
+    goal: {
+      get: vi.fn(async () => goal),
+      create: vi.fn(
+        async (input: { readonly objective: string; readonly replace?: boolean }) => {
+          goal = goalSnapshot({ objective: input.objective, status: 'active' });
+          return goal;
+        },
+      ),
+      pause: vi.fn(),
+      resume: vi.fn(),
+      cancel: vi.fn(),
+    },
+  };
+  const cronNextFireTimes = [...(options.cronNextFireTimes ?? [])];
+  const session = {
+    agent: vi.fn(() => agent),
+    agents: vi.fn(async () => ({ main: { id: 'main' } })),
+    restore: vi.fn(async () => true),
+    status: vi.fn(async () => 'idle'),
+    cron: {
+      list: vi.fn(async () => []),
+      getNextFireTime: vi.fn(async () => cronNextFireTimes.shift() ?? null),
+    },
+  };
+  const runtime = {
+    klient: {
+      global: {
+        config: {
+          diagnostics: vi.fn(async () => []),
+          get: vi.fn(async (domain: string) => {
+            if (domain === 'defaultModel') return 'k2';
+            return {};
+          }),
+        },
+        sessions: {
+          create: vi.fn(async () => ({ id: 'ses_klient' })),
+          get: vi.fn(),
+          list: vi.fn(),
+        },
+        auth: { ensureReady: vi.fn(async () => {}) },
+      },
+      session: vi.fn(() => session),
+    },
+    telemetry: {
+      setContext: vi.fn(),
+      track: vi.fn(),
+      shutdown: vi.fn(async () => {}),
+    },
+    agentFiles: {
+      resolveProfileName: vi.fn(
+        async () => options.agentFileProfileName ?? 'file-agent',
+      ),
+    },
+    close: vi.fn(async () => {}),
+  };
+  hostMocks.createKimiV2Runtime.mockResolvedValue(runtime);
+  return { agent, runtime, session };
+}
+
+function goalSnapshot(
+  overrides: Partial<{
+    goalId: string;
+    objective: string;
+    status: 'active' | 'paused' | 'blocked' | 'complete';
+    turnsUsed: number;
+    tokensUsed: number;
+    wallClockMs: number;
+  }> = {},
+) {
+  return {
+    goalId: 'goal-test',
+    objective: 'test objective',
+    status: 'active' as const,
+    turnsUsed: 0,
+    tokensUsed: 0,
+    wallClockMs: 0,
+    budget: {
+      tokenBudget: null,
+      turnBudget: null,
+      wallClockBudgetMs: null,
+      remainingTokens: null,
+      remainingTurns: null,
+      remainingWallClockMs: null,
+      tokenBudgetReached: false,
+      turnBudgetReached: false,
+      wallClockBudgetReached: false,
+      overBudget: false,
+    },
+    ...overrides,
+  };
+}
+
+function printOptions(overrides: Partial<CLIOptions> = {}): CLIOptions {
+  return {
+    session: undefined,
+    continue: false,
+    yolo: false,
+    auto: false,
+    plan: false,
+    model: undefined,
+    outputFormat: undefined,
+    prompt: 'hello',
+    skillsDirs: [],
+    agent: undefined,
+    agentFiles: [],
+    addDirs: [],
+    ...overrides,
+  };
+}
+
+function testWriter() {
+  let value = '';
+  return {
+    write: vi.fn((chunk: string) => {
+      value += chunk;
+      return true;
+    }),
+    text: () => value,
+    jsonLines: () =>
+      value
+        .trim()
+        .split('\n')
+        .filter((line) => line.length > 0)
+        .map((line) => JSON.parse(line) as unknown),
+  };
+}

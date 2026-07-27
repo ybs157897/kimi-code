@@ -10,7 +10,9 @@
  * envelope while non-empty unversioned logs are rejected. Removal awaits the
  * agent task manager's graceful exit policy before draining turns and full
  * compaction, then disposing the child scope. Fans session-level
- * permission-mode switches out to every live agent. Bound at Session scope.
+ * permission-mode switches out to every live agent and activates code
+ * extensions before the main Agent's first turn, awaiting their shutdown
+ * before child disposal. Bound at Session scope.
  *
  * No agent id is special here: the main agent is simply the agent created
  * with the conventional `MAIN_AGENT_ID`, and `fork` requires its source to
@@ -48,6 +50,7 @@ import { abortError } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { IAgentExtensionService } from '#/agent/extension/agentExtension';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { IWireService } from '#/wire/wire';
@@ -196,6 +199,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       // before the handle admits turns: restore and binding own the final
       // `activeToolNames`, so this must run after both.
       await handle.accessor.get(IAgentToolActivationService).activate();
+      await handle.accessor.get(IAgentExtensionService).activate();
       return handle;
     } catch (error) {
       // Startup failed: drop the half-built agent so the next `create` starts
@@ -294,6 +298,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       compaction.abortController.abort(reason);
     }
     await Promise.all([loop.settled(), compactionSettled]);
+    await handle.accessor.get(IAgentExtensionService).shutdown();
     handle.dispose();
     this.onDidDisposeEmitter.fire(agentId);
   }

@@ -1,11 +1,18 @@
-import type { ExperimentalFeatureState } from '@moonshot-ai/kimi-code-sdk';
+/**
+ * Scenario: resolved runtime feature flags are presented and edited in the
+ * experiments selector. Responsibilities: source provenance controls labels
+ * and locking while search, drafting, applying, and cancelling stay intact.
+ * Wiring: the selector is real; apply and cancel callbacks are the only stubs.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/dialogs/experiments-selector.test.ts
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   ExperimentsSelectorComponent,
   type ExperimentalFeatureDraftChange,
 } from '#/tui/components/dialogs/experiments-selector';
-
+import type { RuntimeFeatureState } from '#/tui/runtime/runtime-feature-flags-port';
 
 const ANSI = /\u001B\[[0-9;]*m/g;
 const ESC = String.fromCodePoint(27);
@@ -16,8 +23,8 @@ function strip(text: string): string {
 }
 
 function feature(
-  overrides: Partial<ExperimentalFeatureState> = {},
-): ExperimentalFeatureState {
+  overrides: Partial<RuntimeFeatureState> = {},
+): RuntimeFeatureState {
   return {
     id: 'micro_compaction',
     title: 'Micro compaction',
@@ -97,6 +104,32 @@ describe('ExperimentsSelectorComponent', () => {
     selector.handleInput(ENTER);
 
     expect(text(selector)).toContain('  ❯ Micro compaction  enabled');
+    expect(text(selector)).toContain(
+      'id micro_compaction · locked by KIMI_CODE_EXPERIMENTAL_MICRO_COMPACTION',
+    );
+    expect(text(selector)).toContain(' [ Apply changes and reload ]  no changes');
+    expect(onApply).not.toHaveBeenCalled();
+  });
+
+  it('does not draft changes for master-env-locked features', () => {
+    const onApply = vi.fn<(changes: readonly ExperimentalFeatureDraftChange[]) => void>();
+    const selector = new ExperimentsSelectorComponent({
+      features: [
+        feature({
+          enabled: true,
+          source: 'master-env',
+        }),
+      ],
+      onApply,
+      onCancel: vi.fn(),
+    });
+
+    selector.handleInput(' ');
+    selector.handleInput(ENTER);
+
+    expect(text(selector)).toContain(
+      'id micro_compaction · locked by KIMI_CODE_EXPERIMENTAL_FLAG',
+    );
     expect(text(selector)).toContain(' [ Apply changes and reload ]  no changes');
     expect(onApply).not.toHaveBeenCalled();
   });

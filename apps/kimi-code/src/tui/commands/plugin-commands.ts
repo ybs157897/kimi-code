@@ -1,6 +1,7 @@
-import type { PluginCommandDef } from '@moonshot-ai/kimi-code-sdk';
-
 import type { KimiSlashCommand } from './types';
+import type { PluginCommandDefinition } from '../runtime/session-plugin-commands-port';
+
+export type { PluginCommandDefinition } from '../runtime/session-plugin-commands-port';
 
 export interface PluginSlashCommands {
   readonly commands: readonly KimiSlashCommand[];
@@ -12,7 +13,9 @@ export function pluginCommandName(pluginId: string, name: string): string {
   return `${pluginId}:${name}`;
 }
 
-export function buildPluginSlashCommands(defs: readonly PluginCommandDef[]): PluginSlashCommands {
+export function buildPluginSlashCommands(
+  defs: readonly PluginCommandDefinition[],
+): PluginSlashCommands {
   const commandMap = new Map<string, string>();
   const commands = defs.map((def) => {
     const commandName = pluginCommandName(def.pluginId, def.name);

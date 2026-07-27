@@ -8,16 +8,20 @@ import {
   resetCapabilitiesCache,
   setCapabilities,
 } from '@moonshot-ai/pi-tui';
-import type {
-  ApprovalRequest,
-  ApprovalResponse,
-  Event,
-  GoalSnapshot,
+import {
+  log,
+  type ApprovalRequest,
+  type ApprovalResponse,
+  type Event,
+  type GoalSnapshot,
 } from '@moonshot-ai/kimi-code-sdk';
+import { fetchOpenPlatformModels } from '@moonshot-ai/kimi-code-oauth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { ApprovalPanelComponent } from '#/tui/components/dialogs/approval-panel';
+import { QuestionDialogComponent } from '#/tui/components/dialogs/question-dialog';
 import { EffortSelectorComponent } from '#/tui/components/dialogs/effort-selector';
+import { ExperimentsSelectorComponent } from '#/tui/components/dialogs/experiments-selector';
 import { KIMI_CODE_PLUGIN_MARKETPLACE_URL } from '#/constant/app';
 import { MOON_SPINNER_FRAMES } from '#/tui/constant/rendering';
 import {
@@ -47,11 +51,52 @@ import {
 import { KimiTUI, type KimiTUIStartupInput, type TUIState } from '#/tui/kimi-tui';
 import type { StreamingUIController } from '#/tui/controllers/streaming-ui';
 import { handleFeedbackCommand } from '#/tui/commands/info';
+import {
+  applyExperimentalFeatureChanges,
+  showExperimentsPanel,
+} from '#/tui/commands/config';
+import { isExperimentalFlagEnabled } from '#/tui/commands/experimental-flags';
+import { handleExportDebugZipCommand } from '#/tui/commands/session';
+import type {
+  AgentShellResult,
+  SessionAgentControlPort,
+  SessionControlPort,
+} from '#/tui/runtime/session-control-port';
+import type { ExtensionCommandPort } from '#/tui/runtime/extension-command-port';
+import type {
+  TUISessionEvent,
+  TUISessionEventListener,
+} from '#/tui/runtime/session-events-port';
+import type { McpServerView, SessionMcpPort } from '#/tui/runtime/session-mcp-port';
+import type { SessionSkillsPort } from '#/tui/runtime/session-skills-port';
+import type {
+  PluginInfoView,
+  PluginSummaryView,
+  SessionPluginsPort,
+} from '#/tui/runtime/session-plugins-port';
+import type { SessionPluginCommandsPort } from '#/tui/runtime/session-plugin-commands-port';
+import type { SessionRefreshPort } from '#/tui/runtime/session-refresh-port';
+import type { SessionWorkspacePort } from '#/tui/runtime/session-workspace-port';
+import type { RuntimeSessionExportPort } from '#/tui/runtime/runtime-session-export-port';
+import type {
+  RuntimeFeatureFlagsPort,
+  RuntimeFeatureState,
+} from '#/tui/runtime/runtime-feature-flags-port';
+import type { RuntimeAuthPort } from '#/tui/runtime/runtime-auth-port';
+import type { RuntimeModelCatalogPort } from '#/tui/runtime/runtime-model-catalog-port';
+import type { RuntimeModelConfigPort } from '#/tui/runtime/runtime-model-config-port';
+import type { RuntimeProviderRefreshPort } from '#/tui/runtime/runtime-provider-refresh-port';
+import type { TUIRuntime } from '#/tui/runtime/tui-runtime';
+import type { TUISessionRuntime } from '#/tui/runtime/tui-session-runtime';
 import { packageCodebase, scanCodebase } from '../../src/feedback/codebase';
 import { uploadArchive } from '../../src/feedback/upload';
 import {
+  promptApiKey,
   promptFeedbackAttachment,
   promptFeedbackInput,
+  promptLogoutProviderSelection,
+  promptModelSelectionForOpenPlatform,
+  promptPlatformSelection,
   runModelSelector,
   type FeedbackPromptResult,
 } from '#/tui/commands/prompts';
@@ -62,8 +107,20 @@ vi.mock('#/tui/commands/prompts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('#/tui/commands/prompts')>();
   return {
     ...actual,
+    promptApiKey: vi.fn(),
     promptFeedbackInput: vi.fn(),
     promptFeedbackAttachment: vi.fn(),
+    promptLogoutProviderSelection: vi.fn(),
+    promptModelSelectionForOpenPlatform: vi.fn(),
+    promptPlatformSelection: vi.fn(),
+  };
+});
+
+vi.mock('@moonshot-ai/kimi-code-oauth', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@moonshot-ai/kimi-code-oauth')>();
+  return {
+    ...actual,
+    fetchOpenPlatformModels: vi.fn(),
   };
 });
 
@@ -96,6 +153,8 @@ function stripSgr(text: string): string {
 
 interface MessageDriver {
   state: TUIState;
+  session: unknown | undefined;
+  cancelInFlight: (() => void) | undefined;
   streamingUI: StreamingUIController;
   sessionEventHandler: {
     startSubscription(): void;
@@ -103,8 +162,15 @@ interface MessageDriver {
   };
   init(): Promise<boolean>;
   handleUserInput(text: string): void;
+  activateExtensionCommand(commandName: string, args: string): void;
+  closeSession(reason: string): Promise<void>;
+  refreshSkillCommands(): Promise<void>;
+  refreshSlashCommandAutocomplete(): void;
+  sendSkillActivation(skillName: string, skillArgs: string): void;
+  switchToSession(session: unknown, statusMessage: string): Promise<void>;
   persistInputHistory(text: string): Promise<void>;
-  sendQueuedMessage(session: unknown, item: QueuedMessage): void;
+  sendQueuedMessage(item: QueuedMessage): void;
+  cancelRunningShellCommand(): void;
   getCurrentSessionId(): string;
 }
 
@@ -191,6 +257,12 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     setPermission: vi.fn(async () => {}),
     setPlanMode: vi.fn(async () => {}),
     setSwarmMode: vi.fn(async () => {}),
+    listExpertTeams: vi.fn(async () => []),
+    getExpertTeamStatus: vi.fn(async () => null),
+    activateExpertTeam: vi.fn(async () => {
+      throw new Error('Not configured in this test.');
+    }),
+    deactivateExpertTeam: vi.fn(async () => {}),
     onEvent: vi.fn(() => vi.fn()),
     listMcpServers: vi.fn(async () => []),
     listSkills: vi.fn(async () => []),
@@ -252,18 +324,190 @@ function makeSession(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function makeMessagePluginsPort(
+  overrides: Partial<SessionPluginsPort> = {},
+): SessionPluginsPort {
+  return {
+    list: vi.fn(async () => []),
+    info: vi.fn(async (id: string) =>
+      makePluginInfoView({ id, displayName: id, root: `/plugins/${id}` }),
+    ),
+    install: vi.fn(async () => makePluginSummaryView()),
+    setEnabled: vi.fn(async () => {}),
+    setMcpServerEnabled: vi.fn(async () => {}),
+    remove: vi.fn(async () => {}),
+    reload: vi.fn(async () => ({ added: [], removed: [], errors: [] })),
+    ...overrides,
+  };
+}
+
+function makePluginSummaryView(
+  overrides: Partial<PluginSummaryView> = {},
+): PluginSummaryView {
+  return {
+    id: 'demo',
+    displayName: 'Demo',
+    version: '1.0.0',
+    enabled: true,
+    state: 'ok',
+    skillCount: 1,
+    mcpServerCount: 0,
+    enabledMcpServerCount: 0,
+    hasErrors: false,
+    source: 'local-path',
+    ...overrides,
+  };
+}
+
+function makePluginInfoView(
+  overrides: Partial<PluginInfoView> = {},
+): PluginInfoView {
+  return {
+    ...makePluginSummaryView(),
+    root: '/plugins/demo',
+    installedAt: '2026-01-01T00:00:00.000Z',
+    mcpServers: [],
+    diagnostics: [],
+    ...overrides,
+  };
+}
+
+type MessageAgentControl = SessionAgentControlPort;
+
+function makeMessageAgentControl(
+  overrides: Partial<MessageAgentControl> = {},
+): MessageAgentControl {
+  let model = 'k2';
+  let thinkingEffort = 'off';
+  return {
+    prompt: vi.fn(async () => {}),
+    steer: vi.fn(async () => {}),
+    cancel: vi.fn(async () => {}),
+    runShellCommand: vi.fn(async () => ({ stdout: '', stderr: '', isError: false })),
+    cancelShellCommand: vi.fn(async () => {}),
+    getStatus: vi.fn(async () => ({
+      model,
+      thinkingEffort,
+      permission: 'manual' as const,
+      planMode: false,
+      contextTokens: 0,
+      maxContextTokens: 100,
+      contextUsage: 0,
+    })),
+    getModel: vi.fn(async () => model),
+    setModel: vi.fn(async (alias: string) => {
+      model = alias;
+    }),
+    getThinking: vi.fn(async () => thinkingEffort),
+    setThinking: vi.fn(async (effort: string) => {
+      thinkingEffort = effort;
+    }),
+    setPermission: vi.fn(async () => {}),
+    getPlan: vi.fn(async () => null),
+    setPlanMode: vi.fn(async () => {}),
+    clearPlan: vi.fn(async () => {}),
+    getGoal: vi.fn(async () => null),
+    createGoal: vi.fn(async () => {
+      throw new Error('Not configured in this test.');
+    }),
+    pauseGoal: vi.fn(async () => {
+      throw new Error('Not configured in this test.');
+    }),
+    resumeGoal: vi.fn(async () => {
+      throw new Error('Not configured in this test.');
+    }),
+    cancelGoal: vi.fn(async () => {
+      throw new Error('Not configured in this test.');
+    }),
+    listTasks: vi.fn(async () => []),
+    detachTask: vi.fn(async () => undefined),
+    getTaskOutput: vi.fn(async () => ''),
+    stopTask: vi.fn(async () => {}),
+    ...overrides,
+  };
+}
+
+function makeMessageSessionControl(
+  agents: Readonly<Record<string, MessageAgentControl>>,
+): SessionControlPort {
+  return {
+    sessions: {
+      list: vi.fn(async () => []),
+      create: vi.fn(async (input) => ({
+        id: 'ses-1',
+        workDir: input.workDir,
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      })),
+      resume: vi.fn(async (input) => ({
+        id: input.id,
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      })),
+    },
+    session: vi.fn((sessionId: string) => ({
+      getIdentity: vi.fn(async () => ({
+        id: sessionId,
+        createdAt: 0,
+        updatedAt: 0,
+        archived: false,
+      })),
+      close: vi.fn(async () => {}),
+      setTitle: vi.fn(async () => {}),
+      fork: vi.fn(async () => {
+        throw new Error('Not configured in this test.');
+      }),
+    })),
+    agent: vi.fn((_sessionId: string, agentId = 'main') => {
+      const agent = agents[agentId];
+      if (agent === undefined) {
+        throw new Error(`Missing message agent control for "${agentId}".`);
+      }
+      return agent;
+    }),
+  } satisfies SessionControlPort;
+}
+
 function makeHarness(session = makeSession(), overrides: Record<string, unknown> = {}) {
   const interactiveAgentScope = new AsyncLocalStorage<string>();
+  const activeSessions = new Map<string, unknown>([[session.id, session]]);
+  type SessionFactory = (...args: unknown[]) => unknown;
+  type ConfigFactory = (
+    ...args: unknown[]
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>;
+  const registerFactory = (factory: SessionFactory | undefined) =>
+    vi.fn(async (...args: unknown[]) => {
+      const nextSession = factory === undefined ? session : await factory(...args);
+      if (
+        typeof nextSession === 'object' &&
+        nextSession !== null &&
+        'id' in nextSession &&
+        typeof nextSession.id === 'string'
+      ) {
+        activeSessions.set(nextSession.id, nextSession);
+      }
+      return nextSession;
+    });
+  const createSession = registerFactory(overrides['createSession'] as SessionFactory | undefined);
+  const resumeSession = registerFactory(overrides['resumeSession'] as SessionFactory | undefined);
+  const forkSession = registerFactory(overrides['forkSession'] as SessionFactory | undefined);
+  const configFactory = overrides['getConfig'] as ConfigFactory | undefined;
+  const getConfig = vi.fn(async (...args: unknown[]) => {
+    const config =
+      configFactory === undefined
+        ? {
+            models: {
+              k2: { provider: 'test', model: 'moonshot-v1', maxContextSize: 100 },
+            },
+          }
+        : await configFactory(...args);
+    return { providers: {}, ...config };
+  });
   return {
-    getConfig: vi.fn(async () => ({
-      models: {
-        k2: { model: 'moonshot-v1', maxContextSize: 100 },
-      },
-    })),
     setConfig: vi.fn(async () => ({ providers: {} })),
-    createSession: vi.fn(async () => session),
-    resumeSession: vi.fn(async () => session),
-    forkSession: vi.fn(async () => session),
+    getSession: vi.fn((id: string) => activeSessions.get(id)),
     listSessions: vi.fn(async () => []),
     exportSession: vi.fn(async () => ({
       zipPath: '/tmp/fake-session.zip',
@@ -296,24 +540,265 @@ function makeHarness(session = makeSession(), overrides: Record<string, unknown>
       ),
     },
     ...overrides,
+    getConfig,
+    createSession,
+    resumeSession,
+    forkSession,
   };
 }
 
 async function makeDriver(
   session = makeSession(),
   harnessOverrides: Record<string, unknown> = {},
+  sessionControl?: SessionControlPort,
+  runtime?: TUIRuntime,
 ): Promise<{
   driver: MessageDriver;
   session: ReturnType<typeof makeSession>;
   harness: ReturnType<typeof makeHarness>;
 }> {
   const harness = makeHarness(session, harnessOverrides);
-  const driver = new KimiTUI(harness as never, makeStartupInput()) as unknown as MessageDriver;
+  const driver = new KimiTUI(harness as never, {
+    ...makeStartupInput(),
+    sessionControl,
+    runtime,
+  }) as unknown as MessageDriver;
   vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
   vi.spyOn(driver.state.terminal, 'setProgress').mockImplementation(() => {});
   driver.persistInputHistory = vi.fn(async () => {});
   await driver.init();
   return { driver, session, harness };
+}
+
+function makeEventRuntime(
+  input: {
+    agent?: MessageAgentControl;
+    sessionControl?: SessionControlPort;
+    extensionCommands?: ExtensionCommandPort;
+    mcp?: SessionMcpPort;
+    pluginCommands?: SessionPluginCommandsPort;
+    refresh?: SessionRefreshPort;
+    skills?: SessionSkillsPort;
+    plugins?: SessionPluginsPort;
+    workspace?: SessionWorkspacePort;
+    sessionExport?: RuntimeSessionExportPort;
+  } = {},
+) {
+  let listener: TUISessionEventListener | undefined;
+  const listeners: TUISessionEventListener[] = [];
+  const events = {
+    subscribe: vi.fn((nextListener: TUISessionEventListener) => {
+      listener = nextListener;
+      listeners.push(nextListener);
+      return vi.fn(() => {
+        if (listener === nextListener) listener = undefined;
+      });
+    }),
+    readReplay: vi.fn(async () => undefined),
+    respondToApproval: vi.fn(async () => {}),
+    respondToQuestion: vi.fn(async () => {}),
+  };
+  const agent = input.agent ?? makeMessageAgentControl();
+  const sessionControl =
+    input.sessionControl ?? makeMessageSessionControl({ main: agent });
+  const extensionCommands =
+    input.extensionCommands ??
+    ({
+      list: vi.fn(async () => []),
+      reload: vi.fn(async () => {}),
+      activate: vi.fn(async () => undefined),
+    } satisfies ExtensionCommandPort);
+  const swarm = {
+    isActive: vi.fn(async () => false),
+    enter: vi.fn(async () => {}),
+    exit: vi.fn(async () => {}),
+  };
+  const expertTeam = {
+    list: vi.fn(async () => []),
+    get: vi.fn(async () => null),
+    activate: vi.fn(async () => {
+      throw new Error('Not configured in this test.');
+    }),
+    deactivate: vi.fn(async () => {}),
+  };
+  const init = {
+    generateAgentsMd: vi.fn(async () => {}),
+    cancel: vi.fn(async () => {}),
+  };
+  const btw = {
+    start: vi.fn(async () => 'agent-btw'),
+  };
+  const context = {
+    compact: vi.fn(async () => true),
+    cancelCompaction: vi.fn(async () => {}),
+    undoHistory: vi.fn(async () => {}),
+  };
+  const contextView = {
+    read: vi.fn(async () => ({ history: [], tokenCount: 0 })),
+  };
+  const goalQueue = {
+    read: vi.fn(async () => ({ goals: [] })),
+    append: vi.fn(async () => ({ goals: [] })),
+    update: vi.fn(async () => ({ goals: [] })),
+    remove: vi.fn(async () => ({ goals: [] })),
+    restore: vi.fn(async () => ({ goals: [] })),
+    move: vi.fn(async () => ({ goals: [] })),
+  };
+  const mcp =
+    input.mcp ??
+    ({
+      list: vi.fn(async () => []),
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => 0),
+    } satisfies SessionMcpPort);
+  const skills =
+    input.skills ??
+    ({
+      list: vi.fn(async () => []),
+      reload: vi.fn(async () => {}),
+      activate: vi.fn(async () => {}),
+    } satisfies SessionSkillsPort);
+  const pluginCommands =
+    input.pluginCommands ??
+    ({
+      list: vi.fn(async () => []),
+      activate: vi.fn(async () => {}),
+    } satisfies SessionPluginCommandsPort);
+  const refresh =
+    input.refresh ??
+    ({
+      reload: vi.fn(async () => {}),
+    } satisfies SessionRefreshPort);
+  const plugins = input.plugins ?? makeMessagePluginsPort();
+  const warnings = {
+    list: vi.fn(async () => []),
+  };
+  const workspace =
+    input.workspace ??
+    ({
+      get: vi.fn(async () => ({ workDir: '/tmp/proj-a', additionalDirs: [] })),
+      addAdditionalDir: vi.fn(async () => ({
+        projectRoot: '/tmp/proj-a',
+        configPath: '/tmp/proj-a/.kimi/config.toml',
+        additionalDirs: [],
+        persisted: true,
+      })),
+    } satisfies SessionWorkspacePort);
+  const sessionExport =
+    input.sessionExport ??
+    ({
+      export: vi.fn(async () => ({
+        zipPath: '/tmp/example-session.zip',
+        entries: ['manifest.json'],
+        manifest: {
+          sessionId: 'session-a',
+          exportedAt: '2026-07-27T00:00:00.000Z',
+          kimiCodeVersion: '1.2.3',
+          wireProtocolVersion: '1',
+          os: 'example-os',
+          nodejsVersion: 'v24.15.0',
+        },
+      })),
+    } satisfies RuntimeSessionExportPort);
+  const runtime = {
+    auth: {
+      status: vi.fn<RuntimeAuthPort['status']>(async () => ({ loggedIn: false })),
+      login: vi.fn<RuntimeAuthPort['login']>(async () => {}),
+      logout: vi.fn<RuntimeAuthPort['logout']>(async () => {}),
+      ensureReady: vi.fn<RuntimeAuthPort['ensureReady']>(async () => {}),
+      getManagedUsage: vi.fn<RuntimeAuthPort['getManagedUsage']>(async () => ({
+        kind: 'error' as const,
+        message: 'Not configured in this test.',
+      })),
+      submitFeedback: vi.fn<RuntimeAuthPort['submitFeedback']>(async () => ({
+        kind: 'ok',
+        feedbackId: 3,
+      })),
+      createFeedbackUploadUrl: vi.fn<RuntimeAuthPort['createFeedbackUploadUrl']>(async () => ({
+        kind: 'error',
+        message: 'Not configured in this test.',
+      })),
+      completeFeedbackUpload: vi.fn<RuntimeAuthPort['completeFeedbackUpload']>(async () => ({
+        kind: 'error',
+        message: 'Not configured in this test.',
+      })),
+    },
+    environment: {
+      homeDir: '/tmp/runtime-home',
+      getExperimentalFeatures: vi.fn(async () => []),
+      getConfigDiagnostics: vi.fn(async () => []),
+      close: vi.fn(async () => {}),
+    },
+    featureFlags: {
+      list: vi.fn<RuntimeFeatureFlagsPort['list']>(async () => []),
+      apply: vi.fn<RuntimeFeatureFlagsPort['apply']>(async () => []),
+    },
+    models: {
+      load: vi.fn<RuntimeModelCatalogPort['load']>(async () => ({
+        models: {},
+        providers: {},
+      })),
+    },
+    modelConfig: {
+      apply: vi.fn<RuntimeModelConfigPort['apply']>(async () => {}),
+      removeProvider: vi.fn<RuntimeModelConfigPort['removeProvider']>(async () => {}),
+    },
+    providerRefresh: {
+      refresh: vi.fn<RuntimeProviderRefreshPort['refresh']>(async () => ({
+        changed: [],
+        unchanged: [],
+        failed: [],
+      })),
+    },
+    sessionExport,
+    telemetry: {
+      track: vi.fn(),
+      setContext: vi.fn(),
+    },
+    sessionControl,
+    bindSession: vi.fn(
+      (sessionId: string, agentId = 'main') => ({
+        sessionId,
+        agentId,
+        lifecycle: sessionControl.session(sessionId),
+        agent,
+        swarm,
+        expertTeam,
+        init,
+        btw,
+        context,
+        contextView,
+        events,
+        goalQueue,
+        mcp,
+        pluginCommands,
+        refresh,
+        extensionCommands,
+        skills,
+        plugins,
+        warnings,
+        workspace,
+      } satisfies TUISessionRuntime),
+    ),
+  } satisfies TUIRuntime;
+
+  return {
+    runtime,
+    agent,
+    events,
+    mcp,
+    pluginCommands,
+    refresh,
+    skills,
+    plugins,
+    workspace,
+    sessionExport,
+    listeners,
+    emit(event: TUISessionEvent): void {
+      if (listener === undefined) throw new Error('Expected an active runtime event subscription.');
+      listener(event);
+    },
+  };
 }
 
 function makeActiveGoalSnapshot(): GoalSnapshot {
@@ -336,6 +821,22 @@ function makeActiveGoalSnapshot(): GoalSnapshot {
       wallClockBudgetReached: false,
       overBudget: false,
     },
+  };
+}
+
+function makeRuntimeFeature(
+  overrides: Partial<RuntimeFeatureState> = {},
+): RuntimeFeatureState {
+  return {
+    id: 'micro_compaction',
+    title: 'Micro compaction',
+    description: 'Trim older tool results.',
+    surface: 'core',
+    env: 'KIMI_CODE_EXPERIMENTAL_MICRO_COMPACTION',
+    defaultEnabled: true,
+    enabled: true,
+    source: 'default',
+    ...overrides,
   };
 }
 
@@ -418,6 +919,11 @@ async function makeExportedSessionZip(content = 'session zip'): Promise<string> 
 
 afterEach(async () => {
   resetCapabilitiesCache();
+  vi.mocked(fetchOpenPlatformModels).mockReset();
+  vi.mocked(promptApiKey).mockReset();
+  vi.mocked(promptLogoutProviderSelection).mockReset();
+  vi.mocked(promptModelSelectionForOpenPlatform).mockReset();
+  vi.mocked(promptPlatformSelection).mockReset();
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true });
   }
@@ -465,6 +971,7 @@ describe('KimiTUI message flow', () => {
     const { driver, harness } = await makeDriver(makeSession({ id: 'ses-1' }));
     const nextSession = makeSession({ id: 'ses-2' });
     harness.createSession.mockResolvedValueOnce(nextSession);
+    harness.getSession.mockReturnValue(nextSession);
     harness.track.mockClear();
 
     driver.handleUserInput('/clear');
@@ -532,6 +1039,7 @@ command = "vim"
     await vi.waitFor(() => {
       expect(session.reloadSession).toHaveBeenCalledOnce();
     });
+    expect(session.reloadSession).toHaveBeenNthCalledWith(1);
     await vi.waitFor(() => {
       expect(driver.state.appState.theme).toBe('light');
     });
@@ -539,6 +1047,80 @@ command = "vim"
     const transcript = stripSgr(renderTranscript(driver));
     expect(transcript).toContain('hello before reload');
     expect(transcript).toContain('Session reloaded.');
+  });
+
+  it('exports diagnostics through the runtime session when the raw session is unavailable', async () => {
+    const exportSession = vi.fn(async () => ({
+      zipPath: '/tmp/runtime-session.zip',
+      entries: ['manifest.json'],
+      manifest: {
+        sessionId: 'runtime-session',
+        exportedAt: '2026-07-27T00:00:00.000Z',
+        kimiCodeVersion: '1.2.3',
+        wireProtocolVersion: '1',
+        os: 'example-os',
+        nodejsVersion: 'v24.15.0',
+      },
+    }));
+    const eventRuntime = makeEventRuntime({
+      sessionExport: { export: exportSession },
+    });
+    const showStatus = vi.fn();
+    const showNotice = vi.fn();
+    const showError = vi.fn();
+
+    await handleExportDebugZipCommand({
+      session: undefined,
+      runtime: eventRuntime.runtime,
+      requireSessionRuntime: () =>
+        eventRuntime.runtime.bindSession('runtime-session'),
+      state: { appState: { version: '1.2.3' } },
+      showStatus,
+      showNotice,
+      showError,
+    } as unknown as Parameters<typeof handleExportDebugZipCommand>[0]);
+
+    expect(exportSession).toHaveBeenCalledExactlyOnceWith({
+      sessionId: 'runtime-session',
+      version: '1.2.3',
+      installSource: expect.any(String),
+      shellEnv: expect.any(Object),
+      includeGlobalLog: true,
+    });
+    expect(showStatus).toHaveBeenCalledExactlyOnceWith('Exporting session…');
+    expect(showNotice).toHaveBeenCalledExactlyOnceWith(
+      'Export complete',
+      expect.stringContaining('/tmp/runtime-session.zip'),
+    );
+    expect(showError).not.toHaveBeenCalled();
+  });
+
+  it('reports runtime session export failures without showing a completion notice', async () => {
+    const eventRuntime = makeEventRuntime({
+      sessionExport: {
+        export: vi.fn(async () => {
+          throw new Error('archive unavailable');
+        }),
+      },
+    });
+    const showNotice = vi.fn();
+    const showError = vi.fn();
+
+    await handleExportDebugZipCommand({
+      session: undefined,
+      runtime: eventRuntime.runtime,
+      requireSessionRuntime: () =>
+        eventRuntime.runtime.bindSession('runtime-session'),
+      state: { appState: { version: '1.2.3' } },
+      showStatus: vi.fn(),
+      showNotice,
+      showError,
+    } as unknown as Parameters<typeof handleExportDebugZipCommand>[0]);
+
+    expect(showError).toHaveBeenCalledExactlyOnceWith(
+      'Failed to export session: archive unavailable',
+    );
+    expect(showNotice).not.toHaveBeenCalled();
   });
 
   it('tracks successful feedback submissions only after the request succeeds', async () => {
@@ -571,6 +1153,7 @@ command = "vim"
         version: 'kimi-code-0.0.0-test',
         model: 'k2',
       }),
+      undefined,
     );
     expect(harness.track).toHaveBeenCalledWith('feedback_submitted', undefined);
     const transcript = stripSgr(renderTranscript(driver));
@@ -633,6 +1216,7 @@ command = "vim"
     });
     expect(harness.auth.submitFeedback).toHaveBeenCalledWith(
       expect.objectContaining({ content: 'useful feedback' }),
+      undefined,
     );
     expect(harness.auth.submitFeedback.mock.invocationCallOrder[0]).toBeLessThan(
       harness.exportSession.mock.invocationCallOrder[0]!,
@@ -727,6 +1311,7 @@ command = "vim"
     );
     expect(harness.auth.submitFeedback).toHaveBeenCalledWith(
       expect.not.objectContaining({ info: expect.anything() }),
+      undefined,
     );
   });
 
@@ -1035,42 +1620,52 @@ command = "vim"
     driver.handleUserInput('/yolo on');
 
     await vi.waitFor(() => {
-      expect(session.setPermission).toHaveBeenCalledWith('yolo');
+      expect(driver.state.appState).toMatchObject({
+        permissionMode: 'yolo',
+      });
     });
-    expect(driver.state.appState).toMatchObject({
-      permissionMode: 'yolo',
-    });
+    expect(session.setPermission).toHaveBeenCalledWith('yolo');
     expect(harness.track).toHaveBeenCalledWith('input_command', { command: 'yolo' });
     expect(harness.track).not.toHaveBeenCalledWith('yolo_toggle', expect.anything());
   });
 
   it('hydrates MCP server status after subscribing to session events', async () => {
-    const session = makeSession({
-      listMcpServers: vi.fn(async () => [
+    const mcp = {
+      list: vi.fn(async () => [
         {
           name: 'local-tools',
-          transport: 'stdio',
-          status: 'connected',
+          transport: 'stdio' as const,
+          status: 'connected' as const,
           toolCount: 2,
         },
         {
           name: 'remote-tools',
-          transport: 'http',
-          status: 'failed',
+          transport: 'http' as const,
+          status: 'failed' as const,
           toolCount: 0,
           error: 'connection refused',
         },
       ]),
-    });
-    const { driver } = await makeDriver(session);
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => 0),
+    } satisfies SessionMcpPort;
+    const eventRuntime = makeEventRuntime({ mcp });
+    const { driver, session } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    driver.session = undefined;
 
     driver.sessionEventHandler.startSubscription();
     await Promise.resolve();
 
-    expect(session.onEvent).toHaveBeenCalledOnce();
-    expect(session.listMcpServers).toHaveBeenCalledOnce();
-    const subscribeOrder = session.onEvent.mock.invocationCallOrder[0];
-    const snapshotOrder = session.listMcpServers.mock.invocationCallOrder[0];
+    expect(eventRuntime.events.subscribe).toHaveBeenCalledOnce();
+    expect(mcp.list).toHaveBeenCalledOnce();
+    expect(session.listMcpServers).not.toHaveBeenCalled();
+    const subscribeOrder = eventRuntime.events.subscribe.mock.invocationCallOrder[0];
+    const snapshotOrder = mcp.list.mock.invocationCallOrder[0];
     if (subscribeOrder === undefined || snapshotOrder === undefined) {
       throw new Error('Expected MCP status sync to subscribe and fetch a snapshot.');
     }
@@ -1079,6 +1674,85 @@ command = "vim"
     expect(transcript).toContain('MCP server "local-tools" connected');
     expect(transcript).toContain('2 tools (stdio)');
     expect(transcript).toContain('MCP server "remote-tools" failed: connection refused');
+  });
+
+  it('surfaces active runtime MCP snapshot failures without consulting the raw session', async () => {
+    const mcp = {
+      list: vi.fn(async () => {
+        throw new Error('snapshot unavailable');
+      }),
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => 0),
+    } satisfies SessionMcpPort;
+    const eventRuntime = makeEventRuntime({ mcp });
+    const { driver, session } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+
+    driver.sessionEventHandler.startSubscription();
+
+    await vi.waitFor(() => {
+      expect(renderTranscript(driver)).toContain(
+        'Error: Failed to sync MCP server status: snapshot unavailable',
+      );
+    });
+    expect(session.listMcpServers).not.toHaveBeenCalled();
+  });
+
+  it('ignores an MCP snapshot resolved after the active session binding switches', async () => {
+    let resolveOldSnapshot: ((servers: readonly McpServerView[]) => void) | undefined;
+    const oldSnapshot = new Promise<readonly McpServerView[]>((resolve) => {
+      resolveOldSnapshot = resolve;
+    });
+    const list = vi
+      .fn<SessionMcpPort['list']>()
+      .mockReturnValueOnce(oldSnapshot)
+      .mockResolvedValueOnce([
+        {
+          name: 'current-tools',
+          transport: 'stdio',
+          status: 'connected',
+          toolCount: 1,
+        },
+      ]);
+    const mcp = {
+      list,
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => 0),
+    } satisfies SessionMcpPort;
+    const eventRuntime = makeEventRuntime({ mcp });
+    const { driver } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+
+    driver.sessionEventHandler.startSubscription();
+    await vi.waitFor(() => {
+      expect(list).toHaveBeenCalledOnce();
+    });
+    await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
+    await vi.waitFor(() => {
+      expect(renderTranscript(driver)).toContain('MCP server "current-tools" connected');
+    });
+
+    resolveOldSnapshot?.([
+      {
+        name: 'stale-tools',
+        transport: 'http',
+        status: 'failed',
+        toolCount: 0,
+        error: 'stale failure',
+      },
+    ]);
+    await Promise.resolve();
+
+    expect(renderTranscript(driver)).not.toContain('stale-tools');
+    expect(driver.state.appState.mcpServersSummary).toBe('1 connected');
   });
 
   it('deduplicates identical MCP status updates while allowing reconnect transitions', async () => {
@@ -1185,11 +1859,21 @@ command = "vim"
   });
 
   it('sends normal editor input to the active session and marks the turn as waiting', async () => {
-    const { driver, session } = await makeDriver();
+    const session = makeSession();
+    const mainAgent = makeMessageAgentControl();
+    const eventRuntime = makeEventRuntime({ agent: mainAgent });
+    const { driver } = await makeDriver(
+      session,
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    driver.session = undefined;
 
     driver.handleUserInput('hello');
 
-    expect(session.prompt).toHaveBeenCalledWith('hello');
+    expect(mainAgent.prompt).toHaveBeenCalledWith('hello');
+    expect(session.prompt).not.toHaveBeenCalled();
     expect(driver.state.appState.streamingPhase).not.toBe('idle');
     expect(driver.state.appState.streamingPhase).toBe('waiting');
     expect(driver.state.livePane.mode).toBe('waiting');
@@ -1199,6 +1883,94 @@ command = "vim"
         content: 'hello',
       }),
     ]);
+  });
+
+  it('activates a skill through the active binding when the raw session is absent', async () => {
+    const activate = vi.fn(async () => {});
+    const skills = {
+      list: vi.fn(async () => [
+        {
+          name: 'review',
+          description: 'Review the current changes',
+          path: '/skills/review/SKILL.md',
+          source: 'user' as const,
+        },
+      ]),
+      reload: vi.fn(async () => {}),
+      activate,
+    } satisfies SessionSkillsPort;
+    const eventRuntime = makeEventRuntime({ skills });
+    const session = makeSession();
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
+    await driver.refreshSkillCommands();
+
+    driver.handleUserInput('/skill:review src/main.ts');
+
+    await vi.waitFor(() => {
+      expect(activate).toHaveBeenCalledWith('review', 'src/main.ts');
+    });
+    expect(session.activateSkill).not.toHaveBeenCalled();
+  });
+
+  it('sends an extension prompt through the active binding without a raw session', async () => {
+    const session = makeSession();
+    const mainAgent = makeMessageAgentControl();
+    const extensionCommands = {
+      list: vi.fn(async () => []),
+      reload: vi.fn(async () => {}),
+      activate: vi.fn(async () => ({ prompt: 'Review the current changes' })),
+    } satisfies ExtensionCommandPort;
+    const eventRuntime = makeEventRuntime({ agent: mainAgent, extensionCommands });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
+
+    driver.activateExtensionCommand('review:check', '');
+
+    await vi.waitFor(() => {
+      expect(mainAgent.prompt).toHaveBeenCalledWith('Review the current changes');
+    });
+    expect(session.prompt).not.toHaveBeenCalled();
+  });
+
+  it('drops a stale extension prompt result after switching bindings', async () => {
+    let resolveActivation: ((value: { prompt: string }) => void) | undefined;
+    const activation = new Promise<{ prompt: string }>((resolve) => {
+      resolveActivation = resolve;
+    });
+    const mainAgent = makeMessageAgentControl();
+    const extensionCommands = {
+      list: vi.fn(async () => []),
+      reload: vi.fn(async () => {}),
+      activate: vi.fn(() => activation),
+    } satisfies ExtensionCommandPort;
+    const eventRuntime = makeEventRuntime({ agent: mainAgent, extensionCommands });
+    const { driver } = await makeDriver(
+      makeSession({ id: 'ses-1' }),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+
+    driver.activateExtensionCommand('review:check', '');
+    await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
+    resolveActivation?.({ prompt: 'Stale prompt' });
+    await Promise.resolve();
+
+    expect(mainAgent.prompt).not.toHaveBeenCalled();
+  });
+
+  it('reports no active session when the binding is missing', async () => {
+    const session = makeSession();
+    const { driver } = await makeDriver(session);
+    await driver.closeSession('test close');
+
+    driver.handleUserInput('hello');
+
+    expect(session.prompt).not.toHaveBeenCalled();
+    expect(stripSgr(renderTranscript(driver))).toContain(
+      'No active session. Send /login to login.',
+    );
   });
 
   it('keeps the transcript intact when undo RPC fails', async () => {
@@ -1378,8 +2150,233 @@ command = "vim"
     expect(transcript).not.toContain('Review changed files');
   });
 
+  it('filters runtime events to the active session id', async () => {
+    const eventRuntime = makeEventRuntime();
+    const { driver } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
+    driver.sessionEventHandler.startSubscription();
+
+    eventRuntime.emit({
+      type: 'session.metadata.changed',
+      sessionId: 'ses-other',
+      changed: ['title'],
+      title: 'Wrong session',
+    });
+    expect(driver.state.appState.sessionTitle).not.toBe('Wrong session');
+
+    eventRuntime.emit({
+      type: 'session.metadata.changed',
+      sessionId: 'ses-1',
+      changed: ['title'],
+      title: 'Active session',
+    });
+    expect(driver.state.appState.sessionTitle).toBe('Active session');
+  });
+
+  it('ignores queued dispatch from a stale session binding after switching', async () => {
+    const mainAgent = makeMessageAgentControl();
+    const eventRuntime = makeEventRuntime({ agent: mainAgent });
+    const { driver } = await makeDriver(
+      makeSession({ id: 'ses-1' }),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    driver.sessionEventHandler.startSubscription();
+    const staleListener = eventRuntime.listeners[0];
+    if (staleListener === undefined) throw new Error('Expected the initial event listener.');
+
+    await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
+    driver.state.appState.streamingPhase = 'waiting';
+    driver.state.queuedMessages = [{ text: 'new session message', agentId: 'main' }];
+
+    staleListener({
+      type: 'turn.ended',
+      agentId: 'main',
+      sessionId: 'ses-1',
+      turnId: 1,
+      reason: 'completed',
+    } as unknown as TUISessionEvent);
+
+    expect(mainAgent.prompt).not.toHaveBeenCalled();
+    expect(driver.state.queuedMessages).toEqual([
+      { text: 'new session message', agentId: 'main' },
+    ]);
+    expect(driver.state.appState.streamingPhase).toBe('waiting');
+  });
+
+  it('answers runtime approval requests by interaction id', async () => {
+    const eventRuntime = makeEventRuntime();
+    const { driver, session } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    driver.sessionEventHandler.startSubscription();
+
+    eventRuntime.emit({
+      type: 'interaction.requested',
+      interaction: {
+        id: 'approval-envelope',
+        sessionId: 'ses-1',
+        agentId: 'main',
+        kind: 'approval',
+        request: {
+          turnId: 1,
+          toolCallId: 'tool-call-id',
+          toolName: 'Bash',
+          action: 'Run shell command',
+          display: {
+            kind: 'generic',
+            summary: 'Run shell command',
+            detail: { command: 'echo ok', description: 'Run a shell command' },
+          },
+        },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(driver.state.editorContainer.children[0]).toBeInstanceOf(ApprovalPanelComponent);
+    });
+    (driver.state.editorContainer.children[0] as ApprovalPanelComponent).handleInput('1');
+
+    await vi.waitFor(() => {
+      expect(eventRuntime.events.respondToApproval).toHaveBeenCalledWith(
+        'approval-envelope',
+        expect.objectContaining({ decision: 'approved' }),
+      );
+    });
+    expect(eventRuntime.events.respondToApproval).not.toHaveBeenCalledWith(
+      'tool-call-id',
+      expect.anything(),
+    );
+    expect(session.setApprovalHandler).not.toHaveBeenCalled();
+  });
+
+  it('answers runtime questions by interaction id', async () => {
+    const eventRuntime = makeEventRuntime();
+    const { driver } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
+    driver.sessionEventHandler.startSubscription();
+
+    eventRuntime.emit({
+      type: 'interaction.requested',
+      interaction: {
+        id: 'question-envelope',
+        sessionId: 'ses-1',
+        agentId: 'main',
+        kind: 'question',
+        request: {
+          turnId: 1,
+          toolCallId: 'question-tool-call',
+          questions: [
+            {
+              question: 'Deploy now?',
+              header: 'Deploy',
+              options: [
+                { label: 'Yes', description: 'Deploy immediately' },
+                { label: 'No', description: 'Keep the current version' },
+              ],
+            },
+          ],
+        },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(driver.state.editorContainer.children[0]).toBeInstanceOf(QuestionDialogComponent);
+    });
+    const dialog = driver.state.editorContainer.children[0] as QuestionDialogComponent;
+    dialog.handleInput('1');
+    dialog.handleInput('1');
+
+    await vi.waitFor(() => {
+      expect(eventRuntime.events.respondToQuestion).toHaveBeenCalledWith(
+        'question-envelope',
+        expect.objectContaining({
+          answers: { 'Deploy now?': 'Yes' },
+        }),
+      );
+    });
+    expect(eventRuntime.events.respondToQuestion).not.toHaveBeenCalledWith(
+      'question-tool-call',
+      expect.anything(),
+    );
+  });
+
+  it('does not advance an approval queue from a resolved runtime event', async () => {
+    const eventRuntime = makeEventRuntime();
+    const { driver } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
+    driver.sessionEventHandler.startSubscription();
+    const request = {
+      turnId: 1,
+      toolName: 'Bash',
+      action: 'Run shell command',
+      display: {
+        kind: 'generic' as const,
+        summary: 'Run shell command',
+        detail: { command: 'echo ok', description: 'Run a shell command' },
+      },
+    };
+
+    eventRuntime.emit({
+      type: 'interaction.requested',
+      interaction: {
+        id: 'approval-first',
+        sessionId: 'ses-1',
+        agentId: 'main',
+        kind: 'approval',
+        request: { ...request, toolCallId: 'tool-first' },
+      },
+    });
+    eventRuntime.emit({
+      type: 'interaction.requested',
+      interaction: {
+        id: 'approval-second',
+        sessionId: 'ses-1',
+        agentId: 'main',
+        kind: 'approval',
+        request: { ...request, toolCallId: 'tool-second' },
+      },
+    });
+
+    await vi.waitFor(() => {
+      expect(driver.state.editorContainer.children[0]).toBeInstanceOf(ApprovalPanelComponent);
+    });
+    const firstPanel = driver.state.editorContainer.children[0];
+
+    eventRuntime.emit({
+      type: 'interaction.resolved',
+      id: 'approval-first',
+      sessionId: 'ses-1',
+      kind: 'approval',
+      response: { decision: 'approved' },
+    });
+    await Promise.resolve();
+
+    expect(driver.state.editorContainer.children[0]).toBe(firstPanel);
+    expect(eventRuntime.events.respondToApproval).not.toHaveBeenCalled();
+
+    (firstPanel as ApprovalPanelComponent).handleInput('3');
+    await vi.waitFor(() => {
+      expect(eventRuntime.events.respondToApproval).toHaveBeenCalledWith(
+        'approval-first',
+        expect.objectContaining({ decision: 'rejected' }),
+      );
+      expect(driver.state.editorContainer.children[0]).not.toBe(firstPanel);
+    });
+
+    (driver.state.editorContainer.children[0] as ApprovalPanelComponent).handleInput('3');
+    await vi.waitFor(() => {
+      expect(eventRuntime.events.respondToApproval).toHaveBeenCalledWith(
+        'approval-second',
+        expect.objectContaining({ decision: 'rejected' }),
+      );
+    });
+  });
+
   it('removes approval notices from undone turns', async () => {
     const { driver, session } = await makeDriver();
+    driver.sessionEventHandler.startSubscription();
     const approvalHandler = vi.mocked(session.setApprovalHandler).mock.calls[0]?.[0] as
       | ((request: ApprovalRequest) => Promise<ApprovalResponse>)
       | undefined;
@@ -1632,7 +2629,7 @@ command = "vim"
       expect(parts?.[1]?.type).toBe('video_url');
       expect(parts?.[1]?.videoUrl?.url).toMatch(/^file:\/\/.*clip\.mp4$/);
 
-      driver.sendQueuedMessage(session, queued!);
+      driver.sendQueuedMessage(queued!);
       expect(session.prompt).toHaveBeenCalledWith(parts);
     } finally {
       await rm(dir, { recursive: true, force: true });
@@ -1674,12 +2671,22 @@ command = "vim"
   });
 
   it('steers fresh input while a goal is active even when the streaming phase is idle', async () => {
-    const { driver, session } = await makeDriver();
+    const session = makeSession();
+    const mainAgent = makeMessageAgentControl();
+    const eventRuntime = makeEventRuntime({ agent: mainAgent });
+    const { driver } = await makeDriver(
+      session,
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    driver.session = undefined;
     driver.state.appState.goal = makeActiveGoalSnapshot();
 
     driver.handleUserInput('hello mid-goal');
 
-    expect(session.steer).toHaveBeenCalledWith('hello mid-goal');
+    expect(mainAgent.steer).toHaveBeenCalledWith('hello mid-goal');
+    expect(session.steer).not.toHaveBeenCalled();
     expect(session.prompt).not.toHaveBeenCalled();
     expect(driver.state.transcriptEntries).toEqual([
       expect.objectContaining({
@@ -1708,7 +2715,11 @@ command = "vim"
   });
 
   it('steers a queued message at a turn boundary while a goal is active', async () => {
-    const { driver, session } = await makeDriver();
+    const session = makeSession();
+    const mainAgent = makeMessageAgentControl();
+    const eventRuntime = makeEventRuntime({ agent: mainAgent });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
     driver.state.appState.goal = makeActiveGoalSnapshot();
     driver.state.appState.streamingPhase = 'waiting';
     driver.handleUserInput('mid-goal note');
@@ -1723,19 +2734,23 @@ command = "vim"
         reason: 'completed',
       } as Event,
       (item) => {
-        driver.sendQueuedMessage(session, item);
+        driver.sendQueuedMessage(item);
       },
     );
 
     await vi.waitFor(() => {
-      expect(session.steer).toHaveBeenCalledWith('mid-goal note');
+      expect(mainAgent.steer).toHaveBeenCalledWith('mid-goal note');
     });
     expect(session.prompt).not.toHaveBeenCalled();
     expect(driver.state.queuedMessages).toEqual([]);
   });
 
   it('prompts the queued message as a new turn when no goal is active', async () => {
-    const { driver, session } = await makeDriver();
+    const session = makeSession();
+    const mainAgent = makeMessageAgentControl();
+    const eventRuntime = makeEventRuntime({ agent: mainAgent });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
     driver.state.appState.streamingPhase = 'waiting';
     driver.handleUserInput('after the turn');
 
@@ -1748,14 +2763,15 @@ command = "vim"
         reason: 'completed',
       } as Event,
       (item) => {
-        driver.sendQueuedMessage(session, item);
+        driver.sendQueuedMessage(item);
       },
     );
 
     await vi.waitFor(() => {
-      expect(session.prompt).toHaveBeenCalledWith('after the turn');
+      expect(mainAgent.prompt).toHaveBeenCalledWith('after the turn');
     });
-    expect(session.steer).not.toHaveBeenCalled();
+    expect(mainAgent.steer).not.toHaveBeenCalled();
+    expect(session.prompt).not.toHaveBeenCalled();
   });
 
   it('cancels active streaming from Escape and Ctrl-C editor shortcuts', async () => {
@@ -1839,17 +2855,98 @@ command = "vim"
 
   it('dispatches a queued bash item to runShellCommand instead of prompt', async () => {
     const runShellCommand = vi.fn(async () => ({ stdout: '', stderr: '', isError: false }));
-    const session = makeSession({ runShellCommand });
-    const { driver } = await makeDriver(session);
+    const session = makeSession();
+    const mainAgent = makeMessageAgentControl();
+    const reviewerAgent = makeMessageAgentControl({ runShellCommand });
+    const sessionControl = makeMessageSessionControl({
+      main: mainAgent,
+      reviewer: reviewerAgent,
+    });
+    const eventRuntime = makeEventRuntime({ agent: mainAgent, sessionControl });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
 
-    driver.sendQueuedMessage(session, { text: 'ls', mode: 'bash' });
+    driver.sendQueuedMessage({ text: 'ls', mode: 'bash', agentId: 'reviewer' });
     await Promise.resolve();
 
-    expect(runShellCommand).toHaveBeenCalledWith(
-      'ls',
-      expect.objectContaining({ commandId: expect.any(String) }),
-    );
+    expect(runShellCommand).toHaveBeenCalledWith('ls', expect.any(String));
     expect(session.prompt).not.toHaveBeenCalled();
+  });
+
+  it('routes a queued prompt through its recorded agent control', async () => {
+    const session = makeSession();
+    const mainAgent = makeMessageAgentControl();
+    const reviewerAgent = makeMessageAgentControl();
+    const sessionControl = makeMessageSessionControl({ main: mainAgent, reviewer: reviewerAgent });
+    const eventRuntime = makeEventRuntime({ agent: mainAgent, sessionControl });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
+
+    driver.sendQueuedMessage({ text: 'review this', agentId: 'reviewer' });
+
+    expect(reviewerAgent.prompt).toHaveBeenCalledWith('review this');
+    expect(mainAgent.prompt).not.toHaveBeenCalled();
+    expect(session.prompt).not.toHaveBeenCalled();
+  });
+
+  it('cancels a running shell command through its originating agent control', async () => {
+    let finishShellCommand: ((result: AgentShellResult) => void) | undefined;
+    const shellResult = new Promise<AgentShellResult>((resolve) => {
+      finishShellCommand = resolve;
+    });
+    const runShellCommand = vi.fn((_command: string, _commandId?: string) => shellResult);
+    const session = makeSession();
+    const mainAgent = makeMessageAgentControl();
+    const reviewerAgent = makeMessageAgentControl({ runShellCommand });
+    const sessionControl = makeMessageSessionControl({
+      main: mainAgent,
+      reviewer: reviewerAgent,
+    });
+    const eventRuntime = makeEventRuntime({ agent: mainAgent, sessionControl });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
+
+    driver.sendQueuedMessage({
+      text: 'sleep 10',
+      mode: 'bash',
+      agentId: 'reviewer',
+    });
+    driver.cancelRunningShellCommand();
+
+    const commandId = runShellCommand.mock.calls[0]?.[1];
+    expect(commandId).toEqual(expect.any(String));
+    expect(reviewerAgent.cancelShellCommand).toHaveBeenCalledWith(commandId);
+
+    finishShellCommand?.({ stdout: '', stderr: '', isError: false });
+  });
+
+  it('does not drain the current queue when a shell command from a stale binding finishes', async () => {
+    let finishShellCommand: ((result: AgentShellResult) => void) | undefined;
+    const shellResult = new Promise<AgentShellResult>((resolve) => {
+      finishShellCommand = resolve;
+    });
+    const mainAgent = makeMessageAgentControl({
+      runShellCommand: vi.fn(() => shellResult),
+    });
+    const eventRuntime = makeEventRuntime({ agent: mainAgent });
+    const { driver } = await makeDriver(
+      makeSession({ id: 'ses-1' }),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+
+    driver.sendQueuedMessage({ text: 'sleep 10', mode: 'bash' });
+    await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
+    driver.state.queuedMessages = [{ text: 'current session message', agentId: 'main' }];
+
+    finishShellCommand?.({ stdout: '', stderr: '', isError: false });
+    await Promise.resolve();
+
+    expect(mainAgent.prompt).not.toHaveBeenCalled();
+    expect(driver.state.queuedMessages).toEqual([
+      { text: 'current session message', agentId: 'main' },
+    ]);
   });
 
   it('persists bash input to input history with a leading !', async () => {
@@ -1934,7 +3031,7 @@ command = "vim"
       { type: 'image_url', imageUrl: { url: 'data:image/png;base64,qrs=' } },
     ]);
 
-    driver.sendQueuedMessage(session, queued!);
+    driver.sendQueuedMessage(queued!);
 
     expect(session.prompt).toHaveBeenCalledWith([
       { type: 'text', text: 'describe ' },
@@ -2092,11 +3189,7 @@ command = "vim"
     // throws, and it must surface as a TUI error, not an unhandled rejection.
     const missing = imageStore.addVideo('video/quicktime', '/tmp/kimi-missing-source.mov');
 
-    (
-      driver as unknown as {
-        sendSkillActivation(s: unknown, name: string, args: string): void;
-      }
-    ).sendSkillActivation(session, 'test', `look ${missing.placeholder}`);
+    driver.sendSkillActivation('test', `look ${missing.placeholder}`);
 
     expect(session.activateSkill).not.toHaveBeenCalled();
     expect(stripSgr(renderTranscript(driver))).toContain('Failed to prepare media attachment');
@@ -2111,9 +3204,9 @@ command = "vim"
 
     (
       driver as unknown as {
-        activatePluginCommand(s: unknown, pluginId: string, command: string, args: string): void;
+        activatePluginCommand(pluginId: string, command: string, args: string): void;
       }
-    ).activatePluginCommand(session, 'plug', 'cmd', missing.placeholder);
+    ).activatePluginCommand('plug', 'cmd', missing.placeholder);
 
     expect(activatePluginCommand).not.toHaveBeenCalled();
     expect(stripSgr(renderTranscript(driver))).toContain('Failed to prepare media attachment');
@@ -2172,15 +3265,26 @@ command = "vim"
 
   it('echoes a bash command with a $ prompt in the transcript', async () => {
     const runShellCommand = vi.fn(async () => ({ stdout: '', stderr: '', isError: false }));
-    const session = makeSession({ runShellCommand });
-    const { driver, harness } = await makeDriver(session);
+    const session = makeSession();
+    const mainAgent = makeMessageAgentControl({ runShellCommand });
+    const eventRuntime = makeEventRuntime({ agent: mainAgent });
+    const { driver } = await makeDriver(
+      session,
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    driver.session = undefined;
     driver.state.appState.inputMode = 'bash';
     driver.state.editor.inputMode = 'bash';
 
     driver.handleUserInput('ls');
     await Promise.resolve();
 
-    expect(harness.track).toHaveBeenCalledWith('shell_command', undefined);
+    expect(eventRuntime.runtime.telemetry.track).toHaveBeenCalledWith(
+      'shell_command',
+      undefined,
+    );
 
     const transcript = stripSgr(driver.state.transcriptContainer.render(120).join('\n'));
     expect(transcript).toContain('$ ls');
@@ -2580,7 +3684,9 @@ command = "vim"
       expect(session.startBtw).toHaveBeenCalledWith();
     });
     expect(session.prompt).not.toHaveBeenCalled();
-    expect(stripSgr(renderBtwPanel(driver))).toContain('Ready for a side question...');
+    await vi.waitFor(() => {
+      expect(stripSgr(renderBtwPanel(driver))).toContain('Ready for a side question...');
+    });
 
     driver.handleUserInput('What are you working on right now?');
 
@@ -2600,9 +3706,14 @@ command = "vim"
     await vi.waitFor(() => {
       expect(session.startBtw).toHaveBeenCalledWith();
     });
+    await vi.waitFor(() => {
+      expect(stripSgr(renderBtwPanel(driver))).toContain('Ready for a side question...');
+    });
     driver.state.editor.onEscape?.();
 
-    expect(session.cancel).toHaveBeenCalledOnce();
+    await vi.waitFor(() => {
+      expect(session.cancel).toHaveBeenCalledOnce();
+    });
     expect(driver.state.btwPanelContainer.children).toHaveLength(0);
   });
 
@@ -3484,6 +4595,7 @@ command = "vim"
       })),
     });
     const { driver } = await makeDriver(session);
+    driver.sessionEventHandler.startSubscription();
 
     driver.sessionEventHandler.handleEvent(
       {
@@ -3958,6 +5070,7 @@ command = "vim"
       })),
     });
     const { driver } = await makeDriver(session);
+    driver.sessionEventHandler.startSubscription();
 
     driver.sessionEventHandler.handleEvent(
       {
@@ -4143,14 +5256,17 @@ command = "vim"
     });
   });
 
-  it('toggles plugin MCP servers from the text command', async () => {
+  it('toggles plugin MCP servers through the runtime when the raw session is unavailable', async () => {
     const session = makeSession();
-    const { driver } = await makeDriver(session);
+    const plugins = makeMessagePluginsPort();
+    const eventRuntime = makeEventRuntime({ plugins });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
 
     driver.handleUserInput('/plugins mcp enable kimi-datasource data');
 
     await vi.waitFor(() => {
-      expect(session.setPluginMcpServerEnabled).toHaveBeenCalledWith(
+      expect(plugins.setMcpServerEnabled).toHaveBeenCalledWith(
         'kimi-datasource',
         'data',
         true,
@@ -4158,9 +5274,52 @@ command = "vim"
     });
   });
 
+  it('renders the runtime plugin list when the raw session is unavailable', async () => {
+    const session = makeSession();
+    const plugins = makeMessagePluginsPort({
+      list: vi.fn(async () => [makePluginSummaryView()]),
+    });
+    const eventRuntime = makeEventRuntime({ plugins });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
+
+    driver.handleUserInput('/plugins list');
+
+    await vi.waitFor(() => {
+      expect(stripSgr(renderTranscript(driver))).toContain(' Plugins (1) ');
+    });
+    expect(plugins.list).toHaveBeenCalledOnce();
+  });
+
+  it('refreshes slash-command autocomplete after runtime plugin reload', async () => {
+    const session = makeSession();
+    const plugins = makeMessagePluginsPort({
+      reload: vi.fn(async () => ({
+        added: ['demo'],
+        removed: [],
+        errors: [],
+      })),
+    });
+    const eventRuntime = makeEventRuntime({ plugins });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
+    driver.refreshSlashCommandAutocomplete = vi.fn();
+
+    driver.handleUserInput('/plugins reload');
+
+    await vi.waitFor(() => {
+      expect(plugins.reload).toHaveBeenCalledOnce();
+    });
+    expect(driver.refreshSlashCommandAutocomplete).toHaveBeenCalledOnce();
+    expect(stripSgr(renderTranscript(driver))).toContain('Reload: +1 -0');
+  });
+
   it('errors when /plugins install has no argument', async () => {
     const session = makeSession();
-    const { driver } = await makeDriver(session);
+    const plugins = makeMessagePluginsPort();
+    const eventRuntime = makeEventRuntime({ plugins });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
 
     driver.handleUserInput('/plugins install');
 
@@ -4169,12 +5328,15 @@ command = "vim"
         'Usage: /plugins install <local-path-or-zip-url>',
       );
     });
-    expect(session.installPlugin).not.toHaveBeenCalled();
+    expect(plugins.install).not.toHaveBeenCalled();
   });
 
-  it('installs from a positional source on /plugins install after trusting it', async () => {
+  it('installs through the runtime when the raw session is unavailable', async () => {
     const session = makeSession();
-    const { driver } = await makeDriver(session);
+    const plugins = makeMessagePluginsPort();
+    const eventRuntime = makeEventRuntime({ plugins });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
 
     driver.handleUserInput('/plugins install ./plugins/kimi-datasource');
 
@@ -4188,7 +5350,7 @@ command = "vim"
     confirm.handleInput('\r');
 
     await vi.waitFor(() => {
-      expect(session.installPlugin).toHaveBeenCalledWith(
+      expect(plugins.install).toHaveBeenCalledWith(
         resolve('/tmp/proj-a', './plugins/kimi-datasource'),
       );
     });
@@ -4478,9 +5640,12 @@ command = "vim"
     });
   });
 
-  it('removes a plugin record without auto-running any cleanup skill', async () => {
+  it('removes through the runtime without auto-running any cleanup skill', async () => {
     const session = makeSession();
-    const { driver } = await makeDriver(session);
+    const plugins = makeMessagePluginsPort();
+    const eventRuntime = makeEventRuntime({ plugins });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
 
     driver.handleUserInput('/plugins remove kimi-webbridge');
 
@@ -4494,7 +5659,7 @@ command = "vim"
     confirm.handleInput('\r');
 
     await vi.waitFor(() => {
-      expect(session.removePlugin).toHaveBeenCalledWith('kimi-webbridge');
+      expect(plugins.remove).toHaveBeenCalledWith('kimi-webbridge');
     });
     expect(session.activateSkill).not.toHaveBeenCalled();
   });
@@ -4575,28 +5740,18 @@ command = "vim"
     }
   });
 
-  it('toggles plugins from the Installed tab with space', async () => {
+  it('toggles installed plugins through the runtime when the raw session is unavailable', async () => {
     let enabled = true;
-    const session = makeSession({
-      listPlugins: vi.fn(async () => [
-        {
-          id: 'demo',
-          displayName: 'Demo',
-          version: '1.0.0',
-          enabled,
-          state: 'ok',
-          skillCount: 1,
-          mcpServerCount: 0,
-          enabledMcpServerCount: 0,
-          hasErrors: false,
-          source: 'local-path',
-        },
-      ]),
-      setPluginEnabled: vi.fn(async (_id: string, nextEnabled: boolean) => {
+    const plugins = makeMessagePluginsPort({
+      list: vi.fn(async () => [makePluginSummaryView({ enabled })]),
+      setEnabled: vi.fn(async (_id: string, nextEnabled: boolean) => {
         enabled = nextEnabled;
       }),
     });
-    const { driver } = await makeDriver(session);
+    const session = makeSession();
+    const eventRuntime = makeEventRuntime({ plugins });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
 
     driver.handleUserInput('/plugins');
 
@@ -4611,7 +5766,7 @@ command = "vim"
     expect(driver.state.editorContainer.children[0]).toBeInstanceOf(PluginsPanelComponent);
 
     await vi.waitFor(() => {
-      expect(session.setPluginEnabled).toHaveBeenCalledWith('demo', false);
+      expect(plugins.setEnabled).toHaveBeenCalledWith('demo', false);
     });
     await vi.waitFor(() => {
       const refreshed = stripSgr(driver.state.editorContainer.children[0]!.render(120).join('\n'));
@@ -4622,63 +5777,57 @@ command = "vim"
     );
   });
 
-  it('toggles plugin MCP servers from the overview MCP picker', async () => {
+  it('toggles MCP servers from the runtime-backed plugin picker', async () => {
     const serverEnabled = new Map([
       ['metadata', true],
       ['data', true],
     ]);
-    const session = makeSession({
-      listPlugins: vi.fn(async () => [
-        {
+    const plugins = makeMessagePluginsPort({
+      list: vi.fn(async () => [
+        makePluginSummaryView({
           id: 'kimi-datasource',
           displayName: 'Kimi Datasource',
-          version: '1.0.0',
-          enabled: true,
-          state: 'ok',
-          skillCount: 1,
           mcpServerCount: 2,
           enabledMcpServerCount: 2,
-          hasErrors: false,
-        },
+        }),
       ]),
-      getPluginInfo: vi.fn(async () => ({
-        id: 'kimi-datasource',
-        displayName: 'Kimi Datasource',
-        version: '1.0.0',
-        enabled: true,
-        state: 'ok',
-        skillCount: 1,
-        mcpServerCount: 2,
-        enabledMcpServerCount: [...serverEnabled.values()].filter(Boolean).length,
-        hasErrors: false,
-        source: 'local-path',
-        root: '/plugins/kimi-datasource',
-        manifest: undefined,
-        mcpServers: [
-          {
-            name: 'metadata',
-            runtimeName: 'plugin-kimi-datasource-metadata',
-            enabled: serverEnabled.get('metadata') === true,
-            transport: 'stdio',
-            command: 'node',
-            args: ['./bin/kimi-datasource.mjs', 'metadata'],
-          },
-          {
-            name: 'data',
-            runtimeName: 'plugin-kimi-datasource-data',
-            enabled: serverEnabled.get('data') === true,
-            transport: 'stdio',
-            command: 'node',
-            args: ['./bin/kimi-datasource.mjs', 'data'],
-          },
-        ],
-        diagnostics: [],
-      })),
-      setPluginMcpServerEnabled: vi.fn(async (_id: string, _server: string, nextEnabled: boolean) => {
-        serverEnabled.set(_server, nextEnabled);
-      }),
+      info: vi.fn(async () =>
+        makePluginInfoView({
+          id: 'kimi-datasource',
+          displayName: 'Kimi Datasource',
+          mcpServerCount: 2,
+          enabledMcpServerCount: [...serverEnabled.values()].filter(Boolean).length,
+          root: '/plugins/kimi-datasource',
+          mcpServers: [
+            {
+              name: 'metadata',
+              runtimeName: 'plugin-kimi-datasource-metadata',
+              enabled: serverEnabled.get('metadata') === true,
+              transport: 'stdio',
+              command: 'node',
+              args: ['./bin/kimi-datasource.mjs', 'metadata'],
+            },
+            {
+              name: 'data',
+              runtimeName: 'plugin-kimi-datasource-data',
+              enabled: serverEnabled.get('data') === true,
+              transport: 'stdio',
+              command: 'node',
+              args: ['./bin/kimi-datasource.mjs', 'data'],
+            },
+          ],
+        }),
+      ),
+      setMcpServerEnabled: vi.fn(
+        async (_id: string, _server: string, nextEnabled: boolean) => {
+          serverEnabled.set(_server, nextEnabled);
+        },
+      ),
     });
-    const { driver } = await makeDriver(session);
+    const session = makeSession();
+    const eventRuntime = makeEventRuntime({ plugins });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
 
     driver.handleUserInput('/plugins');
 
@@ -4698,7 +5847,7 @@ command = "vim"
     mcpPicker.handleInput(' ');
 
     await vi.waitFor(() => {
-      expect(session.setPluginMcpServerEnabled).toHaveBeenCalledWith(
+      expect(plugins.setMcpServerEnabled).toHaveBeenCalledWith(
         'kimi-datasource',
         'data',
         false,
@@ -4737,28 +5886,19 @@ command = "vim"
     expect(session.removePlugin).not.toHaveBeenCalled();
   });
 
-  it('renders /plugins <id> info to the transcript', async () => {
-    const session = makeSession({
-      listPlugins: vi.fn(async () => [
-        {
-          id: 'demo',
-          displayName: 'Demo',
-          version: '1.0.0',
-          enabled: true,
-          state: 'ok',
-          skillCount: 1,
-          mcpServerCount: 0,
-          enabledMcpServerCount: 0,
-          hasErrors: false,
-        },
-      ]),
+  it('renders plugin info through the runtime when the raw session is unavailable', async () => {
+    const plugins = makeMessagePluginsPort({
+      list: vi.fn(async () => [makePluginSummaryView()]),
     });
-    const { driver } = await makeDriver(session);
+    const session = makeSession();
+    const eventRuntime = makeEventRuntime({ plugins });
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    driver.session = undefined;
 
     driver.handleUserInput('/plugins demo');
 
     await vi.waitFor(() => {
-      expect(session.getPluginInfo).toHaveBeenCalledWith('demo');
+      expect(plugins.info).toHaveBeenCalledWith('demo');
     });
   });
 
@@ -5075,8 +6215,9 @@ command = "vim"
   });
 
   it('refreshes only OAuth provider models before opening /model picker', async () => {
-    const { driver } = await makeDriver(makeSession(), {
-      getConfig: vi.fn(async () => ({
+    const eventRuntime = makeEventRuntime();
+    eventRuntime.runtime.models.load
+      .mockResolvedValueOnce({
         models: {
           k2: {
             provider: 'managed:kimi-code',
@@ -5086,16 +6227,12 @@ command = "vim"
             capabilities: ['thinking'],
           },
         },
-      })),
-    });
-    const tui = driver as unknown as KimiTUI;
-    const refreshProviderModels = vi
-      .spyOn(tui.authFlow, 'refreshProviderModels')
-      .mockRejectedValue(new Error('full provider refresh should not run'));
-    const refreshOAuthProviderModels = vi.fn(async () => {
-      await Promise.resolve();
-      tui.setAppState({
-        availableModels: {
+        providers: {},
+        defaultModel: 'k2',
+        thinking: { enabled: false },
+      })
+      .mockResolvedValue({
+        models: {
           k2: {
             provider: 'managed:kimi-code',
             model: 'kimi-k2',
@@ -5104,14 +6241,21 @@ command = "vim"
             capabilities: ['thinking'],
           },
         },
+        providers: {},
+        defaultModel: 'k2',
+        thinking: { enabled: false },
       });
-      return { changed: [], unchanged: ['managed:kimi-code'], failed: [] };
+    eventRuntime.runtime.providerRefresh.refresh.mockResolvedValue({
+      changed: [],
+      unchanged: ['managed:kimi-code'],
+      failed: [],
     });
-    (
-      tui.authFlow as unknown as {
-        refreshOAuthProviderModels: typeof refreshOAuthProviderModels;
-      }
-    ).refreshOAuthProviderModels = refreshOAuthProviderModels;
+    const { driver } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
 
     driver.handleUserInput('/model');
 
@@ -5122,38 +6266,43 @@ command = "vim"
       expect(output).toContain('Fresh Kimi K2');
       expect(output).not.toContain('Old Kimi K2');
     });
-    expect(refreshOAuthProviderModels).toHaveBeenCalledOnce();
-    expect(refreshProviderModels).not.toHaveBeenCalled();
+    expect(eventRuntime.runtime.providerRefresh.refresh).toHaveBeenCalledWith('oauth');
+    expect(eventRuntime.runtime.models.load).toHaveBeenLastCalledWith({ reload: true });
   });
 
   it('opens /model picker after 2s when OAuth refresh is still pending', async () => {
-    const { driver } = await makeDriver(makeSession(), {
-      getConfig: vi.fn(async () => ({
-        models: {
-          k2: {
-            provider: 'managed:kimi-code',
-            model: 'kimi-k2',
-            maxContextSize: 100,
-            displayName: 'Kimi K2',
-            capabilities: ['thinking'],
-          },
+    const eventRuntime = makeEventRuntime();
+    eventRuntime.runtime.models.load.mockResolvedValue({
+      models: {
+        k2: {
+          provider: 'managed:kimi-code',
+          model: 'kimi-k2',
+          maxContextSize: 100,
+          displayName: 'Kimi K2',
+          capabilities: ['thinking'],
         },
-      })),
+      },
+      providers: {},
+      defaultModel: 'k2',
+      thinking: { enabled: false },
     });
-    const tui = driver as unknown as KimiTUI;
-    const refreshOAuthProviderModels = vi.fn(() => new Promise<never>(() => {}));
-    (
-      tui.authFlow as unknown as {
-        refreshOAuthProviderModels: typeof refreshOAuthProviderModels;
-      }
-    ).refreshOAuthProviderModels = refreshOAuthProviderModels;
+    eventRuntime.runtime.providerRefresh.refresh.mockImplementation(
+      () => new Promise<never>(() => {}),
+    );
+    const { driver } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    eventRuntime.runtime.models.load.mockClear();
 
     vi.useFakeTimers();
     try {
       driver.handleUserInput('/model');
       await Promise.resolve();
 
-      expect(refreshOAuthProviderModels).toHaveBeenCalledOnce();
+      expect(eventRuntime.runtime.providerRefresh.refresh).toHaveBeenCalledWith('oauth');
       expect(driver.state.editorContainer.children[0]).not.toBeInstanceOf(TabbedModelSelectorComponent);
 
       await vi.advanceTimersByTimeAsync(1_999);
@@ -5164,6 +6313,7 @@ command = "vim"
       expect(picker).toBeInstanceOf(TabbedModelSelectorComponent);
       const output = stripSgr((picker as TabbedModelSelectorComponent).render(120).join('\n'));
       expect(output).toContain('Kimi K2');
+      expect(eventRuntime.runtime.models.load).not.toHaveBeenCalled();
     } finally {
       vi.useRealTimers();
     }
@@ -5208,6 +6358,7 @@ command = "vim"
     const { driver, harness } = await makeDriver(makeSession({ id: 'ses-1' }));
     const nextSession = makeSession({ id: 'ses-2' });
     harness.createSession.mockResolvedValueOnce(nextSession);
+    harness.getSession.mockReturnValue(nextSession);
     const write = vi.spyOn(driver.state.terminal, 'write').mockImplementation(() => {});
 
     driver.handleUserInput('/new');
@@ -5221,20 +6372,24 @@ command = "vim"
 
   it('updates terminal title through pi-tui without changing process title', async () => {
     const originalTitle = process.title;
-    const { driver } = await makeDriver(makeSession({ id: 'ses-1' }));
+    const eventRuntime = makeEventRuntime();
+    const { driver } = await makeDriver(
+      makeSession({ id: 'ses-1' }),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
     const setTitle = vi.spyOn(driver.state.terminal, 'setTitle').mockImplementation(() => {});
 
     try {
       process.title = 'kimi-test-runner';
-      driver.sessionEventHandler.handleEvent(
-        {
-          type: 'session.meta.updated',
-          sessionId: 'ses-1',
-          agentId: 'main',
-          title: 'Implement terminal title',
-        } as Event,
-        () => {},
-      );
+      driver.sessionEventHandler.startSubscription();
+      eventRuntime.emit({
+        type: 'session.metadata.changed',
+        sessionId: 'ses-1',
+        changed: ['title'],
+        title: 'Implement terminal title',
+      });
 
       expect(setTitle).toHaveBeenCalledWith('Implement terminal title');
       expect(process.title).toBe('kimi-test-runner');
@@ -5534,34 +6689,398 @@ command = "vim"
   });
 });
 
+describe('/login and /logout runtime routing', () => {
+  it('completes managed login through runtime auth when raw session and harness are unavailable', async () => {
+    const eventRuntime = makeEventRuntime();
+    eventRuntime.runtime.auth.status.mockResolvedValue({
+      loggedIn: true,
+      provider: 'managed:kimi-code',
+    });
+    eventRuntime.runtime.auth.login.mockImplementation(async (_provider, options) => {
+      await options?.onDeviceCode?.({
+        verificationUri: 'https://example.test/device',
+        verificationUriComplete: 'https://example.test/device?code=ABCD-EFGH',
+        userCode: 'ABCD-EFGH',
+        expiresIn: 600,
+        interval: 5,
+      });
+    });
+    vi.mocked(promptPlatformSelection).mockResolvedValue('kimi-code');
+    const { driver, harness } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    harness.getConfig.mockClear();
+    driver.session = undefined;
+    Object.defineProperty(driver, 'harness', { value: undefined });
+
+    driver.handleUserInput('/login');
+
+    await vi.waitFor(() => {
+      expect(eventRuntime.runtime.auth.login).toHaveBeenCalledWith(
+        'managed:kimi-code',
+        expect.objectContaining({
+          signal: expect.any(AbortSignal),
+          onDeviceCode: expect.any(Function),
+        }),
+      );
+      expect(eventRuntime.runtime.telemetry.track).toHaveBeenCalledWith('login', {
+        provider: 'managed:kimi-code',
+        method: 'oauth',
+        already_logged_in: true,
+      });
+    });
+    expect(stripSgr(renderTranscript(driver))).toContain(
+      'Already logged in. Model configuration refreshed.',
+    );
+    expect(harness.auth.status).not.toHaveBeenCalled();
+    expect(harness.auth.login).not.toHaveBeenCalled();
+    expect(harness.getConfig).not.toHaveBeenCalled();
+  });
+
+  it('cancels managed login through the runtime abort signal without reporting a failure', async () => {
+    const eventRuntime = makeEventRuntime();
+    eventRuntime.runtime.auth.login.mockImplementation(
+      async (_provider, options) => {
+        await options?.onDeviceCode?.({
+          verificationUri: 'https://example.test/device',
+          verificationUriComplete: 'https://example.test/device?code=ABCD-EFGH',
+          userCode: 'ABCD-EFGH',
+          expiresIn: 600,
+          interval: 5,
+        });
+        await new Promise<void>((_resolve, reject) => {
+          options?.signal?.addEventListener(
+            'abort',
+            () => {
+              const error = new Error('Authentication login was aborted.');
+              error.name = 'AbortError';
+              reject(error);
+            },
+            { once: true },
+          );
+        });
+      },
+    );
+    vi.mocked(promptPlatformSelection).mockResolvedValue('kimi-code');
+    const { driver } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+
+    driver.handleUserInput('/login');
+    await vi.waitFor(() => {
+      expect(driver.cancelInFlight).toEqual(expect.any(Function));
+    });
+    driver.cancelInFlight?.();
+
+    await vi.waitFor(() => {
+      expect(stripSgr(renderTranscript(driver))).toContain('Login cancelled.');
+    });
+    expect(stripSgr(renderTranscript(driver))).not.toContain('Error: Login failed');
+    expect(eventRuntime.runtime.telemetry.track).not.toHaveBeenCalledWith(
+      'login',
+      expect.anything(),
+    );
+  });
+
+  it('reports and logs managed runtime login failures with session context', async () => {
+    const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
+    const eventRuntime = makeEventRuntime();
+    const loginError = new Error('Failed to list Kimi Code models (HTTP 402).');
+    eventRuntime.runtime.auth.login.mockRejectedValue(loginError);
+    vi.mocked(promptPlatformSelection).mockResolvedValue('kimi-code');
+    const { driver } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+
+    try {
+      driver.handleUserInput('/login');
+
+      await vi.waitFor(() => {
+        expect(stripSgr(renderTranscript(driver))).toContain(
+          'Error: Login failed: Failed to list Kimi Code models (HTTP 402).',
+        );
+      });
+      expect(warn).toHaveBeenCalledWith('login failed', {
+        providerName: 'managed:kimi-code',
+        alreadyLoggedIn: false,
+        sessionId: 'ses-1',
+        error: loginError,
+      });
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('persists verified API-key model config through the runtime config port', async () => {
+    const model = {
+      id: 'kimi-k2-example',
+      contextLength: 128_000,
+      supportsReasoning: true,
+      supportsImageIn: false,
+      supportsVideoIn: false,
+      supportsToolUse: false,
+      displayName: 'Kimi K2 Example',
+    };
+    const eventRuntime = makeEventRuntime();
+    eventRuntime.runtime.models.load.mockResolvedValue({
+      models: {},
+      providers: {
+        'moonshot-cn': {
+          type: 'kimi',
+          status: 'connected',
+          hasApiKey: true,
+          baseUrl: 'https://api.moonshot.cn/v1',
+        },
+      },
+    });
+    vi.mocked(promptPlatformSelection).mockResolvedValue('moonshot-cn');
+    vi.mocked(promptApiKey).mockResolvedValue('YOUR_API_KEY');
+    vi.mocked(fetchOpenPlatformModels).mockResolvedValue([model]);
+    vi.mocked(promptModelSelectionForOpenPlatform).mockResolvedValue({
+      model,
+      thinking: 'high',
+    });
+    const { driver, harness } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    harness.getConfig.mockClear();
+    harness.setConfig.mockClear();
+
+    driver.handleUserInput('/login');
+
+    await vi.waitFor(() => {
+      expect(eventRuntime.runtime.modelConfig.apply).toHaveBeenCalledWith({
+        providers: {
+          'moonshot-cn': {
+            type: 'kimi',
+            baseUrl: 'https://api.moonshot.cn/v1',
+            apiKey: 'YOUR_API_KEY',
+          },
+        },
+        models: {
+          'moonshot-cn/kimi-k2-example': {
+            provider: 'moonshot-cn',
+            model: 'kimi-k2-example',
+            maxContextSize: 128_000,
+            capabilities: ['thinking'],
+            displayName: 'Kimi K2 Example',
+          },
+        },
+        defaultModel: 'moonshot-cn/kimi-k2-example',
+        thinking: { enabled: true, effort: 'high' },
+      });
+    });
+    expect(eventRuntime.runtime.modelConfig.removeProvider).toHaveBeenCalledWith(
+      'moonshot-cn',
+    );
+    expect(eventRuntime.runtime.telemetry.track).toHaveBeenCalledWith('login', {
+      provider: 'moonshot-cn',
+      method: 'api_key',
+    });
+    expect(stripSgr(renderTranscript(driver))).toContain(
+      'Setup complete: Kimi Platform (API key · platform.kimi.com) · kimi-k2-example',
+    );
+    expect(harness.getConfig).not.toHaveBeenCalled();
+    expect(harness.setConfig).not.toHaveBeenCalled();
+  });
+
+  it('removes the selected inactive provider through runtime config and refreshes the catalog', async () => {
+    const configuredCatalog = {
+      models: {
+        k2: {
+          provider: 'managed:kimi-code',
+          model: 'kimi-k2',
+          maxContextSize: 100,
+        },
+      },
+      providers: {
+        'managed:kimi-code': {
+          type: 'kimi',
+          status: 'connected' as const,
+          hasApiKey: true,
+        },
+        'moonshot-cn': {
+          type: 'kimi',
+          status: 'connected' as const,
+          hasApiKey: true,
+          baseUrl: 'https://api.moonshot.cn/v1',
+        },
+      },
+    };
+    const refreshedCatalog = {
+      models: configuredCatalog.models,
+      providers: {
+        'managed:kimi-code': configuredCatalog.providers['managed:kimi-code'],
+      },
+    };
+    const eventRuntime = makeEventRuntime();
+    eventRuntime.runtime.models.load
+      .mockResolvedValueOnce(configuredCatalog)
+      .mockResolvedValueOnce(configuredCatalog)
+      .mockResolvedValueOnce(refreshedCatalog);
+    vi.mocked(promptLogoutProviderSelection).mockResolvedValue('moonshot-cn');
+    const { driver, harness } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    harness.getConfig.mockClear();
+    Object.defineProperty(driver, 'harness', { value: undefined });
+
+    driver.handleUserInput('/logout');
+
+    await vi.waitFor(() => {
+      expect(eventRuntime.runtime.modelConfig.removeProvider).toHaveBeenCalledWith(
+        'moonshot-cn',
+      );
+    });
+    expect(promptLogoutProviderSelection).toHaveBeenCalledWith(
+      expect.anything(),
+      [
+        {
+          value: 'managed:kimi-code',
+          label: 'Kimi Code',
+          description: 'OAuth login',
+        },
+        {
+          value: 'moonshot-cn',
+          label: 'moonshot-cn',
+          description: 'https://api.moonshot.cn/v1',
+        },
+      ],
+      'managed:kimi-code',
+    );
+    expect(eventRuntime.runtime.auth.logout).not.toHaveBeenCalled();
+    expect(driver.state.appState.availableProviders).toEqual({
+      'managed:kimi-code': {
+        type: 'kimi',
+        baseUrl: undefined,
+        defaultModel: undefined,
+        env: undefined,
+        customHeaders: undefined,
+        source: undefined,
+      },
+    });
+    expect(eventRuntime.runtime.telemetry.track).toHaveBeenCalledWith('logout', {
+      provider: 'moonshot-cn',
+    });
+    expect(harness.getConfig).not.toHaveBeenCalled();
+  });
+
+  it('logs out managed auth through runtime before clearing the active session view', async () => {
+    const configuredCatalog = {
+      models: {
+        k2: {
+          provider: 'managed:kimi-code',
+          model: 'kimi-k2',
+          maxContextSize: 100,
+        },
+      },
+      providers: {
+        'managed:kimi-code': {
+          type: 'kimi',
+          status: 'connected' as const,
+          hasApiKey: true,
+        },
+      },
+    };
+    const eventRuntime = makeEventRuntime();
+    eventRuntime.runtime.auth.status.mockResolvedValue({
+      loggedIn: true,
+      provider: 'managed:kimi-code',
+    });
+    eventRuntime.runtime.models.load
+      .mockResolvedValueOnce(configuredCatalog)
+      .mockResolvedValueOnce(configuredCatalog)
+      .mockResolvedValueOnce({ models: {}, providers: {} });
+    vi.mocked(promptLogoutProviderSelection).mockResolvedValue(
+      'managed:kimi-code',
+    );
+    const session = makeSession();
+    const { driver } = await makeDriver(
+      session,
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    const activeRuntime = (
+      driver as unknown as { requireSessionRuntime(): TUISessionRuntime }
+    ).requireSessionRuntime();
+
+    driver.handleUserInput('/logout');
+
+    await vi.waitFor(() => {
+      expect(eventRuntime.runtime.auth.logout).toHaveBeenCalledWith(
+        'managed:kimi-code',
+      );
+      expect(driver.state.appState).toMatchObject({
+        sessionId: '',
+        model: '',
+        sessionTitle: null,
+        availableModels: {},
+        availableProviders: {},
+      });
+    });
+    expect(eventRuntime.runtime.modelConfig.removeProvider).not.toHaveBeenCalled();
+    expect(activeRuntime.lifecycle.close).toHaveBeenCalledOnce();
+    expect(session.close).not.toHaveBeenCalled();
+  });
+});
+
 describe('/model status displayName override', () => {
   it('shows the overridden display name in the switch status', async () => {
     const session = makeSession();
-    const setConfig = vi.fn(async () => ({ providers: {} }));
-    const { driver } = await makeDriver(session, {
-      getConfig: vi.fn(async () => ({
-        models: {
-          k2: {
-            provider: 'managed:kimi-code',
-            model: 'kimi-k2',
-            maxContextSize: 100,
-            displayName: 'Kimi K2',
-            capabilities: ['thinking'],
-          },
-          turbo: {
-            provider: 'managed:kimi-code',
-            model: 'kimi-turbo',
-            maxContextSize: 100,
-            displayName: 'Remote Turbo',
-            capabilities: ['thinking'],
-            overrides: { displayName: 'Custom Turbo' },
-          },
+    const eventRuntime = makeEventRuntime();
+    const models = {
+      k2: {
+        provider: 'managed:kimi-code',
+        model: 'kimi-k2',
+        maxContextSize: 100,
+        displayName: 'Kimi K2',
+        capabilities: ['thinking'],
+      },
+      turbo: {
+        provider: 'managed:kimi-code',
+        model: 'kimi-turbo',
+        maxContextSize: 100,
+        displayName: 'Remote Turbo',
+        capabilities: ['thinking'],
+        overrides: { displayName: 'Custom Turbo' },
+      },
+    };
+    eventRuntime.runtime.models.load.mockResolvedValue({
+      models,
+      providers: {
+        'managed:kimi-code': {
+          type: 'kimi',
+          status: 'connected',
+          hasApiKey: true,
         },
-        defaultModel: 'k2',
-        thinking: { enabled: false },
-      })),
-      setConfig,
+      },
+      defaultModel: 'k2',
+      thinking: { enabled: false },
     });
+    const { driver, harness } = await makeDriver(
+      session,
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    harness.setConfig.mockClear();
+    driver.session = undefined;
 
     driver.handleUserInput('/model turbo');
 
@@ -5571,14 +7090,121 @@ describe('/model status displayName override', () => {
     (driver.state.editorContainer.children[0] as TabbedModelSelectorComponent).handleInput('\r');
 
     await vi.waitFor(() => {
-      expect(setConfig).toHaveBeenCalledWith({
+      expect(eventRuntime.runtime.modelConfig.apply).toHaveBeenCalledWith({
         defaultModel: 'turbo',
         thinking: { enabled: true },
       });
     });
 
+    expect(harness.setConfig).not.toHaveBeenCalled();
     expect(renderTranscript(driver)).toContain('Switched to Custom Turbo with thinking on.');
     expect(renderTranscript(driver)).not.toContain('Remote Turbo');
+  });
+
+  it('persists the highest effort through the runtime model config port', async () => {
+    const eventRuntime = makeEventRuntime();
+    eventRuntime.runtime.models.load.mockResolvedValue({
+      models: {
+        k2: {
+          provider: 'managed:kimi-code',
+          model: 'kimi-k2',
+          maxContextSize: 100,
+          displayName: 'Kimi K2',
+          capabilities: ['thinking'],
+          supportEfforts: ['low', 'high', 'max'],
+        },
+      },
+      providers: {},
+      defaultModel: 'k2',
+      thinking: { enabled: false },
+    });
+    const { driver, harness } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    harness.setConfig.mockClear();
+    driver.session = undefined;
+
+    driver.handleUserInput('/effort max');
+
+    await vi.waitFor(() => {
+      expect(eventRuntime.runtime.modelConfig.apply).toHaveBeenCalledWith({
+        defaultModel: 'k2',
+        thinking: { enabled: true },
+      });
+    });
+    expect(eventRuntime.runtime.models.load).toHaveBeenLastCalledWith({ reload: true });
+    expect(harness.setConfig).not.toHaveBeenCalled();
+  });
+});
+
+describe('/settings experiments runtime routing', () => {
+  it('loads the experiments panel through the runtime feature-flags port', async () => {
+    const feature = makeRuntimeFeature({
+      id: 'runtime_test_feature',
+      title: 'Runtime test feature',
+      env: 'KIMI_CODE_EXPERIMENTAL_RUNTIME_TEST_FEATURE',
+    });
+    const eventRuntime = makeEventRuntime();
+    eventRuntime.runtime.featureFlags.list.mockResolvedValue([feature]);
+    const { driver } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    eventRuntime.runtime.featureFlags.list.mockClear();
+
+    await showExperimentsPanel(driver as never);
+
+    expect(eventRuntime.runtime.featureFlags.list).toHaveBeenCalledOnce();
+    expect(driver.state.editorContainer.children[0]).toBeInstanceOf(
+      ExperimentsSelectorComponent,
+    );
+    expect(stripSgr(driver.state.editorContainer.children[0]!.render(120).join('\n')))
+      .toContain('Runtime test feature');
+  });
+
+  it('applies experiment changes without a raw session or harness', async () => {
+    const feature = makeRuntimeFeature({
+      id: 'runtime_test_feature',
+      title: 'Runtime test feature',
+      env: 'KIMI_CODE_EXPERIMENTAL_RUNTIME_TEST_FEATURE',
+      enabled: true,
+      source: 'config',
+      configValue: true,
+    });
+    const eventRuntime = makeEventRuntime();
+    eventRuntime.runtime.featureFlags.apply.mockResolvedValue([feature]);
+    const { driver, harness } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
+    driver.session = undefined;
+    driver.refreshSlashCommandAutocomplete = vi.fn();
+    Object.defineProperty(driver, 'harness', { value: undefined });
+
+    await applyExperimentalFeatureChanges(driver as never, [
+      { id: 'runtime_test_feature', enabled: true },
+    ]);
+
+    expect(eventRuntime.runtime.featureFlags.apply).toHaveBeenCalledWith({
+      'runtime_test_feature': true,
+    });
+    expect(isExperimentalFlagEnabled('runtime_test_feature')).toBe(true);
+    expect(driver.refreshSlashCommandAutocomplete).toHaveBeenCalledOnce();
+    expect(eventRuntime.runtime.telemetry.track).toHaveBeenCalledWith(
+      'experimental_features_apply',
+      { changed: 1 },
+    );
+    expect(harness.setConfig).not.toHaveBeenCalled();
+    expect(stripSgr(renderTranscript(driver))).toContain(
+      'Experimental features updated.',
+    );
   });
 });
 
@@ -5622,7 +7248,7 @@ describe('/effort support_efforts override', () => {
     expect(transcript).toContain('Thinking set to max.');
   });
 
-  it('offers the latest Opus efforts for an unknown Claude-marked Anthropic-compatible model', async () => {
+  it('does not infer fallback efforts outside the runtime catalog contract', async () => {
     const { driver } = await makeDriver(makeSession(), {
       getConfig: vi.fn(async () => ({
         providers: {
@@ -5645,7 +7271,7 @@ describe('/effort support_efforts override', () => {
       expect(driver.state.editorContainer.children[0]).toBeInstanceOf(EffortSelectorComponent);
     });
     const picker = driver.state.editorContainer.children[0] as EffortSelectorComponent;
-    expect(picker.render(80).join('\n')).toContain('Max');
+    expect(picker.render(80).join('\n')).not.toContain('Max');
   });
 
   it('offers no fallback efforts for a clearly non-Claude Anthropic-compatible model', async () => {
@@ -5701,7 +7327,7 @@ describe('/effort support_efforts override', () => {
     expect(picker.render(80).join('\n')).not.toContain('Max');
   });
 
-  it('offers the latest Opus efforts for a flat providerless Claude-marked Anthropic model', async () => {
+  it('does not infer fallback efforts for a flat runtime catalog model', async () => {
     const { driver } = await makeDriver(makeSession(), {
       getConfig: vi.fn(async () => ({
         providers: {},
@@ -5724,7 +7350,7 @@ describe('/effort support_efforts override', () => {
       expect(driver.state.editorContainer.children[0]).toBeInstanceOf(EffortSelectorComponent);
     });
     const picker = driver.state.editorContainer.children[0] as EffortSelectorComponent;
-    expect(picker.render(80).join('\n')).toContain('Max');
+    expect(picker.render(80).join('\n')).not.toContain('Max');
   });
 
   it('keeps rejecting efforts hidden by a Kimi support_efforts override', async () => {

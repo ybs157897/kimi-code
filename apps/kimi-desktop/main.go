@@ -6,7 +6,7 @@
 // plumbing:
 //
 //   - It starts a loopback reverse proxy that forwards every request
-//     (REST /api/v1 + /api/v2, and the /api/v1/ws WebSocket) to a local
+//     (REST /api/v1 and the /api/v1/ws WebSocket) to a local
 //     kap-server, answering CORS itself and stripping the browser Origin
 //     header upstream — the server treats Origin-less requests as
 //     non-browser clients, the same trick the Vite dev proxy uses.

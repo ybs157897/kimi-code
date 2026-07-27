@@ -236,9 +236,33 @@ export const goalMetaSchema = z.object({
   budgetLimit: z.number().optional(),
 });
 
+export const expertTeamModeMetaSchema = z.object({
+  pluginId: z.string(),
+  displayName: z.string(),
+  leadAgentName: z.string(),
+  activatedAt: z.string(),
+  team: z
+    .object({
+      id: z.string(),
+      name: z.string(),
+      description: z.string().optional(),
+      createdAt: z.string(),
+      members: z.array(
+        z.object({
+          name: z.string(),
+          agentId: z.string(),
+          status: z.enum(['spawning', 'running', 'completed', 'failed', 'shutdown']),
+          taskId: z.string().optional(),
+        }),
+      ),
+    })
+    .optional(),
+});
+
 export const modesMetaSchema = z.object({
   plan: z.object({ reviewPath: z.string().optional(), version: z.number().optional() }).optional(),
   swarm: z.object({ trigger: z.string().optional() }).optional(),
+  expertTeam: expertTeamModeMetaSchema.optional(),
 });
 
 /** `meta.merge` contract shape: a mode key set to `null` clears that badge. */
@@ -248,6 +272,7 @@ export const modesMetaMergeSchema = z.object({
     .nullable()
     .optional(),
   swarm: z.object({ trigger: z.string().optional() }).nullable().optional(),
+  expertTeam: expertTeamModeMetaSchema.nullable().optional(),
 });
 
 /** Same shape as the wire `agentPhaseSchema`, re-declared (this package must not import the server). */

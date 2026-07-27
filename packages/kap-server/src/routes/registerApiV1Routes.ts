@@ -5,8 +5,9 @@
  * services from the `agent-core-v2` Core `Scope` instead of the v1 flat
  * `IInstantiationService`. v0.1 mounts the subset of routes that v2 can serve
  * end-to-end today (health, meta, auth readiness, OAuth device flow, config,
- * model/provider catalog, sessions, messages, approvals, workspaces, the fs
- * folder picker, the session filesystem, terminals, connections, shutdown).
+ * model/provider catalog, sessions, messages, approvals, expert teams,
+ * workspaces, the fs folder picker, the session filesystem, terminals,
+ * connections, shutdown).
  */
 
 import type { Scope } from '@moonshot-ai/agent-core-v2';
@@ -20,6 +21,8 @@ import { registerApprovalsRoutes } from './approvals';
 import { registerAuthRoute } from './auth';
 import { registerConfigRoutes } from './config';
 import { registerConnectionsRoutes } from './connections';
+import { registerExpertTeamsRoutes } from './expertTeams';
+import { registerExtensionRoutes } from './extensions';
 import { registerFilesRoutes } from './files';
 import { registerFsRoutes } from './fs';
 import { registerGuiStoreRoutes } from './guiStore';
@@ -117,6 +120,14 @@ export async function registerApiV1Routes(
         { serverVersion: opts.serverVersion },
       );
       registerSkillsRoutes(apiV1 as unknown as Parameters<typeof registerSkillsRoutes>[0], core);
+      registerExpertTeamsRoutes(
+        apiV1 as unknown as Parameters<typeof registerExpertTeamsRoutes>[0],
+        core,
+      );
+      registerExtensionRoutes(
+        apiV1 as unknown as Parameters<typeof registerExtensionRoutes>[0],
+        core,
+      );
       registerMessagesRoutes(
         apiV1 as unknown as Parameters<typeof registerMessagesRoutes>[0],
         core,

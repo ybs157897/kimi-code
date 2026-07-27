@@ -8,6 +8,7 @@
 
 import { z } from 'zod';
 
+import { bindAgentInputSchema } from '../agent/services.js';
 import { maybe, noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
 import type { ServiceContract } from '../types.js';
@@ -17,6 +18,7 @@ export const createSessionOptionsSchema = z.object({
   workDir: z.string(),
   additionalDirs: z.array(z.string()).optional(),
   mcpServers: z.record(z.string(), mcpServerConfigSchema).optional(),
+  mainAgentBinding: bindAgentInputSchema.optional(),
 });
 
 export const forkSessionOptionsSchema = z.object({

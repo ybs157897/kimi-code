@@ -1,4 +1,11 @@
-import type { ExperimentalFeatureState } from '@moonshot-ai/kimi-code-sdk';
+/**
+ * Scenario: experimental feature changes cross the command boundary.
+ * Responsibilities: explicit changes persist, refresh command visibility, and
+ * reload an active session while empty drafts remain a no-op.
+ * Wiring: the command handler and cache are real; host/runtime edges are stubs.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/commands/experiments.test.ts
+ */
+
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import type { SlashCommandHost } from '#/tui/commands';
@@ -9,11 +16,12 @@ import {
   isExperimentalFlagEnabled,
   setExperimentalFeatures,
 } from '#/tui/commands/experimental-flags';
+import type { RuntimeFeatureState } from '#/tui/runtime/runtime-feature-flags-port';
 import { darkColors } from '#/tui/theme/colors';
 
 function feature(
-  overrides: Partial<ExperimentalFeatureState> = {},
-): ExperimentalFeatureState {
+  overrides: Partial<RuntimeFeatureState> = {},
+): RuntimeFeatureState {
   return {
     id: 'micro_compaction',
     title: 'Micro compaction',
@@ -28,22 +36,22 @@ function feature(
 }
 
 function makeHost() {
-  const session = {
-    id: 'ses-experiments',
-    reloadSession: vi.fn(async () => ({})),
+  const refresh = {
+    reload: vi.fn(async () => {}),
   };
   const host = {
     state: {
       theme: { palette: darkColors },
       ui: { requestRender: vi.fn() },
     },
-    harness: {
-      setConfig: vi.fn(async () => ({ providers: {} })),
-      getExperimentalFeatures: vi.fn(async () => [
-        feature({ enabled: false, source: 'config', configValue: false }),
-      ]),
+    runtime: {
+      featureFlags: {
+        apply: vi.fn(async () => [
+          feature({ enabled: false, source: 'config', configValue: false }),
+        ]),
+      },
     },
-    session,
+    requireSessionRuntime: vi.fn(() => ({ refresh })),
     refreshSlashCommandAutocomplete: vi.fn(),
     reloadCurrentSessionView: vi.fn(async () => {}),
     mountEditorReplacement: vi.fn(),
@@ -52,10 +60,12 @@ function makeHost() {
     showError: vi.fn(),
     track: vi.fn(),
   } as unknown as SlashCommandHost & {
-    harness: {
-      setConfig: ReturnType<typeof vi.fn>;
-      getExperimentalFeatures: ReturnType<typeof vi.fn>;
+    runtime: {
+      featureFlags: {
+        apply: ReturnType<typeof vi.fn>;
+      };
     };
+    requireSessionRuntime: ReturnType<typeof vi.fn>;
     refreshSlashCommandAutocomplete: ReturnType<typeof vi.fn>;
     reloadCurrentSessionView: ReturnType<typeof vi.fn>;
     mountEditorReplacement: ReturnType<typeof vi.fn>;
@@ -63,9 +73,9 @@ function makeHost() {
     showStatus: ReturnType<typeof vi.fn>;
     showError: ReturnType<typeof vi.fn>;
     track: ReturnType<typeof vi.fn>;
-    session: typeof session;
+    refresh: typeof refresh;
   };
-  return host;
+  return Object.assign(host, { refresh });
 }
 
 describe('experimental feature command handlers', () => {
@@ -80,16 +90,14 @@ describe('experimental feature command handlers', () => {
       { id: 'micro_compaction', enabled: false },
     ]);
 
-    expect(host.harness.setConfig).toHaveBeenCalledWith({
-      experimental: { 'micro_compaction': false },
+    expect(host.runtime.featureFlags.apply).toHaveBeenCalledWith({
+      'micro_compaction': false,
     });
-    expect(host.harness.getExperimentalFeatures).toHaveBeenCalledOnce();
     expect(isExperimentalFlagEnabled('micro_compaction')).toBe(false);
     expect(host.refreshSlashCommandAutocomplete).toHaveBeenCalled();
     expect(host.restoreEditor).toHaveBeenCalled();
-    expect(host.session.reloadSession).toHaveBeenCalledOnce();
+    expect(host.refresh.reload).toHaveBeenCalledOnce();
     expect(host.reloadCurrentSessionView).toHaveBeenCalledWith(
-      host.session,
       'Experimental features updated. Session reloaded.',
     );
     expect(host.mountEditorReplacement).not.toHaveBeenCalled();
@@ -107,7 +115,7 @@ describe('experimental feature command handlers', () => {
 
     await applyExperimentalFeatureChanges(host, []);
 
-    expect(host.harness.setConfig).not.toHaveBeenCalled();
+    expect(host.runtime.featureFlags.apply).not.toHaveBeenCalled();
     expect(host.showStatus).toHaveBeenCalledWith(
       'No experimental feature changes to apply.',
       'textMuted',

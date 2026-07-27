@@ -1,20 +1,17 @@
-import type { GoalSnapshot } from '@moonshot-ai/kimi-code-sdk';
-
+import type { AgentGoal } from '#/tui/runtime/session-control-port';
 import { formatTokenCount } from '#/utils/usage/usage-format';
 
-interface GoalCompletionStats {
-  readonly terminalReason?: string | undefined;
-  readonly turnsUsed: number;
-  readonly tokensUsed: number;
-  readonly wallClockMs: number;
-}
+type GoalCompletionStats = Pick<
+  AgentGoal,
+  'terminalReason' | 'turnsUsed' | 'tokensUsed' | 'wallClockMs'
+>;
 
 /**
  * Deterministic goal-completion text rendered by the TUI when the model marks a
  * goal `complete`. It is built from the final snapshot, so the figures
  * (turns / tokens / time) are exact and do not depend on model prose.
  */
-export function buildGoalCompletionMessage(goal: GoalSnapshot): string {
+export function buildGoalCompletionMessage(goal: GoalCompletionStats): string {
   return buildGoalCompletionMessageFromStats(goal);
 }
 

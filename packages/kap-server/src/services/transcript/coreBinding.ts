@@ -22,6 +22,7 @@ import {
   IAgentLifecycleService,
   IAgentActivityView,
   IEventBus,
+  ISessionExpertTeamService,
   ISessionMetadata,
   ISessionInteractionService,
   MAIN_AGENT_ID,
@@ -75,6 +76,7 @@ export function bindSessionTranscript(
 ): TranscriptBinding {
   const agents = session.accessor.get(IAgentLifecycleService);
   const interactions = session.accessor.get(ISessionInteractionService);
+  const expertTeams = session.accessor.get(ISessionExpertTeamService);
   const disposables: IDisposable[] = [];
   /** Per-agent subscriptions (bus listeners capturing the agent's projector) — disposed with the agent. */
   const agentDisposables = new Map<string, IDisposable[]>();
@@ -314,6 +316,19 @@ export function bindSessionTranscript(
       applyOps(agentId, projector.mapInteractionResolved(id, response));
     }),
   );
+
+  if (expertTeams !== undefined) {
+    let previous = expertTeams.snapshot();
+    disposables.push(
+      expertTeams.onDidChange((current) => {
+        applyOps(
+          MAIN_AGENT_ID,
+          projectorFor(MAIN_AGENT_ID).mapExpertTeamChanged(previous, current),
+        );
+        previous = current;
+      }),
+    );
+  }
 
   refreshDescriptors();
 

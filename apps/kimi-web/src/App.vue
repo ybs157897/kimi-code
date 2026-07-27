@@ -569,6 +569,21 @@ function handleCommand(cmd: string): void {
     }
     return;
   }
+  const commandSpace = cmd.indexOf(' ');
+  const commandToken = commandSpace === -1 ? cmd : cmd.slice(0, commandSpace);
+  const extensionCommand = client.extensionCommands.value.find(
+    (candidate) => `/${candidate.extensionId}:${candidate.name}` === commandToken,
+  );
+  if (extensionCommand !== undefined) {
+    const args =
+      commandSpace === -1 ? undefined : cmd.slice(commandSpace + 1).trim() || undefined;
+    void client.activateExtensionCommand(
+      extensionCommand.extensionId,
+      extensionCommand.name,
+      args,
+    );
+    return;
+  }
   switch (cmd) {
     // `/new` and `/clear` are aliases: both open the onboarding composer. The
     // session is only created when the user sends the first message.
@@ -584,6 +599,9 @@ function handleCommand(cmd: string): void {
       break;
     case '/undo':
       void client.undo();
+      break;
+    case '/reload':
+      void client.reloadExtensions();
       break;
     case '/plan':
       client.togglePlanMode();
@@ -838,6 +856,7 @@ function openPr(url: string): void {
           :models="client.models.value"
           :starred-ids="client.starredModelIds.value"
           :skills="client.skills.value"
+          :extension-commands="client.extensionCommands.value"
           :expert-teams="client.expertTeams.value"
           :expert-team-status="client.expertTeamStatus.value"
           :questions="client.questions.value"

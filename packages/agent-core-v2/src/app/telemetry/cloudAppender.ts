@@ -127,11 +127,13 @@ export class CloudAppender implements ITelemetryAppender {
       this.deviceId = deviceId;
     }
     const sessionId = patch['sessionId'];
-    if (typeof sessionId === 'string') {
+    if (typeof sessionId === 'string' || sessionId === null) {
       this.sessionId = sessionId;
     }
     const model = patch['model'];
-    if (typeof model === 'string') {
+    if (model === null) {
+      delete this.context['model'];
+    } else if (typeof model === 'string') {
       setPrimitive(this.context, 'model', model);
     }
   }

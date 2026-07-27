@@ -3,8 +3,6 @@ import {
   resolveCatalogImport,
   type Catalog,
   type CatalogModel,
-  type ModelAlias,
-  type ThinkingEffort,
 } from '@moonshot-ai/kimi-code-sdk';
 import { capabilitiesForModel } from '@moonshot-ai/kimi-code-oauth';
 import type {
@@ -15,8 +13,12 @@ import type {
 import { ApiKeyInputDialogComponent, type ApiKeyInputResult } from '../components/dialogs/api-key-input-dialog';
 import { ChoicePickerComponent, type ChoiceOption } from '../components/dialogs/choice-picker';
 import { FeedbackInputDialogComponent, type FeedbackInputDialogResult } from '../components/dialogs/feedback-input-dialog';
-import { ModelSelectorComponent } from '../components/dialogs/model-selector';
+import {
+  ModelSelectorComponent,
+  type ThinkingEffort,
+} from '../components/dialogs/model-selector';
 import { PlatformSelectorComponent } from '../components/dialogs/platform-selector';
+import type { RuntimeModelCatalogModel } from '../runtime/runtime-model-catalog-port';
 import type { SlashCommandHost } from './dispatch';
 
 export function promptPlatformSelection(host: SlashCommandHost): Promise<string | undefined> {
@@ -193,7 +195,7 @@ export async function promptModelSelectionForOpenPlatform(
   models: ManagedKimiCodeModelInfo[],
   platform: OpenPlatformDefinition,
 ): Promise<{ model: ManagedKimiCodeModelInfo; thinking: ThinkingEffort } | undefined> {
-  const modelDict: Record<string, ModelAlias> = {};
+  const modelDict: Record<string, RuntimeModelCatalogModel> = {};
   for (const m of models) {
     modelDict[`${platform.id}/${m.id}`] = {
       provider: platform.id,
@@ -214,7 +216,7 @@ export async function promptModelSelectionForCatalog(
   providerId: string,
   models: CatalogModel[],
 ): Promise<{ model: CatalogModel; thinking: ThinkingEffort } | undefined> {
-  const modelDict: Record<string, ModelAlias> = {};
+  const modelDict: Record<string, RuntimeModelCatalogModel> = {};
   for (const m of models) {
     modelDict[`${providerId}/${m.id}`] = catalogModelToAlias(providerId, m);
   }
@@ -226,7 +228,7 @@ export async function promptModelSelectionForCatalog(
 
 export function runModelSelector(
   host: SlashCommandHost,
-  modelDict: Record<string, ModelAlias>,
+  modelDict: Record<string, RuntimeModelCatalogModel>,
 ): Promise<{ alias: string; thinking: ThinkingEffort } | undefined> {
   return new Promise((resolve) => {
     const firstAlias = Object.keys(modelDict)[0] ?? '';

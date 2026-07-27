@@ -256,6 +256,37 @@ describe('SessionSkillCatalogService', () => {
     host.dispose();
   });
 
+  it('lists wire-friendly public skill summaries', async () => {
+    const store = new InMemorySkillDiscovery();
+    store.setUserSkills([
+      stubSkill('public-skill', {
+        description: 'Public description',
+        content: 'Private skill instructions',
+        metadata: {
+          type: 'prompt',
+          disableModelInvocation: false,
+          isSubSkill: false,
+        },
+      }),
+    ]);
+    const { stub: ws } = workspaceStub('/work');
+    const { host, session } = makeHost(store, ws);
+
+    const catalog = session.accessor.get(ISessionSkillCatalog);
+    const summaries = await catalog.listSkills();
+
+    expect(summaries.find((skill) => skill.name === 'public-skill')).toEqual({
+      name: 'public-skill',
+      description: 'Public description',
+      path: '/skills/public-skill/SKILL.md',
+      source: 'user',
+      type: 'prompt',
+      disableModelInvocation: false,
+      isSubSkill: false,
+    });
+    host.dispose();
+  });
+
   it('orders project, user and plugin skills as project > user > plugin', async () => {
     const store = new InMemorySkillDiscovery();
     store.setUserSkills([
@@ -369,16 +400,17 @@ describe('SessionSkillCatalogService', () => {
 
     const catalog = session.accessor.get(ISessionSkillCatalog);
     let settled = false;
-    const loading = catalog.load().then(() => {
+    const listing = catalog.listSkills().then((skills) => {
       settled = true;
+      return skills;
     });
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(settled).toBe(false);
 
     markReady();
-    await loading;
+    const summaries = await listing;
 
-    expect(catalog.catalog.getSkill('extra-only')?.description).toBe('from extra');
+    expect(summaries.find((skill) => skill.name === 'extra-only')?.description).toBe('from extra');
     host.dispose();
   });
 

@@ -1,18 +1,38 @@
+/**
+ * Scenario: completed goals produce deterministic transcript copy from the neutral goal DTO.
+ * Responsibilities: preserve reason, singularization, elapsed time, and token formatting.
+ * Wiring: the pure formatter is real and receives complete AgentGoal fixtures.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/utils/goal-completion.test.ts
+ */
+
 import { describe, expect, it } from 'vitest';
 
+import type { AgentGoal } from '#/tui/runtime/session-control-port';
 import { buildGoalCompletionMessage } from '#/tui/utils/goal-completion';
-import type { GoalSnapshot } from '@moonshot-ai/kimi-code-sdk';
 
-function snapshot(overrides: Partial<GoalSnapshot> = {}): GoalSnapshot {
+function snapshot(overrides: Partial<AgentGoal> = {}): AgentGoal {
   return {
+    goalId: 'g1',
     objective: 'work',
     status: 'complete',
     turnsUsed: 3,
     tokensUsed: 12_500,
     wallClockMs: 260_000,
+    budget: {
+      tokenBudget: null,
+      turnBudget: null,
+      wallClockBudgetMs: null,
+      remainingTokens: null,
+      remainingTurns: null,
+      remainingWallClockMs: null,
+      tokenBudgetReached: false,
+      turnBudgetReached: false,
+      wallClockBudgetReached: false,
+      overBudget: false,
+    },
     terminalReason: 'all tests pass',
     ...overrides,
-  } as GoalSnapshot;
+  };
 }
 
 describe('buildGoalCompletionMessage', () => {

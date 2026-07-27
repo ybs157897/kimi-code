@@ -39,12 +39,9 @@ export async function submitFeedbackWithAttachments(
     return !uploaded;
   }
   if (level === 'logs+codebase') {
-    const [sessionDir, scan] = await Promise.all([
-      resolveCurrentSessionDir(host),
-      scanCodebaseForFeedback(host.state.appState.workDir),
-    ]);
+    const scan = await scanCodebaseForFeedback(host.state.appState.workDir);
     const [uploadedSession, uploadedCodebase] = await Promise.all([
-      prepareAndUploadSessionArchive(host, api, feedbackId, sessionDir),
+      prepareAndUploadSessionArchive(host, api, feedbackId),
       prepareAndUploadCodebaseArchive(api, feedbackId, scan),
     ]);
     return !uploadedSession || !uploadedCodebase;
@@ -56,16 +53,10 @@ async function prepareAndUploadSessionArchive(
   host: SlashCommandHost,
   api: FeedbackUploadUrlApi,
   feedbackId: number,
-  knownSessionDir?: string,
 ): Promise<boolean> {
-  const sessionDir = knownSessionDir ?? (await resolveCurrentSessionDir(host));
-  if (sessionDir === undefined) {
-    await logFeedbackUploadError(new Error('cannot locate the current session directory'));
-    return false;
-  }
   return uploadProducedArchive(api, feedbackId, SESSION_ARCHIVE_FILENAME, async (archivePath) => {
-    const exported = await host.harness.exportSession({
-      id: host.state.appState.sessionId,
+    const exported = await host.runtime.sessionExport.export({
+      sessionId: host.state.appState.sessionId,
       outputPath: archivePath,
       includeGlobalLog: true,
       version: host.state.appState.version,
@@ -125,15 +116,6 @@ async function archiveFromExportedSession(zipPath: string): Promise<FeedbackArch
   };
 }
 
-async function resolveCurrentSessionDir(host: SlashCommandHost): Promise<string | undefined> {
-  try {
-    const sessions = await host.harness.listSessions({ workDir: host.state.appState.workDir });
-    return sessions.find((session) => session.id === host.state.appState.sessionId)?.sessionDir;
-  } catch {
-    return undefined;
-  }
-}
-
 async function scanCodebaseForFeedback(
   workDir: string,
 ): Promise<FeedbackCodebaseScanResult | undefined> {
@@ -165,7 +147,7 @@ async function logFeedbackUploadError(error: unknown): Promise<void> {
 function createFeedbackUploadApi(host: SlashCommandHost): FeedbackUploadUrlApi {
   return {
     async createUploadUrl(input) {
-      const res = await host.harness.auth.createFeedbackUploadUrl(input);
+      const res = await host.runtime.auth.createFeedbackUploadUrl(input);
       if (res.kind !== 'ok') throw new Error(res.message);
       return {
         uploadId: res.uploadId,
@@ -173,7 +155,7 @@ function createFeedbackUploadApi(host: SlashCommandHost): FeedbackUploadUrlApi {
       };
     },
     async completeUpload(input) {
-      const res = await host.harness.auth.completeFeedbackUpload({
+      const res = await host.runtime.auth.completeFeedbackUpload({
         uploadId: input.uploadId,
         parts: input.parts.map((part) => ({ partNumber: part.partNumber, etag: part.etag })),
       });

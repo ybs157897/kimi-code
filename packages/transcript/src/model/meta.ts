@@ -19,10 +19,37 @@ export interface GoalMeta {
   readonly budgetLimit?: number;
 }
 
-/** Mode badges (plan mode, swarm mode) mirrored at session level. */
+export type ExpertTeamMemberStatus =
+  | 'spawning'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'shutdown';
+
+export interface ExpertTeamModeMeta {
+  readonly pluginId: string;
+  readonly displayName: string;
+  readonly leadAgentName: string;
+  readonly activatedAt: string;
+  readonly team?: {
+    readonly id: string;
+    readonly name: string;
+    readonly description?: string;
+    readonly createdAt: string;
+    readonly members: readonly {
+      readonly name: string;
+      readonly agentId: string;
+      readonly status: ExpertTeamMemberStatus;
+      readonly taskId?: string;
+    }[];
+  };
+}
+
+/** Mode badges (plan, swarm, expert-team) mirrored at session level. */
 export interface ModesMeta {
   readonly plan?: { readonly reviewPath?: string; readonly version?: number };
   readonly swarm?: { readonly trigger?: string };
+  readonly expertTeam?: ExpertTeamModeMeta;
 }
 
 /**
@@ -33,6 +60,7 @@ export interface ModesMeta {
 export interface ModesMetaMerge {
   readonly plan?: { readonly reviewPath?: string; readonly version?: number } | null;
   readonly swarm?: { readonly trigger?: string } | null;
+  readonly expertTeam?: ExpertTeamModeMeta | null;
 }
 
 export type ActivityMeta = 'idle' | 'turn' | 'disposing' | 'unknown';

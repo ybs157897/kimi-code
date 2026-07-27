@@ -1,4 +1,3 @@
-import { effectiveModelAlias, type ModelAlias, type ThinkingEffort } from '@moonshot-ai/kimi-code-sdk';
 import {
   Container,
   Key,
@@ -11,6 +10,10 @@ import {
 
 import { DEFAULT_OAUTH_PROVIDER_NAME, PRODUCT_NAME } from '#/constant/app';
 import { CURRENT_MARK, SELECT_POINTER } from '#/tui/constant/symbols';
+import {
+  effectiveRuntimeModelCatalogModel,
+  type RuntimeModelCatalogModel,
+} from '#/tui/runtime/runtime-model-catalog-port';
 import { currentTheme } from '#/tui/theme';
 import { SearchableList } from '#/tui/utils/searchable-list';
 
@@ -18,9 +21,12 @@ import type { ChoiceOption } from './choice-picker';
 
 type ThinkingAvailability = 'toggle' | 'always-on' | 'unsupported';
 
+/** Reserved on/off values plus any model-declared concrete effort. */
+export type ThinkingEffort = 'off' | 'on' | (string & {});
+
 interface ModelChoice {
   readonly alias: string;
-  readonly model: ModelAlias;
+  readonly model: RuntimeModelCatalogModel;
   /** Model display name (left column). */
   readonly name: string;
   /** Provider display name (right column). */
@@ -37,8 +43,12 @@ export interface ModelSelection {
   readonly thinking: ThinkingEffort;
 }
 
-export function modelDisplayName(alias: string, model: ModelAlias | undefined): string {
-  const effective = model === undefined ? undefined : effectiveModelAlias(model);
+export function modelDisplayName(
+  alias: string,
+  model: RuntimeModelCatalogModel | undefined,
+): string {
+  const effective =
+    model === undefined ? undefined : effectiveRuntimeModelCatalogModel(model);
   return effective?.displayName ?? effective?.model ?? alias;
 }
 
@@ -49,10 +59,10 @@ export function providerDisplayName(provider: string): string {
 }
 
 export function createModelChoiceOptions(
-  models: Record<string, ModelAlias>,
+  models: Record<string, RuntimeModelCatalogModel>,
 ): readonly ChoiceOption[] {
   return Object.entries(models).map(([alias, cfg]) => {
-    const effective = effectiveModelAlias(cfg);
+    const effective = effectiveRuntimeModelCatalogModel(cfg);
     return {
       value: alias,
       label: `${modelDisplayName(alias, effective)} (${providerDisplayName(effective.provider)})`,
@@ -61,7 +71,7 @@ export function createModelChoiceOptions(
 }
 
 export interface ModelSelectorOptions {
-  readonly models: Record<string, ModelAlias>;
+  readonly models: Record<string, RuntimeModelCatalogModel>;
   readonly currentValue: string;
   readonly selectedValue?: string;
   /** Live thinking effort of the currently active model (e.g. 'off', 'on',
@@ -85,23 +95,29 @@ export interface ModelSelectorOptions {
   readonly onCancel: () => void;
 }
 
-function createModelChoices(models: Record<string, ModelAlias>): readonly ModelChoice[] {
+function createModelChoices(
+  models: Record<string, RuntimeModelCatalogModel>,
+): readonly ModelChoice[] {
   return Object.entries(models).map(([alias, cfg]) => {
-    const effective = effectiveModelAlias(cfg);
+    const effective = effectiveRuntimeModelCatalogModel(cfg);
     const name = modelDisplayName(alias, effective);
     const provider = providerDisplayName(effective.provider);
     return { alias, model: effective, name, provider, label: `${name} (${provider})` };
   });
 }
 
-export function thinkingAvailability(model: ModelAlias): ThinkingAvailability {
+export function thinkingAvailability(
+  model: RuntimeModelCatalogModel,
+): ThinkingAvailability {
   const caps = model.capabilities ?? [];
   if (caps.includes('always_thinking')) return 'always-on';
   if (caps.includes('thinking') || model.adaptiveThinking === true) return 'toggle';
   return 'unsupported';
 }
 
-export function effortsOf(model: ModelAlias): readonly string[] {
+export function effortsOf(
+  model: RuntimeModelCatalogModel,
+): readonly string[] {
   return model.supportEfforts ?? [];
 }
 
@@ -111,7 +127,9 @@ export function effortsOf(model: ModelAlias): readonly string[] {
  * always-on); legacy boolean models expose 'on'/'off'; single-segment lists
  * mean the control is effectively locked.
  */
-export function segmentsFor(model: ModelAlias): readonly string[] {
+export function segmentsFor(
+  model: RuntimeModelCatalogModel,
+): readonly string[] {
   const efforts = effortsOf(model);
   const availability = thinkingAvailability(model);
   if (efforts.length > 0) {
@@ -132,7 +150,9 @@ export function effortLabel(effort: string): string {
  * middle `support_efforts` entry, else `'on'` for boolean models, `'off'` when
  * thinking is unsupported.
  */
-function defaultThinkingEffortFor(model: ModelAlias): ThinkingEffort {
+function defaultThinkingEffortFor(
+  model: RuntimeModelCatalogModel,
+): ThinkingEffort {
   if (thinkingAvailability(model) === 'unsupported') return 'off';
   const efforts = effortsOf(model);
   if (efforts.length > 0) {

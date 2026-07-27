@@ -8,7 +8,6 @@
  */
 
 import { truncateToWidth, type Component } from '@moonshot-ai/pi-tui';
-import type { GoalChange } from '@moonshot-ai/kimi-code-sdk';
 
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
@@ -18,6 +17,12 @@ const HEAD_INDENT = '  ';
 const DETAIL_INDENT = '    ';
 
 type GoalMarkerActor = 'user' | 'model' | 'runtime' | 'system';
+
+export interface GoalMarkerChange {
+  readonly kind: 'lifecycle' | 'completion';
+  readonly status?: 'active' | 'paused' | 'blocked' | 'complete';
+  readonly reason?: string;
+}
 
 interface GoalMarkerOptions {
   readonly marker?: string;
@@ -71,7 +76,7 @@ export class GoalMarkerComponent implements Component {
     }
     const out = [`${this.indent}${dot} ${head}`];
     const wrapWidth = Math.max(20, width - DETAIL_INDENT.length);
-    for (const line of wrap(this.detail!, wrapWidth)) {
+    for (const line of wrap(this.detail, wrapWidth)) {
       out.push(DETAIL_INDENT + currentTheme.fg('textDim', line));
     }
     return this.clampToWidth(out, width);
@@ -94,7 +99,7 @@ export class GoalMarkerComponent implements Component {
  * not a marker). `expanded` seeds the initial ctrl+o state.
  */
 export function buildGoalMarker(
-  change: GoalChange,
+  change: GoalMarkerChange,
   expanded: boolean,
   actor?: GoalMarkerActor,
 ): GoalMarkerComponent | null {
@@ -111,7 +116,7 @@ export function buildGoalMarker(
 }
 
 function markerSpec(
-  change: GoalChange,
+  change: GoalMarkerChange,
   actor?: GoalMarkerActor,
 ): {
   headline: string;
@@ -128,7 +133,8 @@ function markerSpec(
       case 'blocked':
         // The system stopped pursuing the goal; resumable via `/goal resume`.
         return { headline: 'Goal blocked', accentToken: 'warning' };
-      default:
+      case 'complete':
+      case undefined:
         return null;
     }
   }

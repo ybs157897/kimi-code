@@ -19,7 +19,7 @@
  * dispatch time and on replay, so v1- and v2-written sessions reduce
  * identically. The swarm-mode exit reminder removal is a cross-model fold:
  * `ContextModel` registers a reducer on `swarm_mode.exit` (see
- * `popSwarmModeReminder`) so the pop replays from the `swarm_mode.exit` record
+ * `foldSwarmModeExit`) so the pop replays from the `swarm_mode.exit` record
  * itself, exactly like v1's restore-time `popMatchedMessage`.
  *
  * `context.undo` counts conversation ticks with the single `isUndoAnchor`
@@ -119,12 +119,15 @@ export const ContextModel = defineModel<ContextMessage[]>('contextMemory', () =>
     },
   },
   reducers: {
-    'swarm_mode.exit': popSwarmModeReminder,
+    'swarm_mode.exit': foldSwarmModeExit,
   },
 });
 
-function popSwarmModeReminder(state: ContextMessage[], _payload: unknown): ContextMessage[] {
-  const last = state[state.length - 1];
+export function foldSwarmModeExit(
+  state: ContextMessage[],
+  _payload: unknown,
+): ContextMessage[] {
+  const last = state.at(-1);
   if (last === undefined) return state;
   const origin = last.origin;
   if (origin?.kind !== 'injection' || origin.variant !== 'swarm_mode') return state;

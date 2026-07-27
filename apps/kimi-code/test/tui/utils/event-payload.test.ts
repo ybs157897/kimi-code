@@ -1,3 +1,10 @@
+/**
+ * Scenario: TUI event payload helpers format bounded tool arguments and
+ * runtime-neutral structured errors. Responsibilities: preserve legacy and
+ * v2 error display while rejecting malformed lookalikes.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/utils/event-payload.test.ts
+ */
+
 import { ErrorCodes, KimiError } from '@moonshot-ai/kimi-code-sdk';
 import { describe, expect, it } from 'vitest';
 
@@ -67,5 +74,37 @@ describe('error payload formatting', () => {
     });
 
     expect(formatErrorMessage(error)).toBe(conciseFilteredMessage);
+  });
+
+  it('shows concise provider filter text from a structured v2 error', () => {
+    const error = {
+      code: 'provider.api_error',
+      message: filteredThinkOnlyMessage,
+      details: {
+        finishReason: 'filtered',
+        rawFinishReason: 'content_filter',
+      },
+    };
+
+    expect(formatErrorMessage(error)).toBe(conciseFilteredMessage);
+  });
+
+  it('returns the message from an ordinary Error', () => {
+    expect(formatErrorMessage(new Error('Example failure'))).toBe('Example failure');
+  });
+
+  it('returns a thrown string unchanged', () => {
+    expect(formatErrorMessage('Example failure')).toBe('Example failure');
+  });
+
+  it.each([
+    ['empty code', { code: '', message: 'Example failure' }],
+    ['whitespace-only code', { code: '  ', message: 'Example failure' }],
+    ['non-string code', { code: 500, message: 'Example failure' }],
+    ['non-string message', { code: 'request.invalid', message: 500 }],
+    ['null details', { code: 'request.invalid', message: 'Example failure', details: null }],
+    ['array details', { code: 'request.invalid', message: 'Example failure', details: [] }],
+  ])('stringifies a malformed structured error with %s', (_case, error) => {
+    expect(formatErrorMessage(error)).toBe('[object Object]');
   });
 });

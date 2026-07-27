@@ -687,6 +687,18 @@ export interface AppSkill {
   source: string;
 }
 
+/** Serializable command metadata contributed by a code extension. */
+export interface AppExtensionCommand {
+  extensionId: string;
+  name: string;
+  description: string;
+}
+
+export interface AppExtensionReloadResult {
+  active: string[];
+  errors: Array<{ path: string; error: string }>;
+}
+
 /** A model row in the provider create/edit form (config.toml [models.*]). */
 export interface AppProviderModelInput {
   /** Raw model name as the provider API expects it (not the alias id). */
@@ -803,7 +815,16 @@ export interface KimiWebApi {
   /** List skills for a workspace (no session required) — GET /workspaces/{id}/skills. */
   listSkillsForWorkspace(workspaceId: string): Promise<AppSkill[]>;
   activateSkill(sessionId: string, skillName: string, args?: string): Promise<{ activated: true; skillName: string }>;
-  /** Expert teams live on the native /api/v2 surface — v2 backends only. */
+  /** Code-extension slash commands are session/workspace scoped. */
+  listExtensionCommands(sessionId: string): Promise<AppExtensionCommand[]>;
+  reloadExtensions(sessionId: string): Promise<AppExtensionReloadResult>;
+  activateExtensionCommand(
+    sessionId: string,
+    extensionId: string,
+    name: string,
+    args?: string,
+  ): Promise<{ activated: boolean }>;
+  /** Expert teams exposed by the product REST surface. */
   listExpertTeams(sessionId: string): Promise<AppExpertTeam[]>;
   getExpertTeam(sessionId: string): Promise<AppExpertTeamStatus | null>;
   activateExpertTeam(sessionId: string, pluginId: string): Promise<AppExpertTeamStatus>;

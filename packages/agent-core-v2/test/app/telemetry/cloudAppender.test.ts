@@ -1,3 +1,10 @@
+/**
+ * Scenario: Cloud telemetry events are enriched, buffered, and transported.
+ * Responsibility: preserve appender context semantics and delivery behavior.
+ * Wiring: real CloudAppender and storage with only the HTTP boundary stubbed.
+ * Run: pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run test/app/telemetry/cloudAppender.test.ts
+ */
+
 import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -124,6 +131,66 @@ describe('CloudAppender', () => {
     const event = requests[0]?.body.events[0];
     expect(event?.['session_id']).toBe('sess42');
     expect(event?.['context_model']).toBe('switched-model');
+  });
+
+  it('clears the top-level session id when setContext receives null', async () => {
+    const requests: CapturedRequest[] = [];
+    const appender = new CloudAppender(
+      baseOptions({
+        homeDir,
+        sessionId: 'sess42',
+        fetchImpl: makeFetch((req) => {
+          requests.push(req);
+          return okResponse();
+        }),
+      }),
+    );
+
+    appender.setContext({ sessionId: null });
+    appender.track('turn_started');
+    await appender.flush();
+
+    expect(requests[0]?.body.events[0]?.['session_id']).toBeNull();
+  });
+
+  it('removes the model context when setContext receives null', async () => {
+    const requests: CapturedRequest[] = [];
+    const appender = new CloudAppender(
+      baseOptions({
+        homeDir,
+        model: 'initial-model',
+        fetchImpl: makeFetch((req) => {
+          requests.push(req);
+          return okResponse();
+        }),
+      }),
+    );
+
+    appender.setContext({ model: null });
+    appender.track('turn_started');
+    await appender.flush();
+
+    expect(requests[0]?.body.events[0]?.['context_model']).toBeUndefined();
+  });
+
+  it('keeps the device id when setContext receives null', async () => {
+    const requests: CapturedRequest[] = [];
+    const appender = new CloudAppender(
+      baseOptions({
+        homeDir,
+        deviceId: 'dev123',
+        fetchImpl: makeFetch((req) => {
+          requests.push(req);
+          return okResponse();
+        }),
+      }),
+    );
+
+    appender.setContext({ deviceId: null });
+    appender.track('turn_started');
+    await appender.flush();
+
+    expect(requests[0]?.body.events[0]?.['device_id']).toBe('dev123');
   });
 
   it('uses the event sessionId for top-level session_id when it differs from appender context', async () => {

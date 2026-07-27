@@ -1,10 +1,19 @@
-import type { QuestionRequest } from '@moonshot-ai/kimi-code-sdk';
+/**
+ * Scenario: rich question requests and answers cross the runtime-neutral
+ * reverse-RPC contract. Responsibility: preserve multi-select/other fields,
+ * input method, and null results. Boundary: QuestionController and its handler.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/reverse-rpc/question.test.ts
+ */
+
 import { describe, expect, it, vi } from 'vitest';
 
 import { QuestionController } from '#/tui/reverse-rpc/question/controller';
 import { createQuestionAskHandler } from '#/tui/reverse-rpc/question/handler';
+import type { TUIQuestionRequest } from '#/tui/runtime/session-events-port';
 
-function questionEvent(overrides: Partial<QuestionRequest> = {}): QuestionRequest {
+function questionEvent(
+  overrides: Partial<TUIQuestionRequest> = {},
+): TUIQuestionRequest {
   return {
     toolCallId: 'q-1',
     questions: [

@@ -1,3 +1,14 @@
+/**
+ * Scenario: /web hands the active runtime session off to a foreground web server.
+ *
+ * Responsibilities: verify command registration, runtime-only session resolution,
+ * no-session feedback, foreground takeover, and deep-link construction.
+ *
+ * Wiring: server startup, token lookup, data directory, and URL opening are stubbed
+ * process boundaries; the command host exposes no legacy SDK Session.
+ *
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/commands/web.test.ts
+ */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { findBuiltInSlashCommand, resolveSlashCommandAvailability } from '#/tui/commands/index';
@@ -35,8 +46,10 @@ vi.mock('#/utils/paths', async (importOriginal) => {
 });
 
 function makeHost() {
+  const runtime = { sessionId: 'ses-1' };
   const host = {
-    session: { id: 'ses-1' },
+    session: undefined,
+    requireSessionRuntime: vi.fn(() => runtime),
     showStatus: vi.fn(),
     showError: vi.fn(),
     mountEditorReplacement: vi.fn(),
@@ -47,6 +60,7 @@ function makeHost() {
   } as unknown as SlashCommandHost & {
     showStatus: ReturnType<typeof vi.fn>;
     showError: ReturnType<typeof vi.fn>;
+    requireSessionRuntime: ReturnType<typeof vi.fn>;
     mountEditorReplacement: ReturnType<typeof vi.fn>;
     restoreEditor: ReturnType<typeof vi.fn>;
     setExitOpenUrl: ReturnType<typeof vi.fn>;
@@ -72,16 +86,20 @@ describe('handleWebCommand', () => {
 
   it('shows an error and does nothing when there is no active session', async () => {
     const host = makeHost();
-    host.session = undefined;
+    host.requireSessionRuntime.mockImplementation(() => {
+      throw new Error('No active session');
+    });
 
     await handleWebCommand(host);
 
-    expect(host.showError).toHaveBeenCalledOnce();
+    expect(host.showError).toHaveBeenCalledWith(
+      'No active session. Send /login to login.',
+    );
     expect(host.setExitForegroundTask).not.toHaveBeenCalled();
     expect(host.stop).not.toHaveBeenCalled();
   });
 
-  it('registers a foreground takeover and stops the TUI without opening a URL yet', async () => {
+  it('registers a foreground takeover when only the session runtime is available', async () => {
     const host = makeHost();
 
     await handleWebCommand(host);

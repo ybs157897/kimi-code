@@ -1,7 +1,5 @@
 import { release as osRelease, type as osType } from 'node:os';
 
-import type { McpServerInfo, SessionStatus, SessionUsage } from '@moonshot-ai/kimi-code-sdk';
-
 import { buildMcpStatusReportLines } from '../components/messages/mcp-status-panel';
 import { buildStatusReportLines } from '../components/messages/status-panel';
 import { buildUsageReportLines, UsagePanelComponent, type ManagedUsageReport } from '../components/messages/usage-panel';
@@ -20,6 +18,8 @@ import {
   withFeedbackVersionPrefix,
 } from '../constant/feedback';
 import { isManagedUsageProvider } from '../constant/kimi-tui';
+import type { AgentRuntimeStatus } from '../runtime/session-control-port';
+import type { McpServerView } from '../runtime/session-mcp-port';
 import { submitFeedbackWithAttachments } from '../../feedback/feedback-attachments';
 import { formatErrorMessage } from '../utils/event-payload';
 import { openUrl } from '#/utils/open-url';
@@ -69,7 +69,7 @@ export async function handleFeedbackCommand(host: SlashCommandHost): Promise<voi
     spinner.stop(opts);
   };
   try {
-    const res = await host.harness.auth.submitFeedback({
+    const res = await host.runtime.auth.submitFeedback({
       content: input.value,
       sessionId: host.state.appState.sessionId,
       version,
@@ -103,13 +103,8 @@ export async function handleFeedbackCommand(host: SlashCommandHost): Promise<voi
 // Info commands
 // ---------------------------------------------------------------------------
 
-interface SessionUsageResult {
-  readonly usage?: SessionUsage;
-  readonly error?: string;
-}
-
 interface RuntimeStatusResult {
-  readonly status?: SessionStatus;
+  readonly status?: AgentRuntimeStatus;
   readonly error?: string;
 }
 
@@ -119,14 +114,15 @@ interface ManagedUsageResult {
 }
 
 export async function showUsage(host: SlashCommandHost): Promise<void> {
-  const sessionUsage = await loadSessionUsageReport(host);
+  const runtimeStatus = await loadRuntimeStatusReport(host);
   const managedUsage = await loadManagedUsageReport(host);
+  const appState = host.state.appState;
   const reportArgs = {
-    sessionUsage: sessionUsage.usage,
-    sessionUsageError: sessionUsage.error,
-    contextUsage: host.state.appState.contextUsage,
-    contextTokens: host.state.appState.contextTokens,
-    maxContextTokens: host.state.appState.maxContextTokens,
+    sessionUsage: runtimeStatus.status?.usage,
+    sessionUsageError: runtimeStatus.error,
+    contextUsage: runtimeStatus.status?.contextUsage ?? appState.contextUsage,
+    contextTokens: runtimeStatus.status?.contextTokens ?? appState.contextTokens,
+    maxContextTokens: runtimeStatus.status?.maxContextTokens ?? appState.maxContextTokens,
     managedUsage: managedUsage?.usage,
     managedUsageError: managedUsage?.error,
   };
@@ -165,9 +161,9 @@ export async function showStatusReport(host: SlashCommandHost): Promise<void> {
 }
 
 export async function showMcpServers(host: SlashCommandHost): Promise<void> {
-  let servers: readonly McpServerInfo[];
+  let servers: readonly McpServerView[];
   try {
-    servers = await host.requireSession().listMcpServers();
+    servers = await host.requireSessionRuntime().mcp.list();
   } catch (error) {
     host.showError(`Failed to load MCP servers: ${formatErrorMessage(error)}`);
     return;
@@ -183,17 +179,9 @@ export async function showMcpServers(host: SlashCommandHost): Promise<void> {
   host.state.ui.requestRender();
 }
 
-async function loadSessionUsageReport(host: SlashCommandHost): Promise<SessionUsageResult> {
-  try {
-    return { usage: await host.requireSession().getUsage() };
-  } catch (error) {
-    return { error: formatErrorMessage(error) };
-  }
-}
-
 async function loadRuntimeStatusReport(host: SlashCommandHost): Promise<RuntimeStatusResult> {
   try {
-    return { status: await host.requireSession().getStatus() };
+    return { status: await host.requireSessionRuntime().agent.getStatus() };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
@@ -204,14 +192,13 @@ async function loadManagedUsageReport(host: SlashCommandHost): Promise<ManagedUs
   const providerKey = host.state.appState.availableModels[alias]?.provider;
   if (!isManagedUsageProvider(providerKey)) return undefined;
 
-  let res;
   try {
-    res = await host.harness.auth.getManagedUsage(providerKey);
+    const res = await host.runtime.auth.getManagedUsage(providerKey);
+    if (res.kind === 'error') {
+      return { error: res.message };
+    }
+    return { usage: { summary: res.summary, limits: res.limits, extraUsage: res.extraUsage } };
   } catch (error) {
     return { error: formatErrorMessage(error) };
   }
-  if (res.kind === 'error') {
-    return { error: res.message };
-  }
-  return { usage: { summary: res.summary, limits: res.limits, extraUsage: res.extraUsage } };
 }

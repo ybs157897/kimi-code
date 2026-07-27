@@ -22,10 +22,10 @@ import {
   visibleWidth,
   type Focusable,
 } from '@moonshot-ai/pi-tui';
-import type { BackgroundTaskInfo, BackgroundTaskStatus } from '@moonshot-ai/kimi-code-sdk';
 
 import { SELECT_POINTER } from '@/tui/constant/symbols';
 import { currentTheme } from '#/tui/theme';
+import type { AgentTask, AgentTaskStatus } from '@/tui/runtime/session-control-port';
 import { printableChar } from '@/tui/utils/printable-key';
 
 const ELLIPSIS = '…';
@@ -33,7 +33,7 @@ const ELLIPSIS = '…';
 export type TasksFilter = 'all' | 'active';
 
 export interface TasksBrowserProps {
-  readonly tasks: readonly BackgroundTaskInfo[];
+  readonly tasks: readonly AgentTask[];
   readonly filter: TasksFilter;
   readonly selectedTaskId: string | undefined;
   readonly tailOutput: string | undefined;
@@ -51,7 +51,7 @@ export interface TasksBrowserProps {
   readonly onStopIgnored?: (taskId: string, reason: 'terminal') => void;
 }
 
-const STATUS_LABEL: Record<BackgroundTaskStatus, string> = {
+const STATUS_LABEL: Record<AgentTaskStatus, string> = {
   running: 'running',
   completed: 'completed',
   failed: 'failed',
@@ -72,7 +72,7 @@ const LIST_COL_MIN = 28;
 const LIST_COL_MAX = 44;
 const LIST_COL_RATIO = 0.32;
 
-function statusColor(status: BackgroundTaskStatus): 'success' | 'textMuted' | 'error' {
+function statusColor(status: AgentTaskStatus): 'success' | 'textMuted' | 'error' {
   switch (status) {
     case 'running':
       return 'success';
@@ -86,7 +86,7 @@ function statusColor(status: BackgroundTaskStatus): 'success' | 'textMuted' | 'e
   }
 }
 
-function isTerminal(status: BackgroundTaskStatus): boolean {
+function isTerminal(status: AgentTaskStatus): boolean {
   return (
     status === 'completed' ||
     status === 'failed' ||
@@ -127,9 +127,9 @@ function fitExactly(line: string, width: number): string {
 }
 
 function visibleTasks(
-  tasks: readonly BackgroundTaskInfo[],
+  tasks: readonly AgentTask[],
   filter: TasksFilter,
-): BackgroundTaskInfo[] {
+): AgentTask[] {
   // The /tasks panel is for background task management. Foreground tasks
   // (detached === false) are shown in the main transcript instead, and only
   // appear here after being detached via Ctrl+B. `detached !== false` keeps
@@ -139,7 +139,7 @@ function visibleTasks(
   return backgroundOnly.filter((t) => !isTerminal(t.status));
 }
 
-function compareTasks(a: BackgroundTaskInfo, b: BackgroundTaskInfo): number {
+function compareTasks(a: AgentTask, b: AgentTask): number {
   const aTerminal = isTerminal(a.status);
   const bTerminal = isTerminal(b.status);
   if (aTerminal !== bTerminal) return aTerminal ? 1 : -1;
@@ -153,7 +153,7 @@ interface StatusCounts {
   terminalFailed: number;
 }
 
-function countByStatus(tasks: readonly BackgroundTaskInfo[]): StatusCounts {
+function countByStatus(tasks: readonly AgentTask[]): StatusCounts {
   const counts: StatusCounts = { running: 0, completed: 0, terminalFailed: 0 };
   for (const t of tasks) {
     switch (t.status) {
@@ -179,7 +179,7 @@ export class TasksBrowserApp extends Container implements Focusable {
 
   private props: TasksBrowserProps;
   private readonly terminal: Terminal;
-  private sortedVisible: BackgroundTaskInfo[];
+  private sortedVisible: AgentTask[];
   private selectedIndex = 0;
   private listScroll = 0;
   private pendingStopTaskId: string | undefined = undefined;
@@ -466,7 +466,7 @@ export class TasksBrowserApp extends Container implements Focusable {
     return this.renderFrame(title, lines, width, height);
   }
 
-  private renderListRow(task: BackgroundTaskInfo, selected: boolean, innerWidth: number): string {
+  private renderListRow(task: AgentTask, selected: boolean, innerWidth: number): string {
     const pointer = selected ? `${SELECT_POINTER} ` : '  ';
     const pointerStyled = currentTheme.fg(selected ? 'primary' : 'textDim', pointer);
 
@@ -492,7 +492,9 @@ export class TasksBrowserApp extends Container implements Focusable {
 
     const description =
       singleLine(task.description) ||
-      (task.kind === 'process' ? singleLine(task.command) : '') ||
+      (task.kind === 'process' && task.command !== undefined
+        ? singleLine(task.command)
+        : '') ||
       '(no description)';
     const desc = truncateToWidth(description, descBudget, ELLIPSIS);
     return fitExactly(`${prefix} ${currentTheme.fg('text', desc)}`, innerWidth);
@@ -554,7 +556,9 @@ export class TasksBrowserApp extends Container implements Focusable {
       lines.push(`${label('Agent type:')}${value(task.subagentType)}`);
     }
     if (task.kind === 'question') {
-      lines.push(`${label('Questions:')}${currentTheme.fg('textMuted', String(task.questionCount))}`);
+      lines.push(
+        `${label('Questions:')}${currentTheme.fg('textMuted', String(task.questionCount ?? 0))}`,
+      );
       if (task.toolCallId !== undefined) {
         lines.push(`${label('Tool call:')}${currentTheme.fg('textMuted', task.toolCallId)}`);
       }
@@ -566,10 +570,14 @@ export class TasksBrowserApp extends Container implements Focusable {
           ? `finished ${formatRelativeTime(task.endedAt)}`
           : '';
     if (timing.length > 0) lines.push(`${label('Time:')}${currentTheme.fg('textMuted', timing)}`);
-    if (task.kind === 'process' && task.pid > 0) {
+    if (task.kind === 'process' && task.pid !== undefined && task.pid > 0) {
       lines.push(`${label('Pid:')}${currentTheme.fg('textMuted', String(task.pid))}`);
     }
-    if (task.kind === 'process' && task.exitCode !== null) {
+    if (
+      task.kind === 'process' &&
+      task.exitCode !== undefined &&
+      task.exitCode !== null
+    ) {
       lines.push(`${label('Exit code:')}${currentTheme.fg('textMuted', String(task.exitCode))}`);
     }
     if (task.stopReason !== undefined && task.stopReason.length > 0) {

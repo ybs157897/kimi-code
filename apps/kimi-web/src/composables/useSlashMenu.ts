@@ -1,6 +1,6 @@
 // apps/kimi-web/src/composables/useSlashMenu.ts
 import { nextTick, ref, type Ref } from 'vue';
-import type { AppSkill } from '../api/types';
+import type { AppExtensionCommand, AppSkill } from '../api/types';
 import { buildSlashItems, filterCommands, type SlashCommand } from '../lib/slashCommands';
 
 export interface SlashMenuDeps {
@@ -12,6 +12,8 @@ export interface SlashMenuDeps {
   autosize: () => void;
   /** Current session skills (getter, so the menu stays reactive). */
   skills: () => AppSkill[];
+  /** Current session code-extension commands. */
+  extensionCommands: () => AppExtensionCommand[];
   /** Emit a chosen slash command up to the parent. */
   emitCommand: (cmd: string) => void;
   /** Record a sent command for ↑/↓ recall. */
@@ -33,7 +35,16 @@ export interface SlashMenuDeps {
  * when an item is chosen.
  */
 export function useSlashMenu(deps: SlashMenuDeps) {
-  const { text, textareaRef, autosize, skills, emitCommand, historyPush, clearDraft } = deps;
+  const {
+    text,
+    textareaRef,
+    autosize,
+    skills,
+    extensionCommands,
+    emitCommand,
+    historyPush,
+    clearDraft,
+  } = deps;
 
   const open = ref(false);
   const items = ref<SlashCommand[]>([]);
@@ -44,7 +55,7 @@ export function useSlashMenu(deps: SlashMenuDeps) {
     // Only show if the value starts with `/` and has no space yet (single token).
     if (val.startsWith('/') && !val.includes(' ')) {
       // Built-in commands + the active session's skills (shown as /<skill-name>).
-      items.value = filterCommands(val, buildSlashItems(skills()));
+      items.value = filterCommands(val, buildSlashItems(skills(), extensionCommands()));
       active.value = 0;
       open.value = items.value.length > 0;
     } else {

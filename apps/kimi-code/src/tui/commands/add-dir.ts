@@ -1,25 +1,32 @@
 import { NO_ACTIVE_SESSION_MESSAGE } from '../constant/kimi-tui';
 import { ChoicePickerComponent } from '../components/dialogs/choice-picker';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
 import type { SlashCommandHost } from './dispatch';
 
 type AddDirChoice = 'session' | 'remember' | 'cancel';
 
 export async function handleAddDirCommand(host: SlashCommandHost, args: string): Promise<void> {
   const input = args.trim();
-  const session = host.session;
+  const sessionId = host.state.appState.sessionId;
+
+  if (sessionId.length === 0) {
+    host.showError(NO_ACTIVE_SESSION_MESSAGE);
+    return;
+  }
+
+  const runtime = host.requireSessionRuntime();
+  if (runtime.sessionId !== sessionId) {
+    host.showError(NO_ACTIVE_SESSION_MESSAGE);
+    return;
+  }
 
   if (input.length === 0 || input.toLowerCase() === 'list') {
-    const additionalDirs = session?.summary?.additionalDirs ?? [];
+    const { additionalDirs } = await runtime.workspace.get();
     if (additionalDirs.length === 0) {
       host.showStatus('No additional directories configured.');
       return;
     }
     host.showStatus(formatAdditionalDirsStatus(additionalDirs));
-    return;
-  }
-
-  if (session === undefined) {
-    host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
 
@@ -42,7 +49,7 @@ export async function handleAddDirCommand(host: SlashCommandHost, args: string):
         },
       ],
       onSelect: (value) => {
-        void handleAddDirChoice(host, session.id, input, value as AddDirChoice);
+        void handleAddDirChoice(host, runtime, input, value as AddDirChoice);
       },
       onCancel: () => {
         host.restoreEditor();
@@ -58,7 +65,7 @@ function formatAdditionalDirsStatus(additionalDirs: readonly string[]): string {
 
 async function handleAddDirChoice(
   host: SlashCommandHost,
-  sessionId: string,
+  runtime: TUISessionRuntime,
   path: string,
   choice: AddDirChoice,
 ): Promise<void> {
@@ -69,14 +76,15 @@ async function handleAddDirChoice(
     return;
   }
 
-  const session = host.session;
-  if (session === undefined || session.id !== sessionId) {
+  if (host.state.appState.sessionId !== runtime.sessionId) {
     host.showError(NO_ACTIVE_SESSION_MESSAGE);
     return;
   }
 
   try {
-    const result = await session.addAdditionalDir(path, { persist: choice === 'remember' });
+    const result = await runtime.workspace.addAdditionalDir(path, {
+      persist: choice === 'remember',
+    });
     host.setAppState({ additionalDirs: result.additionalDirs });
     host.refreshSlashCommandAutocomplete();
     host.showStatus(

@@ -6,9 +6,9 @@ import {
   visibleWidth,
   type Focusable,
 } from '@moonshot-ai/pi-tui';
-import type { ExperimentalFeatureState } from '@moonshot-ai/kimi-code-sdk';
 
 import { SELECT_POINTER } from '#/tui/constant/symbols';
+import type { RuntimeFeatureState } from '#/tui/runtime/runtime-feature-flags-port';
 import { currentTheme } from '#/tui/theme';
 import { printableChar } from '#/tui/utils/printable-key';
 import { SearchableList } from '#/tui/utils/searchable-list';
@@ -16,12 +16,12 @@ import { SearchableList } from '#/tui/utils/searchable-list';
 const ELLIPSIS = '…';
 
 export interface ExperimentalFeatureDraftChange {
-  readonly id: ExperimentalFeatureState['id'];
+  readonly id: RuntimeFeatureState['id'];
   readonly enabled: boolean;
 }
 
 export interface ExperimentsSelectorOptions {
-  readonly features: readonly ExperimentalFeatureState[];
+  readonly features: readonly RuntimeFeatureState[];
   readonly onApply: (changes: readonly ExperimentalFeatureDraftChange[]) => void;
   readonly onCancel: () => void;
 }
@@ -30,8 +30,8 @@ export class ExperimentsSelectorComponent extends Container implements Focusable
   focused = false;
 
   private readonly opts: ExperimentsSelectorOptions;
-  private readonly list: SearchableList<ExperimentalFeatureState>;
-  private readonly draft = new Map<ExperimentalFeatureState['id'], boolean>();
+  private readonly list: SearchableList<RuntimeFeatureState>;
+  private readonly draft = new Map<RuntimeFeatureState['id'], boolean>();
 
   constructor(opts: ExperimentsSelectorOptions) {
     super();
@@ -114,7 +114,7 @@ export class ExperimentsSelectorComponent extends Container implements Focusable
     return lines.map((line) => truncateToWidth(line, width, ELLIPSIS));
   }
 
-  private toggleDraft(feature: ExperimentalFeatureState): void {
+  private toggleDraft(feature: RuntimeFeatureState): void {
     if (isLocked(feature)) return;
 
     const enabled = !this.effectiveEnabled(feature);
@@ -125,11 +125,11 @@ export class ExperimentsSelectorComponent extends Container implements Focusable
     this.draft.set(feature.id, enabled);
   }
 
-  private effectiveEnabled(feature: ExperimentalFeatureState): boolean {
+  private effectiveEnabled(feature: RuntimeFeatureState): boolean {
     return this.draft.get(feature.id) ?? feature.enabled;
   }
 
-  private isDraftChanged(feature: ExperimentalFeatureState): boolean {
+  private isDraftChanged(feature: RuntimeFeatureState): boolean {
     return this.effectiveEnabled(feature) !== feature.enabled;
   }
 
@@ -159,7 +159,7 @@ export class ExperimentsSelectorComponent extends Container implements Focusable
   }
 
   private renderFeature(
-    feature: ExperimentalFeatureState,
+    feature: RuntimeFeatureState,
     selected: boolean,
     width: number,
   ): string[] {
@@ -184,11 +184,11 @@ export class ExperimentsSelectorComponent extends Container implements Focusable
   }
 }
 
-function isLocked(feature: ExperimentalFeatureState): boolean {
+function isLocked(feature: RuntimeFeatureState): boolean {
   return feature.source === 'env' || feature.source === 'master-env';
 }
 
-function featureDetail(feature: ExperimentalFeatureState): string {
+function featureDetail(feature: RuntimeFeatureState): string {
   const source = sourceLabel(feature);
   if (feature.source === 'env' || feature.source === 'master-env') {
     return `id ${feature.id} · ${source}`;
@@ -196,7 +196,7 @@ function featureDetail(feature: ExperimentalFeatureState): string {
   return `id ${feature.id} · ${source} · ${feature.env}`;
 }
 
-function sourceLabel(feature: ExperimentalFeatureState): string {
+function sourceLabel(feature: RuntimeFeatureState): string {
   switch (feature.source) {
     case 'master-env':
       return 'locked by KIMI_CODE_EXPERIMENTAL_FLAG';

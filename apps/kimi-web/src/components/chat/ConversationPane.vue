@@ -3,7 +3,16 @@
 import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch, type ComponentPublicInstance } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ActivationBadges, ApprovalBlock, ChatTurn, ConversationStatus, FilePreviewRequest, PermissionMode, QueuedPromptView, TaskItem, TodoView, ToolMedia, TurnAttachment, UIQuestion, WorkspaceView } from '../../types';
-import type { AppExpertTeam, AppExpertTeamStatus, AppGoal, AppModel, AppSkill, QuestionResponse, ThinkingLevel } from '../../api/types';
+import type {
+  AppExpertTeam,
+  AppExpertTeamStatus,
+  AppExtensionCommand,
+  AppGoal,
+  AppModel,
+  AppSkill,
+  QuestionResponse,
+  ThinkingLevel,
+} from '../../api/types';
 import type { FileItem } from './MentionMenu.vue';
 import type { PromptAttachment } from '../../composables/useKimiWebClient';
 import ChatPane from './ChatPane.vue';
@@ -81,6 +90,8 @@ const props = defineProps<{
   starredIds?: string[];
   /** Session skills shown in the composer `/` menu. */
   skills?: AppSkill[];
+  /** Code-extension commands shown in the composer `/` menu. */
+  extensionCommands?: AppExtensionCommand[];
   /** Workspace name shown in the empty-session hint above the centred composer. */
   workspaceName?: string;
   /** Absolute workspace root path. */
@@ -1339,6 +1350,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
               :models="models"
               :starred-ids="starredIds"
               :skills="skills"
+              :extension-commands="extensionCommands"
               :expert-teams="expertTeams"
               :expert-team-status="expertTeamStatus"
               :starting="starting"
@@ -1418,6 +1430,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
         :models="models"
         :starred-ids="starredIds"
         :skills="skills"
+        :extension-commands="extensionCommands"
         :expert-teams="expertTeams"
         :expert-team-status="expertTeamStatus"
         :goal="goal"

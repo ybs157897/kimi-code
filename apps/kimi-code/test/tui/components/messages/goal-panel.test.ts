@@ -1,3 +1,10 @@
+/**
+ * Scenario: goal lifecycle and status messages render from the runtime-neutral goal DTO.
+ * Responsibilities: preserve goal counters, budgets, status copy, wrapping, and theme output.
+ * Wiring: components and formatting are real; fixtures provide complete AgentGoal values.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/messages/goal-panel.test.ts
+ */
+
 import { visibleWidth } from '@moonshot-ai/pi-tui';
 import chalk from 'chalk';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -11,8 +18,8 @@ import {
   goalPanelTitle,
 } from '#/tui/components/messages/goal-panel';
 import { STATUS_BULLET } from '#/tui/constant/symbols';
+import type { AgentGoal, AgentGoalBudget } from '#/tui/runtime/session-control-port';
 import { darkColors } from '#/tui/theme/colors';
-import type { GoalSnapshot } from '@moonshot-ai/kimi-code-sdk';
 
 const previousChalkLevel = chalk.level;
 beforeAll(() => {
@@ -27,7 +34,24 @@ function strip(lines: string[]): string {
   return lines.join('\n').replaceAll(ANSI_SGR, '');
 }
 
-function goal(overrides: Partial<GoalSnapshot> = {}): GoalSnapshot {
+const DEFAULT_GOAL_BUDGET: AgentGoalBudget = {
+  tokenBudget: null,
+  turnBudget: null,
+  wallClockBudgetMs: null,
+  remainingTokens: null,
+  remainingTurns: null,
+  remainingWallClockMs: null,
+  tokenBudgetReached: false,
+  turnBudgetReached: false,
+  wallClockBudgetReached: false,
+  overBudget: false,
+};
+
+type GoalOverrides = Omit<Partial<AgentGoal>, 'budget'> & {
+  readonly budget?: Partial<AgentGoalBudget>;
+};
+
+function goal(overrides: GoalOverrides = {}): AgentGoal {
   return {
     goalId: 'g1',
     objective: 'Ship the goal status box',
@@ -35,16 +59,15 @@ function goal(overrides: Partial<GoalSnapshot> = {}): GoalSnapshot {
     turnsUsed: 7,
     tokensUsed: 128_400,
     wallClockMs: 252_000, // 4m12s
-    budget: {
-      turnBudget: null,
-      tokenBudget: null,
-      wallClockBudgetMs: null,
-    },
     ...overrides,
-  } as GoalSnapshot;
+    budget: {
+      ...DEFAULT_GOAL_BUDGET,
+      ...overrides.budget,
+    },
+  };
 }
 
-function lines(g: GoalSnapshot): string {
+function lines(g: AgentGoal): string {
   return strip(buildGoalReportLines(g));
 }
 
@@ -63,7 +86,7 @@ describe('buildGoalReportLines', () => {
   });
 
   it('shows a Stop row with progress when a turn budget is set', () => {
-    const out = lines(goal({ budget: { turnBudget: 20, tokenBudget: null, wallClockBudgetMs: null } } as Partial<GoalSnapshot>));
+    const out = lines(goal({ budget: { turnBudget: 20 } }));
     expect(out).toContain('Stop');
     expect(out).toContain('after 20 turns (7/20)');
     expect(out).not.toContain('No stop condition');

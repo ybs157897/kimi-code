@@ -1,3 +1,10 @@
+/**
+ * Scenario: transcript tool-call cards across live, completed, grouped, and replayed states.
+ * Responsibilities: render observable tool/subagent status, content, metrics, and interactions.
+ * Wiring: real ToolCallComponent with only terminal/TUI process boundaries stubbed.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/messages/tool-call.test.ts
+ */
+
 import { visibleWidth, type TUI } from '@moonshot-ai/pi-tui';
 import chalk from 'chalk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -1031,6 +1038,44 @@ describe('ToolCallComponent', () => {
     expect(out).not.toContain('Used Agent');
     expect(out).not.toContain('parent duplicate result');
     expect(out).not.toContain('summary fallback');
+  });
+
+  it('reports the sum of every subagent usage bucket in its snapshot', () => {
+    const component = new ToolCallComponent(
+      {
+        id: 'call_agent_usage',
+        name: 'Agent',
+        args: { description: 'inspect token totals' },
+      },
+      undefined,
+    );
+
+    component.onSubagentCompleted({
+      resultSummary: 'done',
+      usage: {
+        inputOther: 11,
+        inputCacheRead: 13,
+        inputCacheCreation: 17,
+        output: 19,
+      },
+    });
+
+    expect(component.getSubagentSnapshot().tokens).toBe(60);
+  });
+
+  it('reports zero subagent tokens when usage is absent', () => {
+    const component = new ToolCallComponent(
+      {
+        id: 'call_agent_without_usage',
+        name: 'Agent',
+        args: { description: 'inspect without usage' },
+      },
+      undefined,
+    );
+
+    component.onSubagentCompleted({ resultSummary: 'done' });
+
+    expect(component.getSubagentSnapshot().tokens).toBe(0);
   });
 
   it('shows Backgrounded after a foreground subagent is detached, even after setResult', () => {

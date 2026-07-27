@@ -1,5 +1,3 @@
-import type { Session } from '@moonshot-ai/kimi-code-sdk';
-
 import { AgentGroupComponent } from '../components/messages/agent-group';
 import { AssistantMessageComponent } from '../components/messages/assistant-message';
 import { currentWorkingTip } from '../components/chrome/working-tips';
@@ -21,17 +19,17 @@ import type {
   ToolResultBlockData,
   TranscriptEntry,
 } from '../types';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
 import type { TUIState } from '../tui-state';
 
 export interface StreamingUIHost {
   state: TUIState;
-  session: Session | undefined;
   setAppState(patch: Partial<AppState>): void;
   patchLivePane(patch: Partial<LivePaneState>): void;
   resetLivePane(): void;
   updateActivityPane(): void;
   updateQueueDisplay(): void;
-  requireSession(): Session;
+  requireSessionRuntime(): TUISessionRuntime;
   deferUserMessages: boolean;
   shiftQueuedMessage(): QueuedMessage | undefined;
   pushTranscriptEntry(entry: TranscriptEntry): void;
@@ -682,10 +680,10 @@ export class StreamingUIController {
     }
 
     if (toolCall.name === 'ExitPlanMode' && typeof toolCall.args['plan'] !== 'string') {
-      const session = this.host.requireSession();
+      const runtime = this.host.requireSessionRuntime();
       void (async () => {
         try {
-          const plan = await session.getPlan();
+          const plan = await runtime.agent.getPlan();
           tc.setPlanInfo(plan === null ? {} : { plan: plan.content, path: plan.path });
         } catch {
           tc.setPlanInfo({});

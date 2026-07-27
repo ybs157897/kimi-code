@@ -460,6 +460,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       }
       if (target !== undefined) {
         try {
+          await this.drainAgents(target);
           target.dispose();
         } catch {
         }

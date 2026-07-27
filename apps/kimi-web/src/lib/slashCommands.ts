@@ -5,8 +5,8 @@ export interface SlashCommand {
   name: string;
   /**
    * Description text. For built-in commands this is an i18n KEY (resolve with
-   * t(desc)); for skills (`isSkill`) it is the skill's RAW description, rendered
-   * verbatim.
+   * t(desc)); for skills and extension commands it is the RAW description,
+   * rendered verbatim.
    */
   desc: string;
   /**
@@ -14,6 +14,11 @@ export interface SlashCommand {
    * the skill instead of running an app command, and its `desc` is raw text.
    */
   isSkill?: boolean;
+  /**
+   * True for callback-free command metadata contributed by a code extension.
+   * The callback itself never crosses into the browser.
+   */
+  isExtension?: boolean;
   /**
    * Selecting the item should leave the command in the composer so the user can
    * type the message/argument that follows it.
@@ -33,6 +38,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   { name: '/yolo',       desc: 'commands.yolo.desc' },
   { name: '/thinking',   desc: 'commands.thinking.desc' },
   { name: '/compact',    desc: 'commands.compact.desc', acceptsInput: true },
+  { name: '/reload',     desc: 'commands.reload.desc' },
   { name: '/undo',       desc: 'commands.undo.desc' },
   { name: '/fork',       desc: 'commands.fork.desc' },
   { name: '/export',     desc: 'commands.export.desc' },
@@ -76,14 +82,19 @@ export function stripSkillPrefix(name: string): string {
 }
 
 /**
- * Build the full slash-item list: built-in commands followed by the session's
- * skills. Non-builtin skills are shown as `/skill:<skill-name>` so the user can
+ * Build the full slash-item list: built-ins, session skills, then code-extension
+ * commands. Non-builtin skills are shown as `/skill:<skill-name>` so the user can
  * tell them apart from built-in commands (mirroring the TUI); builtin-sourced
  * skills keep the bare `/<skill-name>`. Skills carry their raw description and
  * an `isSkill` flag so the caller knows to activate rather than run a command.
  */
 export function buildSlashItems(
   skills: ReadonlyArray<{ name: string; description: string; source?: string }> = [],
+  extensionCommands: ReadonlyArray<{
+    extensionId: string;
+    name: string;
+    description: string;
+  }> = [],
 ): SlashCommand[] {
   const skillItems: SlashCommand[] = skills.map((s) => ({
     name: s.source === 'builtin' ? `/${s.name}` : `/${SKILL_COMMAND_PREFIX}${s.name}`,
@@ -92,7 +103,13 @@ export function buildSlashItems(
     // Keep the selected skill in the composer so arguments can be appended.
     acceptsInput: true,
   }));
-  return [...SLASH_COMMANDS, ...skillItems];
+  const extensionItems: SlashCommand[] = extensionCommands.map((command) => ({
+    name: `/${command.extensionId}:${command.name}`,
+    desc: command.description,
+    isExtension: true,
+    acceptsInput: true,
+  }));
+  return [...SLASH_COMMANDS, ...skillItems, ...extensionItems];
 }
 
 /**

@@ -1,7 +1,3 @@
-import type {
-  BackgroundTaskInfo,
-  Event,
-} from '@moonshot-ai/kimi-code-sdk';
 import type { Component } from '@moonshot-ai/pi-tui';
 
 import {
@@ -20,6 +16,8 @@ import { formatBackgroundAgentTranscript } from '../utils/background-agent-statu
 import { argsRecord, serializeToolResultOutput } from '../utils/event-payload';
 import { formatHookResultPlain } from '../utils/hook-result-format';
 import { nextTranscriptId } from '../utils/transcript-id';
+import type { AgentTask } from '../runtime/session-control-port';
+import type { TUIAgentEvent } from '../runtime/agent-events-port';
 import type { SessionEventHost } from './session-event-handler';
 
 export interface SubagentInfo {
@@ -29,12 +27,15 @@ export interface SubagentInfo {
   readonly swarmIndex?: number;
 }
 
-export type SubagentLifecycleEvent = Event & { type: `subagent.${string}` };
+export type SubagentLifecycleEvent = Extract<
+  TUIAgentEvent,
+  { readonly type: `subagent.${string}` }
+>;
 type SubagentLifecycleEventOf<Type extends SubagentLifecycleEvent['type']> =
-  SubagentLifecycleEvent & { type: Type };
+  Extract<SubagentLifecycleEvent, { readonly type: Type }>;
 
 export interface SubAgentEventHandlerDependencies {
-  readonly backgroundTasks: ReadonlyMap<string, BackgroundTaskInfo>;
+  readonly backgroundTasks: ReadonlyMap<string, AgentTask>;
   readonly backgroundTaskTranscriptedTerminal: Set<string>;
   readonly syncBackgroundAgentBadge: () => void;
 }
@@ -67,7 +68,7 @@ export class SubAgentEventHandler {
     this.clearAgentSwarmProgress();
   }
 
-  routeChildAgentEvent(event: Event): boolean {
+  routeChildAgentEvent(event: TUIAgentEvent): boolean {
     if (isSubagentLifecycleEvent(event)) return false;
 
     const childAgentId = event.agentId;
@@ -339,7 +340,7 @@ export class SubAgentEventHandler {
   private findAgentTaskId(
     subagentId: string,
     meta: BackgroundAgentMetadata,
-    backgroundTasks: ReadonlyMap<string, BackgroundTaskInfo>,
+    backgroundTasks: ReadonlyMap<string, AgentTask>,
   ): string | undefined {
     for (const info of backgroundTasks.values()) {
       if (info.kind !== 'agent') continue;
@@ -495,7 +496,7 @@ export class SubAgentEventHandler {
 
   private applySubagentEventToSwarmProgress(
     progress: AgentSwarmProgressComponent,
-    event: Event,
+    event: TUIAgentEvent,
     subagentId: string,
   ): void {
     if (event.type === 'assistant.delta' || event.type === 'thinking.delta') {
@@ -622,7 +623,7 @@ export class SubAgentEventHandler {
   }
 }
 
-function isSubagentLifecycleEvent(event: Event): event is SubagentLifecycleEvent {
+function isSubagentLifecycleEvent(event: TUIAgentEvent): event is SubagentLifecycleEvent {
   return (
     event.type === 'subagent.spawned' ||
     event.type === 'subagent.started' ||

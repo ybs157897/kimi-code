@@ -1,8 +1,15 @@
-import type { ModelAlias } from '@moonshot-ai/kimi-code-sdk';
+/**
+ * Scenario: model metadata is rendered and selected through the neutral
+ * catalog shape. Responsibilities: effective overrides, thinking segments,
+ * display/provider labels, and selection callbacks stay presentation-only.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/dialogs/model-selector.test.ts
+ */
+
 import { visibleWidth } from '@moonshot-ai/pi-tui';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ModelSelectorComponent } from '#/tui/components/dialogs/model-selector';
+import type { RuntimeModelCatalogModel } from '#/tui/runtime/runtime-model-catalog-port';
 import { currentTheme } from '#/tui/theme';
 import { darkColors } from '#/tui/theme/colors';
 
@@ -14,14 +21,17 @@ const DOWN = `${ESC}[B`;
 const LEFT = `${ESC}[D`;
 const RIGHT = `${ESC}[C`;
 
-function model(displayName: string, capabilities: string[] = ['thinking']): ModelAlias {
+function model(
+  displayName: string,
+  capabilities: string[] = ['thinking'],
+): RuntimeModelCatalogModel {
   return {
     provider: 'managed:kimi-code',
     model: displayName.toLowerCase().replaceAll(' ', '-'),
     maxContextSize: 200_000,
     displayName,
     capabilities,
-  } as unknown as ModelAlias;
+  };
 }
 
 function effortModel(
@@ -29,7 +39,7 @@ function effortModel(
   supportEfforts: string[],
   defaultEffort?: string,
   capabilities: string[] = ['thinking'],
-): ModelAlias {
+): RuntimeModelCatalogModel {
   return {
     provider: 'managed:kimi-code',
     model: displayName.toLowerCase().replaceAll(' ', '-'),
@@ -38,7 +48,7 @@ function effortModel(
     capabilities,
     supportEfforts,
     defaultEffort,
-  } as unknown as ModelAlias;
+  };
 }
 
 function text(component: ModelSelectorComponent, width = 120): string {
@@ -237,7 +247,7 @@ describe('ModelSelectorComponent', () => {
   });
 
   it('shows a "more" indicator when the list overflows a page', () => {
-    const models: Record<string, ModelAlias> = {};
+    const models: Record<string, RuntimeModelCatalogModel> = {};
     for (let i = 0; i < 12; i++) models[`m${String(i)}`] = model(`Model ${String(i)}`);
     const picker = new ModelSelectorComponent({
       models,
@@ -338,7 +348,7 @@ describe('ModelSelectorComponent', () => {
     expect(out).toContain('Thinking  (←→ to switch)');
   });
 
-  it('derives official Anthropic effort segments from the model name', () => {
+  it('renders the effort segments declared by an Anthropic catalog model', () => {
     const onSelect = vi.fn();
     const picker = new ModelSelectorComponent({
       models: {
@@ -346,6 +356,9 @@ describe('ModelSelectorComponent', () => {
           provider: 'anthropic',
           model: 'claude-opus-4-6',
           maxContextSize: 200000,
+          capabilities: ['thinking'],
+          supportEfforts: ['low', 'medium', 'high', 'max'],
+          defaultEffort: 'high',
         },
       },
       currentValue: 'opus',
@@ -366,13 +379,16 @@ describe('ModelSelectorComponent', () => {
     expect(onSelect).toHaveBeenCalledWith({ alias: 'opus', thinking: 'max' });
   });
 
-  it('derives official always-on Anthropic models without an Off segment', () => {
+  it('omits Off when an Anthropic catalog model declares always-on thinking', () => {
     const picker = new ModelSelectorComponent({
       models: {
         fable: {
           provider: 'anthropic',
           model: 'claude-fable-5',
           maxContextSize: 200000,
+          capabilities: ['always_thinking'],
+          supportEfforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+          defaultEffort: 'high',
         },
       },
       currentValue: 'fable',
@@ -530,5 +546,51 @@ describe('ModelSelectorComponent overrides', () => {
     expect(out).toContain('Low');
     expect(out).toContain('High');
     expect(out).not.toContain('Max');
+  });
+
+  it('uses overridden display and capability fields in the selector', () => {
+    const picker = new ModelSelectorComponent({
+      models: {
+        kimi: {
+          ...model('Base display', ['tool_use']),
+          overrides: {
+            displayName: 'Override display',
+            capabilities: ['thinking'],
+          },
+        },
+      },
+      currentValue: 'kimi',
+      currentThinkingEffort: 'on',
+      onSelect: vi.fn(),
+      onCancel: vi.fn(),
+    });
+
+    const out = text(picker);
+    expect(out).toContain('Override display');
+    expect(out).not.toContain('Base display');
+    expect(out).toContain('Thinking  (←→ to switch)');
+  });
+
+  it('drops a stale default effort when overrides replace supported efforts', () => {
+    const onSelect = vi.fn();
+    const picker = new ModelSelectorComponent({
+      models: {
+        kimi: {
+          ...effortModel('Kimi K2', ['low', 'high', 'max'], 'max'),
+          overrides: { supportEfforts: ['low', 'high'] },
+        },
+      },
+      currentValue: 'other',
+      currentThinkingEffort: 'off',
+      onSelect,
+      onCancel: vi.fn(),
+    });
+
+    expect(text(picker)).toContain('[ High ]');
+    picker.handleInput('\r');
+    expect(onSelect).toHaveBeenCalledWith({
+      alias: 'kimi',
+      thinking: 'high',
+    });
   });
 });

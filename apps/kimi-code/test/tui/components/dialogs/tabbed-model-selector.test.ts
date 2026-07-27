@@ -1,8 +1,15 @@
-import type { ModelAlias } from '@moonshot-ai/kimi-code-sdk';
+/**
+ * Scenario: neutral catalog models are grouped into provider tabs.
+ * Responsibilities: provider labels, tab routing, thinking interaction, and
+ * selection callbacks stay stable across the tabbed presentation wrapper.
+ * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/components/dialogs/tabbed-model-selector.test.ts
+ */
+
 import chalk from 'chalk';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { TabbedModelSelectorComponent } from '#/tui/components/dialogs/tabbed-model-selector';
+import type { RuntimeModelCatalogModel } from '#/tui/runtime/runtime-model-catalog-port';
 import { currentTheme } from '#/tui/theme';
 import { darkColors, lightColors } from '#/tui/theme/colors';
 
@@ -14,14 +21,17 @@ const RIGHT = `${ESC}[C`;
 // chalk.bgHex(colors.primary) → background truecolor for #4FA8FF.
 const PRIMARY_BG = '48;2;79;168;255';
 
-function model(displayName: string, provider: string): ModelAlias {
+function model(
+  displayName: string,
+  provider: string,
+): RuntimeModelCatalogModel {
   return {
     provider,
     model: displayName.toLowerCase().replaceAll(' ', '-'),
     maxContextSize: 200_000,
     displayName,
     capabilities: ['thinking'],
-  } as unknown as ModelAlias;
+  };
 }
 
 function make(): {

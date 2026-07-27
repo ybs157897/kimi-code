@@ -49,6 +49,7 @@ import {
   IProjectFileAgentSource,
   ProjectFileAgentSource,
 } from '#/session/sessionAgentProfileCatalog/projectFileAgentSource';
+import { IPluginExpertAgentSource } from '#/session/sessionAgentProfileCatalog/pluginExpertAgentSource';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { SessionAgentProfileCatalogService } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalogService';
 import { ISessionStateService } from '#/session/state/sessionState';
@@ -195,6 +196,12 @@ function makeSession(
   const session = host.child(LifecycleScope.Session, 's1', [
     stubPair(ISessionWorkspaceContext, workspaceStub(fixture.workDir)),
     stubPair(ILogService, logStub(opts?.logWarnings)),
+    stubPair(IPluginExpertAgentSource, {
+      _serviceBrand: undefined,
+      id: 'plugin-expert',
+      priority: 0,
+      load: async () => ({ profiles: [], skipped: [], scannedRoots: [] }),
+    }),
     ...(opts?.explicitSource ? [stubPair(IExplicitFileAgentSource, opts.explicitSource)] : []),
   ]);
   return { host, session, config };

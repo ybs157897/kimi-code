@@ -1,3 +1,10 @@
+/**
+ * `replayBuilder` domain (L4) — wire-friendly Agent replay and resume DTOs.
+ *
+ * Defines the legacy-compatible replay timeline records and the complete
+ * per-Agent resume snapshot consumed by read-only projections. Scope-agnostic.
+ */
+
 import type { AgentTaskInfo } from '#/agent/task/task';
 import type { CompactionResult } from '#/agent/fullCompaction/types';
 import type { AgentConfigData, AgentConfigUpdateData } from '#/agent/profile/profile';

@@ -1,36 +1,9 @@
 import type { Component, Focusable } from '@moonshot-ai/pi-tui';
 import type {
-  AgentStatusUpdatedEvent,
-  AssistantDeltaEvent,
-  BackgroundTaskInfo,
-  BackgroundTaskStartedEvent,
-  BackgroundTaskTerminatedEvent,
-  CompactionCancelledEvent,
-  CompactionCompletedEvent,
-  CompactionStartedEvent,
-  CronFiredEvent,
-  ErrorEvent,
-  Event,
-  ExpertTeamUpdatedEvent,
-  GoalChange,
-  GoalUpdatedEvent,
-  HookResultEvent,
-  Session,
-  SessionMetaUpdatedEvent,
-  SkillActivatedEvent,
-  PluginCommandActivatedEvent,
-  ThinkingDeltaEvent,
-  ToolCallDeltaEvent,
-  ToolCallStartedEvent,
-  ToolProgressEvent,
-  ToolResultEvent,
-  TurnEndedEvent,
-  TurnStartedEvent,
-  TurnStepCompletedEvent,
-  TurnStepInterruptedEvent,
-  TurnStepStartedEvent,
-  WarningEvent,
-  NoticeEvent,
+  ApprovalRequest,
+  ApprovalResponse,
+  QuestionRequest,
+  QuestionResult,
 } from '@moonshot-ai/kimi-code-sdk';
 
 import { MoonLoader } from '../components/chrome/moon-loader';
@@ -53,12 +26,6 @@ import {
   serializeToolResultOutput,
   stringValue,
 } from '../utils/event-payload';
-import {
-  readGoalQueue,
-  removeGoalQueueItem,
-  restoreGoalQueueItem,
-  type UpcomingGoal,
-} from '../goal-queue-store';
 import { formatBackgroundTaskTranscript } from '../utils/background-task-status';
 import { formatHookResultMarkdown } from '../utils/hook-result-format';
 import { McpOAuthAuthorizationUrlOpener } from '../utils/mcp-oauth';
@@ -70,6 +37,11 @@ import {
 } from '../utils/mcp-server-status';
 import { openUrl } from '#/utils/open-url';
 import { currentTheme } from '#/tui/theme';
+import type { AgentTask } from '../runtime/session-control-port';
+import type {
+  TUIAgentEvent,
+  TUIAgentGoalChange,
+} from '../runtime/agent-events-port';
 import type { ColorToken } from '#/tui/theme';
 import { errorReportHintLine } from '../constant/feedback';
 import { formatStepDebugTiming } from '#/utils/usage/debug-timing';
@@ -89,15 +61,59 @@ import type {
 } from '../types';
 import type { TUIState } from '../tui-state';
 import { createGoal as startGoalCommand } from '../commands/goal';
+import type {
+  SessionEventsPort,
+  TUISessionEvent,
+  TUISessionExpertTeamChangedEvent,
+  TUISessionMetadataChangedEvent,
+} from '../runtime/session-events-port';
+import type { UpcomingGoal } from '../runtime/session-goal-queue-port';
+import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
+
+type AgentEventOf<T extends TUIAgentEvent['type']> = Extract<
+  TUIAgentEvent,
+  { readonly type: T }
+>;
+type AgentStatusUpdatedEvent = AgentEventOf<'agent.status.updated'>;
+type AssistantDeltaEvent = AgentEventOf<'assistant.delta'>;
+type BackgroundTaskStartedEvent = AgentEventOf<'background.task.started'>;
+type BackgroundTaskTerminatedEvent = AgentEventOf<'background.task.terminated'>;
+type CompactionCancelledEvent = AgentEventOf<'compaction.cancelled'>;
+type CompactionCompletedEvent = AgentEventOf<'compaction.completed'>;
+type CompactionStartedEvent = AgentEventOf<'compaction.started'>;
+type CronFiredEvent = AgentEventOf<'cron.fired'>;
+type ErrorEvent = AgentEventOf<'error'>;
+type GoalUpdatedEvent = AgentEventOf<'goal.updated'>;
+type HookResultEvent = AgentEventOf<'hook.result'>;
+type NoticeEvent = AgentEventOf<'notice'>;
+type PluginCommandActivatedEvent = AgentEventOf<'plugin_command.activated'>;
+type SkillActivatedEvent = AgentEventOf<'skill.activated'>;
+type ThinkingDeltaEvent = AgentEventOf<'thinking.delta'>;
+type ToolCallDeltaEvent = AgentEventOf<'tool.call.delta'>;
+type ToolCallStartedEvent = AgentEventOf<'tool.call.started'>;
+type ToolProgressEvent = AgentEventOf<'tool.progress'>;
+type ToolResultEvent = AgentEventOf<'tool.result'>;
+type TurnEndedEvent = AgentEventOf<'turn.ended'>;
+type TurnStartedEvent = AgentEventOf<'turn.started'>;
+type TurnStepCompletedEvent = AgentEventOf<'turn.step.completed'>;
+type TurnStepInterruptedEvent = AgentEventOf<'turn.step.interrupted'>;
+type TurnStepStartedEvent = AgentEventOf<'turn.step.started'>;
+type WarningEvent = AgentEventOf<'warning'>;
+
+function sessionEventId(event: TUISessionEvent): string {
+  return event.type === 'interaction.requested' ? event.interaction.sessionId : event.sessionId;
+}
 
 export interface SessionEventHost {
   state: TUIState;
-  session: Session | undefined;
   aborted: boolean;
   sessionEventUnsubscribe: (() => void) | undefined;
   readonly streamingUI: StreamingUIController;
 
-  requireSession(): Session;
+  requireSessionRuntime(): TUISessionRuntime;
+  requestApprovalResponse(request: ApprovalRequest): Promise<ApprovalResponse>;
+  requestQuestionResponse(request: QuestionRequest): Promise<QuestionResult>;
+  recordApprovalResponse(request: ApprovalRequest, response: ApprovalResponse): void;
   setAppState(patch: Partial<AppState>): void;
   patchLivePane(patch: Partial<LivePaneState>): void;
   resetLivePane(): void;
@@ -114,7 +130,7 @@ export interface SessionEventHost {
   handleShellStarted(event: { commandId: string; taskId: string }): void;
   sendNormalUserInput(text: string): void;
   updateTerminalTitle(): void;
-  sendQueuedMessage(session: Session, item: QueuedMessage): void;
+  sendQueuedMessage(item: QueuedMessage): void;
   shiftQueuedMessage(): QueuedMessage | undefined;
   readonly btwPanelController: BtwPanelController;
   readonly tasksBrowserController: TasksBrowserController;
@@ -138,7 +154,17 @@ export class SessionEventHandler {
     this.pluginUpdateNotifier =
       pluginUpdateNotifier ??
       new PluginUpdateNotifier({
-        getSession: () => this.host.session,
+        getSession: () => {
+          try {
+            const runtime = this.host.requireSessionRuntime();
+            return {
+              listMcpServers: () => runtime.mcp.list(),
+              listPlugins: () => runtime.plugins.list(),
+            };
+          } catch {
+            return undefined;
+          }
+        },
         workDir: host.state.appState.workDir,
         notify: (message) => {
           this.host.showStatus(message, 'warning');
@@ -147,7 +173,7 @@ export class SessionEventHandler {
   }
 
   // Runtime state – owned by this handler, reset between sessions.
-  backgroundTasks: Map<string, BackgroundTaskInfo> = new Map();
+  backgroundTasks: Map<string, AgentTask> = new Map();
   backgroundTaskTranscriptedTerminal: Set<string> = new Set();
 
   renderedSkillActivationIds: Set<string> = new Set();
@@ -160,7 +186,7 @@ export class SessionEventHandler {
   private currentTurnHasAssistantText = false;
   private pluginCommandTurns: Map<string, string> = new Map();
   private pluginMcpToolsUsedInTurn: Set<string> = new Set();
-  private pendingModelBlockedFallback: GoalChange | undefined;
+  private pendingModelBlockedFallback: TUIAgentGoalChange | undefined;
   private queuedGoalPromotionPending = false;
   private queuedGoalPromotionInFlight = false;
   private queuedGoalPromotionTimer: ReturnType<typeof setTimeout> | undefined;
@@ -199,36 +225,35 @@ export class SessionEventHandler {
 
   startSubscription(): void {
     const { host } = this;
-    const session = host.requireSession();
+    const sessionRuntime = host.requireSessionRuntime();
     const sendQueued = (item: QueuedMessage): void => {
-      host.sendQueuedMessage(session, item);
+      if (!this.isActiveSessionRuntime(sessionRuntime)) return;
+      host.sendQueuedMessage(item);
     };
     host.sessionEventUnsubscribe?.();
     const mcpOAuthOpener = new McpOAuthAuthorizationUrlOpener(openUrl);
-    const { sessionId } = host.state.appState;
-    host.sessionEventUnsubscribe = session.onEvent((event) => {
+    const { events, sessionId } = sessionRuntime;
+    host.sessionEventUnsubscribe = events.subscribe((event) => {
       if (host.aborted) return;
-      if (event.sessionId !== sessionId) return;
-      if (event.type === 'tool.progress') {
-        mcpOAuthOpener.handleToolProgress(event);
-      }
-      this.handleEvent(event, sendQueued);
+      if (!this.isActiveSessionRuntime(sessionRuntime)) return;
+      if (sessionEventId(event) !== sessionId) return;
+      this.handleSessionEvent(event, events, sendQueued, mcpOAuthOpener);
     });
-    void this.syncMcpServerStatusSnapshot(session);
+    void this.syncMcpServerStatusSnapshot(sessionRuntime);
   }
 
-  async syncMcpServerStatusSnapshot(session: Session): Promise<void> {
+  async syncMcpServerStatusSnapshot(sessionRuntime: TUISessionRuntime): Promise<void> {
     const { host } = this;
     let servers: readonly McpServerStatusSnapshot[];
     try {
-      servers = await session.listMcpServers();
+      servers = await sessionRuntime.mcp.list();
     } catch (error) {
-      if (host.session !== session || host.aborted) return;
+      if (!this.isActiveSessionRuntime(sessionRuntime)) return;
       const message = error instanceof Error ? error.message : String(error);
       host.showError(`Failed to sync MCP server status: ${message}`);
       return;
     }
-    if (host.session !== session || host.state.appState.sessionId !== session.id) return;
+    if (!this.isActiveSessionRuntime(sessionRuntime)) return;
 
     const visible = selectMcpStartupStatusRows(servers);
     const visibleNames = new Set(visible.map((server) => server.name));
@@ -252,7 +277,7 @@ export class SessionEventHandler {
     host.setAppState({ mcpServersSummary: summary || null });
   }
 
-  handleEvent(event: Event, sendQueued: (item: QueuedMessage) => void): void {
+  handleEvent(event: TUIAgentEvent, sendQueued: (item: QueuedMessage) => void): void {
     if (this.subAgentEventHandler.routeChildAgentEvent(event)) return;
 
     if ('turnId' in event && event.turnId !== undefined) {
@@ -276,8 +301,6 @@ export class SessionEventHandler {
       case 'tool.call.delta': this.handleToolCallDelta(event); break;
       case 'tool.result': this.handleToolResult(event); break;
       case 'agent.status.updated': this.handleStatusUpdate(event); break;
-      case 'session.meta.updated': this.handleSessionMetaChanged(event); break;
-      case 'expert_team.updated': this.handleExpertTeamUpdated(event); break;
       case 'goal.updated': this.handleGoalUpdated(event); break;
       case 'skill.activated': this.handleSkillActivated(event); break;
       case 'plugin_command.activated': this.handlePluginCommandActivated(event); break;
@@ -299,7 +322,10 @@ export class SessionEventHandler {
         this.handleBackgroundTaskEvent(event); break;
       case 'cron.fired': this.handleCronFired(event); break;
       case 'mcp.server.status': this.renderMcpServerStatus(event.server); break;
-      case 'tool.list.updated': break;
+      case 'prompt.aborted':
+      case 'prompt.completed':
+      case 'tool.list.updated':
+        break;
       default: break;
     }
   }
@@ -314,6 +340,89 @@ export class SessionEventHandler {
   // ---------------------------------------------------------------------------
   // Private handlers
   // ---------------------------------------------------------------------------
+
+  private handleSessionEvent(
+    event: TUISessionEvent,
+    events: SessionEventsPort,
+    sendQueued: (item: QueuedMessage) => void,
+    mcpOAuthOpener: McpOAuthAuthorizationUrlOpener,
+  ): void {
+    if (event.type === 'session.metadata.changed') {
+      this.handleSessionMetadataChanged(event);
+      return;
+    }
+    if (event.type === 'session.expert-team.changed') {
+      this.handleSessionExpertTeamChanged(event);
+      return;
+    }
+    if (event.type === 'interaction.requested') {
+      this.handleInteractionRequested(event.interaction, events);
+      return;
+    }
+    if (event.type === 'interaction.resolved') {
+      // Resolution is an acknowledgement only. The UI controller advances
+      // when its local user response resolves, never from a runtime echo.
+      return;
+    }
+    if (event.type === 'tool.progress') {
+      mcpOAuthOpener.handleToolProgress(event);
+    }
+    this.handleEvent(event, sendQueued);
+  }
+
+  private handleInteractionRequested(
+    interaction: Extract<
+      TUISessionEvent,
+      { type: 'interaction.requested' }
+    >['interaction'],
+    events: SessionEventsPort,
+  ): void {
+    const response =
+      interaction.kind === 'approval'
+        ? this.host
+            .requestApprovalResponse(interaction.request)
+            .then((result) => {
+              if (!this.isActiveEventPort(events, interaction.sessionId)) return;
+              this.host.recordApprovalResponse(interaction.request, result);
+              return events.respondToApproval(interaction.id, result);
+            })
+        : this.host
+            .requestQuestionResponse(interaction.request)
+            .then((result) =>
+              this.isActiveEventPort(events, interaction.sessionId)
+                ? events.respondToQuestion(interaction.id, result)
+                : undefined,
+            );
+
+    void response.catch((error: unknown) => {
+      if (!this.isActiveEventPort(events, interaction.sessionId)) return;
+      const kind = interaction.kind === 'approval' ? 'approval' : 'question';
+      this.host.showError(`Failed to respond to ${kind}: ${formatErrorMessage(error)}`);
+    });
+  }
+
+  private isActiveEventPort(events: SessionEventsPort, sessionId: string): boolean {
+    if (this.host.aborted) return false;
+    try {
+      const runtime = this.host.requireSessionRuntime();
+      return runtime.sessionId === sessionId && runtime.events === events;
+    } catch {
+      return false;
+    }
+  }
+
+  private isActiveSessionRuntime(sessionRuntime: TUISessionRuntime): boolean {
+    if (
+      this.host.aborted ||
+      this.host.state.appState.sessionId !== sessionRuntime.sessionId
+    )
+      return false;
+    try {
+      return this.host.requireSessionRuntime() === sessionRuntime;
+    } catch {
+      return false;
+    }
+  }
 
   private handleTurnBegin(event: TurnStartedEvent): void {
     this.currentTurnHasAssistantText = false;
@@ -787,9 +896,12 @@ export class SessionEventHandler {
     this.scheduleQueuedGoalPromotion();
   }
 
-  private isReadyForQueuedGoalPromotion(session?: Session): boolean {
+  private isReadyForQueuedGoalPromotion(
+    sessionRuntime?: TUISessionRuntime,
+  ): boolean {
     return (
-      (session === undefined || this.host.session === session) &&
+      (sessionRuntime === undefined ||
+        this.isActiveSessionRuntime(sessionRuntime)) &&
       !this.host.aborted &&
       this.host.state.appState.streamingPhase === 'idle' &&
       this.host.state.queuedMessages.length === 0 &&
@@ -799,22 +911,28 @@ export class SessionEventHandler {
 
   private async promoteNextQueuedGoal(): Promise<boolean> {
     const { host } = this;
-    const session = host.session;
-    if (session === undefined || host.aborted) return true;
+    let sessionRuntime: TUISessionRuntime;
+    try {
+      sessionRuntime = host.requireSessionRuntime();
+    } catch {
+      return true;
+    }
+    if (!this.isActiveSessionRuntime(sessionRuntime)) return true;
 
     let queue;
     try {
-      queue = await readGoalQueue(session);
+      queue = await sessionRuntime.goalQueue.read();
     } catch (error) {
+      if (!this.isActiveSessionRuntime(sessionRuntime)) return true;
       host.showError(`Failed to read upcoming goals: ${formatErrorMessage(error)}`);
       return false;
     }
-    if (host.session !== session || host.aborted) return true;
+    if (!this.isActiveSessionRuntime(sessionRuntime)) return true;
 
     const next = queue.goals[0];
     if (next === undefined) return true;
 
-    if (!this.isReadyForQueuedGoalPromotion(session)) return false;
+    if (!this.isReadyForQueuedGoalPromotion(sessionRuntime)) return false;
 
     const started = await startGoalCommand(
       host,
@@ -822,48 +940,53 @@ export class SessionEventHandler {
       next.objective,
       {
         beforeSend: async () => {
-          if (!this.isReadyForQueuedGoalPromotion(session)) {
-            await this.cancelStartedQueuedGoal(session);
+          if (!this.isReadyForQueuedGoalPromotion(sessionRuntime)) {
+            await this.cancelStartedQueuedGoal(sessionRuntime);
             return false;
           }
           try {
-            await removeGoalQueueItem(session, { goalId: next.id });
+            await sessionRuntime.goalQueue.remove({ goalId: next.id });
           } catch (error) {
             host.showError(
               `Queued goal started, but could not be removed from the queue: ${formatErrorMessage(error)}`,
             );
-            await this.cancelStartedQueuedGoal(session);
+            await this.cancelStartedQueuedGoal(sessionRuntime);
             return false;
           }
-          if (this.isReadyForQueuedGoalPromotion(session)) {
+          if (this.isReadyForQueuedGoalPromotion(sessionRuntime)) {
             return true;
           }
-          await this.restoreAndCancelStartedQueuedGoal(session, next);
+          await this.restoreAndCancelStartedQueuedGoal(
+            sessionRuntime,
+            next,
+          );
           return false;
         },
         sendInput: (objective) => {
-          host.sendQueuedMessage(session, { text: objective });
+          host.sendQueuedMessage({ text: objective });
         },
       },
     );
-    return started || host.session !== session || host.aborted;
+    return started || !this.isActiveSessionRuntime(sessionRuntime);
   }
 
   private async restoreAndCancelStartedQueuedGoal(
-    session: Session,
+    sessionRuntime: TUISessionRuntime,
     goal: UpcomingGoal,
   ): Promise<void> {
     try {
-      await restoreGoalQueueItem(session, goal);
+      await sessionRuntime.goalQueue.restore(goal);
     } catch (error) {
       this.host.showError(`Queued goal could not be restored: ${formatErrorMessage(error)}`);
     }
-    await this.cancelStartedQueuedGoal(session);
+    await this.cancelStartedQueuedGoal(sessionRuntime);
   }
 
-  private async cancelStartedQueuedGoal(session: Session): Promise<void> {
+  private async cancelStartedQueuedGoal(
+    sessionRuntime: TUISessionRuntime,
+  ): Promise<void> {
     try {
-      await session.cancelGoal();
+      await sessionRuntime.agent.cancelGoal();
     } catch (error) {
       this.host.showError(`Queued goal could not be cancelled: ${formatErrorMessage(error)}`);
     }
@@ -871,17 +994,26 @@ export class SessionEventHandler {
 
   private async notifyQueuedGoalWaitingOnBlocked(): Promise<void> {
     const { host } = this;
-    const session = host.session;
-    if (session === undefined || host.aborted) return;
+    let sessionRuntime: TUISessionRuntime;
+    try {
+      sessionRuntime = host.requireSessionRuntime();
+    } catch {
+      return;
+    }
+    if (!this.isActiveSessionRuntime(sessionRuntime)) return;
 
     let hasQueuedGoal = false;
     try {
-      const queue = await readGoalQueue(session);
+      const queue = await sessionRuntime.goalQueue.read();
       hasQueuedGoal = queue.goals.length > 0;
     } catch {
       return;
     }
-    if (!hasQueuedGoal || host.session !== session || host.aborted) return;
+    if (
+      !hasQueuedGoal ||
+      !this.isActiveSessionRuntime(sessionRuntime)
+    )
+      return;
 
     host.showNotice(
       'Goal blocked.',
@@ -889,7 +1021,7 @@ export class SessionEventHandler {
     );
   }
 
-  private handleSessionMetaChanged(event: SessionMetaUpdatedEvent): void {
+  private handleSessionMetadataChanged(event: TUISessionMetadataChangedEvent): void {
     const title = event.title ?? stringValue(event.patch?.['title']);
     if (title !== undefined) {
       this.host.setAppState({ sessionTitle: title });
@@ -897,10 +1029,10 @@ export class SessionEventHandler {
     }
   }
 
-  private handleExpertTeamUpdated(event: ExpertTeamUpdatedEvent): void {
+  private handleSessionExpertTeamChanged(event: TUISessionExpertTeamChangedEvent): void {
     this.host.setAppState({
-      expertTeam: event.status,
-      expertTeamMembers: event.status?.members ?? [],
+      expertTeam: event.snapshot,
+      expertTeamMembers: event.snapshot?.members ?? [],
     });
   }
 
@@ -1159,7 +1291,7 @@ export class SessionEventHandler {
     this.host.tasksBrowserController.repaint();
   }
 
-  private appendBackgroundTaskEntry(info: BackgroundTaskInfo): void {
+  private appendBackgroundTaskEntry(info: AgentTask): void {
     const status = formatBackgroundTaskTranscript(info);
     const entry: TranscriptEntry = {
       id: nextTranscriptId(),

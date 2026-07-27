@@ -1,5 +1,4 @@
-import type { ExtensionCommandDef } from '@moonshot-ai/kimi-code-sdk';
-
+import type { ExtensionCommandDefinition } from '../runtime/extension-command-port';
 import type { KimiSlashCommand } from './types';
 
 export interface ExtensionSlashCommands {
@@ -18,7 +17,7 @@ export function extensionCommandName(extensionId: string, name: string): string 
 }
 
 export function buildExtensionSlashCommands(
-  defs: readonly ExtensionCommandDef[],
+  defs: readonly ExtensionCommandDefinition[],
 ): ExtensionSlashCommands {
   const commandNames = new Set<string>();
   const commands = defs.map((def) => {

@@ -87,6 +87,7 @@ describe('AgentSkillService', () => {
       catalog: skills,
       ready: Promise.resolve(),
       onDidChange: () => ({ dispose: () => {} }),
+      listSkills: async () => [],
       load: async () => {},
       reload: async () => {},
     };
@@ -125,6 +126,7 @@ describe('AgentSkillService', () => {
       catalog: skills,
       ready,
       onDidChange: () => ({ dispose: () => {} }),
+      listSkills: async () => [],
       load: async () => {},
       reload: async () => {},
     } satisfies ISessionSkillCatalog);
@@ -179,6 +181,7 @@ describe('SkillTool', () => {
       catalog: skills,
       ready: Promise.resolve(),
       onDidChange: () => ({ dispose: () => {} }),
+      listSkills: async () => [],
       load: async () => {},
       reload: async () => {},
     } satisfies ISessionSkillCatalog);
