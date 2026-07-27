@@ -110,7 +110,7 @@ interface ContextAppendLoopEventPayload {
 }
 
 /**
- * model: contextMemory · persisted · blobs · cross-reducers: goalForkNotice, task.notificationDelivery
+ * model: contextMemory · persisted · blobs · cross-reducers: plan, goalForkNotice, task.notificationDelivery, todo
  * owner: src/agent/contextMemory/contextOps.ts
  */
 interface ContextAppendMessagePayload {
@@ -145,14 +145,14 @@ interface ContextAppendMessagePayload {
 }
 
 /**
- * model: contextMemory · persisted · blobs
+ * model: contextMemory · persisted · blobs · cross-reducers: plan, task.notificationDelivery, todo
  * owner: src/agent/contextMemory/contextOps.ts
  * shared base: ...contextCompactionBaseShape
  */
 type ContextApplyCompactionPayload = { _name: 'context.apply_compaction'; } & ({ summary: string, compactedCount: number, contextSummary?: string } | { contextSummary: string, compactedCount: number, summary?: string } | { summary: ContextMessage, count: number, compactedCount?: number });
 
 /**
- * model: contextMemory · persisted · blobs
+ * model: contextMemory · persisted · blobs · cross-reducers: plan, task.notificationDelivery, todo
  * owner: src/agent/contextMemory/contextOps.ts
  */
 interface ContextClearPayload {
@@ -160,7 +160,7 @@ interface ContextClearPayload {
 }
 
 /**
- * model: contextMemory · persisted · blobs
+ * model: contextMemory · persisted · blobs · cross-reducers: plan, task.notificationDelivery, todo
  * owner: src/agent/contextMemory/contextOps.ts
  */
 interface ContextUndoPayload {
@@ -672,6 +672,7 @@ interface ToolsUpdateStorePayload {
 interface TurnCancelPayload {
   _name: 'turn.cancel';
   turnId?: number;
+  target?: 'active' | 'queued';
 }
 
 /**

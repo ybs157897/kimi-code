@@ -8,9 +8,8 @@
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
-import { InstantiationType } from '#/_base/di/extensions';
 import type { Event } from '#/_base/event';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
 import { parseAgentFileText } from '#/app/agentFileCatalog/agentFile';
 import { agentProfileFromFile } from '#/app/agentFileCatalog/agentProfileFromFile';
@@ -199,6 +198,6 @@ registerScopedService(
   LifecycleScope.Session,
   IPluginExpertAgentSource,
   PluginExpertAgentSource,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'sessionAgentProfileCatalog',
 );

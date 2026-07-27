@@ -8,9 +8,8 @@
  * state through `wire`. Bound at Session scope.
  */
 
-import { InstantiationType } from '#/_base/di/extensions';
 import { Disposable } from '#/_base/di/lifecycle';
-import { LifecycleScope, registerScopedService } from '#/_base/di/scope';
+import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { Error2, ErrorCodes } from '#/errors';
@@ -502,6 +501,6 @@ registerScopedService(
   LifecycleScope.Session,
   ISessionExpertTeamService,
   SessionExpertTeamService,
-  InstantiationType.Eager,
+  ScopeActivation.OnScopeCreated,
   'expertTeam',
 );

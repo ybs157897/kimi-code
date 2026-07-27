@@ -8,13 +8,14 @@
 
 import { z } from 'zod';
 
+import { createDecorator } from '#/_base/di/instantiation';
 import { ILogService } from '#/_base/log/log';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentTaskService } from '#/agent/task/task';
-import { registerTool } from '#/agent/toolRegistry/toolContribution';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import { IConfigService } from '#/app/config/config';
 import { IFlagService } from '#/app/flag/flag';
@@ -28,10 +29,10 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { resolveSubagentTimeoutMs } from '#/session/subagent/configSection';
 import { emitAgentRunSpawned, mirrorAgentRun } from '#/session/subagent/mirrorAgentRun';
 import { ISessionSubagentService } from '#/session/subagent/subagent';
-import { SubagentTask, type SubagentHandle } from '#/session/subagent/tools/subagent-task';
+import { SubagentTask, type SubagentHandle } from '#/agent/tools/agent/subagent-task';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import {
-  type BuiltinTool,
+  type AgentTool,
   type ExecutableToolContext,
   type ExecutableToolResult,
   type ToolExecution,
@@ -51,7 +52,13 @@ export const TeamSpawnInputSchema = z.object({
 
 export type TeamSpawnInput = z.infer<typeof TeamSpawnInputSchema>;
 
-export class TeamSpawnTool implements BuiltinTool<TeamSpawnInput> {
+export interface ITeamSpawnTool extends AgentTool<TeamSpawnInput> {
+  readonly _serviceBrand: undefined;
+}
+export const ITeamSpawnTool = createDecorator<ITeamSpawnTool>('expertTeamSpawnTool');
+
+export class TeamSpawnTool implements ITeamSpawnTool {
+  declare readonly _serviceBrand: undefined;
   readonly name = 'TeamSpawn';
   readonly description =
     'Spawn or continue one declared expert-team member in the background. Call TeamCreate first. The member must return authoritative findings with SendMessage.';
@@ -224,7 +231,9 @@ export class TeamSpawnTool implements BuiltinTool<TeamSpawnInput> {
   }
 }
 
-registerTool(TeamSpawnTool, {
+registerAgentToolService(ITeamSpawnTool, TeamSpawnTool, {
+  name: 'TeamSpawn',
+  domain: 'expertTeam',
   when: (accessor) => accessor.get(IFlagService).enabled(EXPERT_TEAMS_FLAG_ID),
 });
 

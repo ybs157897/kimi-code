@@ -8,13 +8,14 @@
 
 import { z } from 'zod';
 
+import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { registerTool } from '#/agent/toolRegistry/toolContribution';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IFlagService } from '#/app/flag/flag';
 import { EXPERT_TEAMS_FLAG_ID } from '#/app/plugin/types';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import {
-  type BuiltinTool,
+  type AgentTool,
   type ToolExecution,
   ToolAccesses,
 } from '#/tool/toolContract';
@@ -35,7 +36,13 @@ export const SendMessageInputSchema = z.object({
 
 export type SendMessageInput = z.infer<typeof SendMessageInputSchema>;
 
-export class SendMessageTool implements BuiltinTool<SendMessageInput> {
+export interface ISendMessageTool extends AgentTool<SendMessageInput> {
+  readonly _serviceBrand: undefined;
+}
+export const ISendMessageTool = createDecorator<ISendMessageTool>('expertTeamSendMessageTool');
+
+export class SendMessageTool implements ISendMessageTool {
+  declare readonly _serviceBrand: undefined;
   readonly name = 'SendMessage';
   readonly description =
     'Send an authoritative expert-team message. Members must send their complete findings to the lead; only the lead may send shutdown requests.';
@@ -81,7 +88,9 @@ export class SendMessageTool implements BuiltinTool<SendMessageInput> {
   }
 }
 
-registerTool(SendMessageTool, {
+registerAgentToolService(ISendMessageTool, SendMessageTool, {
+  name: 'SendMessage',
+  domain: 'expertTeam',
   when: (accessor) => accessor.get(IFlagService).enabled(EXPERT_TEAMS_FLAG_ID),
 });
 

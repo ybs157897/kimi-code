@@ -7,13 +7,14 @@
 
 import { z } from 'zod';
 
+import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { registerTool } from '#/agent/toolRegistry/toolContribution';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IFlagService } from '#/app/flag/flag';
 import { EXPERT_TEAMS_FLAG_ID } from '#/app/plugin/types';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import {
-  type BuiltinTool,
+  type AgentTool,
   type ToolExecution,
   ToolAccesses,
 } from '#/tool/toolContract';
@@ -29,7 +30,13 @@ export const TeamCreateInputSchema = z.object({
 
 export type TeamCreateInput = z.infer<typeof TeamCreateInputSchema>;
 
-export class TeamCreateTool implements BuiltinTool<TeamCreateInput> {
+export interface ITeamCreateTool extends AgentTool<TeamCreateInput> {
+  readonly _serviceBrand: undefined;
+}
+export const ITeamCreateTool = createDecorator<ITeamCreateTool>('expertTeamCreateTool');
+
+export class TeamCreateTool implements ITeamCreateTool {
+  declare readonly _serviceBrand: undefined;
   readonly name = 'TeamCreate';
   readonly description =
     'Create the active expert team before spawning any declared specialists. Only the team lead may call this tool.';
@@ -72,7 +79,9 @@ export class TeamCreateTool implements BuiltinTool<TeamCreateInput> {
   }
 }
 
-registerTool(TeamCreateTool, {
+registerAgentToolService(ITeamCreateTool, TeamCreateTool, {
+  name: 'TeamCreate',
+  domain: 'expertTeam',
   when: (accessor) => accessor.get(IFlagService).enabled(EXPERT_TEAMS_FLAG_ID),
 });
 

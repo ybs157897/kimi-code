@@ -7,13 +7,14 @@
 
 import { z } from 'zod';
 
+import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { registerTool } from '#/agent/toolRegistry/toolContribution';
+import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IFlagService } from '#/app/flag/flag';
 import { EXPERT_TEAMS_FLAG_ID } from '#/app/plugin/types';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import {
-  type BuiltinTool,
+  type AgentTool,
   type ToolExecution,
   ToolAccesses,
 } from '#/tool/toolContract';
@@ -24,7 +25,13 @@ export const TeamDeleteInputSchema = z.object({});
 
 export type TeamDeleteInput = z.infer<typeof TeamDeleteInputSchema>;
 
-export class TeamDeleteTool implements BuiltinTool<TeamDeleteInput> {
+export interface ITeamDeleteTool extends AgentTool<TeamDeleteInput> {
+  readonly _serviceBrand: undefined;
+}
+export const ITeamDeleteTool = createDecorator<ITeamDeleteTool>('expertTeamDeleteTool');
+
+export class TeamDeleteTool implements ITeamDeleteTool {
+  declare readonly _serviceBrand: undefined;
   readonly name = 'TeamDelete';
   readonly description =
     'Delete the active expert team after all members have completed or acknowledged shutdown. Fails while any member is active.';
@@ -56,7 +63,9 @@ export class TeamDeleteTool implements BuiltinTool<TeamDeleteInput> {
   }
 }
 
-registerTool(TeamDeleteTool, {
+registerAgentToolService(ITeamDeleteTool, TeamDeleteTool, {
+  name: 'TeamDelete',
+  domain: 'expertTeam',
   when: (accessor) => accessor.get(IFlagService).enabled(EXPERT_TEAMS_FLAG_ID),
 });
 
