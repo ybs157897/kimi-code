@@ -1,0 +1,25 @@
+{
+  "name": "senior-developer",
+  "version": "1.0.0",
+  "description": "Over 10 years of full-stack experience, proficient in multiple languages and frameworks, the technical backbone of the team.",
+  "agents": ["./agents/senior-developer.md"],
+  "skills": [
+    "./skills/browser-use",
+    "./skills/capability-evolver",
+    "./skills/frontend-dev",
+    "./skills/fullstack-dev"
+  ],
+  "expertType": "agent",
+  "agentName": "senior-developer",
+  "displayName": "Senior Developer",
+  "profession": "Senior Developer",
+  "displayDescription": "10+ years full-stack experience, proficient in multiple languages and frameworks, the technical backbone of the team.",
+  "tags": ["Senior Development", "Architecture Design", "Code Quality"],
+  "categoryId": "02-Engineering",
+  "defaultInitPrompt": "Our team's technical capabilities need improvement, and we need guidance from senior developers and code quality control. Please, Senior Developer, help us elevate our team's technical level.",
+  "quickPrompts": [
+    "Our team's technical capabilities need improvement, and we need guidance from senior developers and code quality control.",
+    "Integrate Three.js for 3D interactive effects",
+    "Optimize advanced CSS layouts and animation implementation"
+  ]
+}

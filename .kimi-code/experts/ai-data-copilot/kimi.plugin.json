@@ -1,0 +1,81 @@
+{
+  "name": "ai-data-copilot",
+  "version": "1.0.0",
+  "description": "AI-native agentic data analysis team with autonomous SQL generation, code execution, RAG knowledge retrieval, and multi-source data insight capabilities",
+  "expertType": "team",
+  "agentName": "copilot-team-lead",
+  "agents": [
+    "./agents/copilot-team-lead.md",
+    "./agents/sql-analyst.md",
+    "./agents/data-scientist.md",
+    "./agents/knowledge-researcher.md",
+    "./agents/dashboard-designer.md",
+    "./agents/report-composer.md"
+  ],
+  "skills": ["./skills/data-analysis-engine"],
+  "teamInfo": {
+    "leadAgent": "copilot-team-lead",
+    "memberAgents": [
+      "sql-analyst",
+      "data-scientist",
+      "knowledge-researcher",
+      "dashboard-designer",
+      "report-composer"
+    ]
+  },
+  "displayName": "AI Data Copilot",
+  "profession": "AI Data Copilot",
+  "displayDescription": "6-member AI-native data analysis team: natural language to SQL, Python data science, RAG knowledge QA, interactive dashboards, and report generation.",
+  "tags": ["Data Analysis", "SQL Generation", "Report Generation"],
+  "categoryId": "04-DataAI",
+  "defaultInitPrompt": "Analyze this CSV file and generate a profiling report with key metrics and visualizations",
+  "quickPrompts": [
+    "Analyze this CSV file and generate a profiling report with key metrics and visualizations",
+    "Connect to my database and write SQL to answer: what are the top 10 customers by revenue this quarter?",
+    "Read the uploaded documents and create a knowledge-based analysis report with data-driven insights"
+  ],
+  "members": [
+    {
+      "agent": "copilot-team-lead",
+      "role": "lead",
+      "name": { "en": "Nova", "zh": "诺亚" },
+      "profession": { "en": "Chief Data Orchestrator", "zh": "首席数据编排师" },
+      "avatar": "avatars/copilot-team-lead.png"
+    },
+    {
+      "agent": "sql-analyst",
+      "role": "member",
+      "name": { "en": "Quinn", "zh": "秦逸" },
+      "profession": { "en": "SQL Query Architect", "zh": "SQL查询架构师" },
+      "avatar": "avatars/sql-analyst.png"
+    },
+    {
+      "agent": "data-scientist",
+      "role": "member",
+      "name": { "en": "Sage", "zh": "赛奇" },
+      "profession": { "en": "Data Science Engineer", "zh": "数据科学工程师" },
+      "avatar": "avatars/data-scientist.png"
+    },
+    {
+      "agent": "knowledge-researcher",
+      "role": "member",
+      "name": { "en": "Rika", "zh": "瑞卡" },
+      "profession": { "en": "Knowledge Retrieval Specialist", "zh": "知识检索专家" },
+      "avatar": "avatars/knowledge-researcher.png"
+    },
+    {
+      "agent": "dashboard-designer",
+      "role": "member",
+      "name": { "en": "Dash", "zh": "达仕" },
+      "profession": { "en": "Visual Analytics Designer", "zh": "可视化分析设计师" },
+      "avatar": "avatars/dashboard-designer.png"
+    },
+    {
+      "agent": "report-composer",
+      "role": "member",
+      "name": { "en": "Rex", "zh": "若溪" },
+      "profession": { "en": "Insight Report Composer", "zh": "洞察报告撰写师" },
+      "avatar": "avatars/report-composer.png"
+    }
+  ]
+}
