@@ -11,12 +11,12 @@ import { Event } from '#/_base/event';
 import { abortError } from '#/_base/utils/abort';
 import { type DomainEvent, IEventBus } from '#/app/event/eventBus';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
-import type { McpConnectionManager, McpServerEntry } from '#/agent/mcp/connection-manager';
+import type { McpConnectionManager, McpServerEntry } from '#/session/mcp/connection-manager';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { AgentMcpService } from '#/agent/mcp/mcpService';
 import { ISessionMcpService } from '#/session/mcp/sessionMcp';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import type { McpOAuthService } from '#/agent/mcp/oauth/service';
+import type { McpOAuthService } from '#/session/mcp/oauth/service';
 import type { MCPClient, MCPToolDefinition } from '#/agent/mcp/types';
 import { IWireService } from '#/wire/wire';
 import type { WireRecord } from '#/wire/record';
@@ -37,7 +37,7 @@ import { stubLoopWithHooks } from '../loop/stubs';
 import { stubToolResultTruncationService } from '../toolResultTruncation/stubs';
 import { recordingWireLog, registerTestAgentWire } from '../../wire/stubs';
 
-import { discoverTools, executeTool, fakeMcpClient } from './stubs';
+import { discoverTools, executeTool, fakeMcpClient } from '../../session/mcp/stubs';
 
 const MCP_OUTPUT_TRUNCATED_TEXT =
   '\n\n[Output truncated: exceeded 100000 character limit. ' +

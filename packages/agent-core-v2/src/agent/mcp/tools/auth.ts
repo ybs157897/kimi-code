@@ -32,7 +32,7 @@ import {
   type ExecutableToolResult,
 } from '#/tool/toolContract';
 import { toInputJsonSchema } from '#/tool/input-schema';
-import { AlreadyAuthorizedError, type McpOAuthService } from '#/agent/mcp/oauth/service';
+import { AlreadyAuthorizedError, type McpOAuthService } from '#/session/mcp/oauth/service';
 import { qualifyMcpToolName } from '#/agent/mcp/tool-naming';
 
 /**

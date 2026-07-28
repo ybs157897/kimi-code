@@ -13,12 +13,12 @@
 
 import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { McpConnectionManager } from '#/agent/mcp/connection-manager';
+import { McpConnectionManager } from './connection-manager';
 import type { McpServerConfig } from '#/agent/mcp/config-schema';
-import { MCP_SECTION, type McpSection } from '#/agent/mcp/configSection';
-import { McpOAuthService } from '#/agent/mcp/oauth/service';
-import { createMcpOAuthStore } from '#/agent/mcp/oauth/store';
-import { mergeCallerMcpServers, resolveSessionMcpConfig } from '#/agent/mcp/session-config';
+import { MCP_SECTION, type McpSection } from './configSection';
+import { McpOAuthService } from './oauth/service';
+import { createMcpOAuthStore } from './oauth/store';
+import { mergeCallerMcpServers, resolveSessionMcpConfig } from './session-config';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';

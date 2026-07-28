@@ -18,7 +18,7 @@ import { type McpServerConfig } from '#/agent/mcp/config-schema';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import '#/agent/profile/profileService';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
-import { McpConnectionManager } from '#/agent/mcp/connection-manager';
+import { McpConnectionManager } from '#/session/mcp/connection-manager';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import '#/agent/permissionMode/permissionModeOps';
 import { IAgentStateService } from '#/agent/state/agentState';

@@ -2,8 +2,8 @@ import type { Tool as KosongTool } from '#/kosong/contract/tool';
 
 import { createDecorator } from "#/_base/di/instantiation";
 import { type IDisposable } from "#/_base/di/lifecycle";
-import type { McpServerEntry } from './connection-manager';
-import type { McpOAuthService } from '#/agent/mcp/oauth/service';
+import type { McpServerEntry } from '#/session/mcp/connection-manager';
+import type { McpOAuthService } from '#/session/mcp/oauth/service';
 import type { MCPClient, MCPToolDefinition } from './types';
 
 export interface McpResolvedServer {

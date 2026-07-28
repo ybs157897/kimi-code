@@ -8,7 +8,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import type { Tool as KosongTool } from '#/kosong/contract/tool';
 import { z } from 'zod';
 
-import type { McpOAuthStore } from '#/agent/mcp/oauth/store';
+import type { McpOAuthStore } from '#/session/mcp/oauth/store';
 import type { MCPClient, MCPToolDefinition } from '#/agent/mcp/types';
 import type {
   ExecutableTool,

@@ -2,7 +2,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, normalize, resolve } from 'pathe';
 
 import { resolveKimiHome } from '#/app/bootstrap/bootstrap';
-import { McpServerConfigSchema, type McpServerConfig } from './config-schema';
+import { McpServerConfigSchema, type McpServerConfig } from '#/agent/mcp/config-schema';
 import { ErrorCodes, Error2 } from '#/errors';
 import { z } from 'zod';
 

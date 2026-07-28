@@ -10,7 +10,7 @@ import { z } from 'zod';
 
 import { type EnvBindings, envBindings, stripEnvBoundFields } from '#/app/config/config';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
-import { MAX_MCP_TIMEOUT_MS, McpTimeoutMsSchema } from './config-schema';
+import { MAX_MCP_TIMEOUT_MS, McpTimeoutMsSchema } from '#/agent/mcp/config-schema';
 
 export const MCP_SECTION = 'mcp';
 

@@ -6,7 +6,7 @@
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
-import type { McpConnectionManager } from '#/agent/mcp/connection-manager';
+import type { McpConnectionManager } from './connection-manager';
 import type { McpServerConfig } from '#/agent/mcp/config-schema';
 
 export interface ISessionMcpService {

@@ -33,7 +33,7 @@ import { createMcpAuthTool } from '#/agent/mcp/tools/auth';
 import { createMcpTool } from '#/agent/mcp/tools/mcp';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMcpService } from '#/session/mcp/sessionMcp';
-import type { McpServerEntry } from './connection-manager';
+import type { McpServerEntry } from '#/session/mcp/connection-manager';
 import { IAgentMcpService } from './mcp';
 import { qualifyMcpToolName } from './tool-naming';
 import type { MCPClient, MCPToolDefinition } from './types';

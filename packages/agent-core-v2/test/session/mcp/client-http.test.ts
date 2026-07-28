@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { ErrorCodes, Error2 } from '#/errors';
-import { buildMcpHttpHeaders, HttpMcpClient, isTerminalTransportError } from '#/agent/mcp/client-http';
+import { buildMcpHttpHeaders, HttpMcpClient, isTerminalTransportError } from '#/session/mcp/client-http';
 
 import { startInProcessHttpMcpServer } from './stubs';
 

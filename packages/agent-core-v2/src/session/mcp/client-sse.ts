@@ -1,4 +1,4 @@
-import type { McpServerSseConfig } from './config-schema';
+import type { McpServerSseConfig } from '#/agent/mcp/config-schema';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
 import { SSEClientTransport, SseError } from '@modelcontextprotocol/sdk/client/sse.js';
@@ -12,9 +12,9 @@ import {
   toMcpToolResult,
   type UnexpectedCloseListener,
   type UnexpectedCloseReason,
-} from './client-shared';
-import { buildMcpRemoteHeaders } from './client-remote';
-import type { MCPClient, MCPToolDefinition, MCPToolResult } from './types';
+} from '#/agent/mcp/client-shared';
+import { buildMcpRemoteHeaders } from '#/agent/mcp/client-remote';
+import type { MCPClient, MCPToolDefinition, MCPToolResult } from '#/agent/mcp/types';
 
 export interface SseMcpClientOptions {
   readonly clientName?: string;

@@ -11,18 +11,18 @@
  */
 
 import { ErrorCodes, Error2 } from '#/errors';
-import type { McpServerConfig } from './config-schema';
+import type { McpServerConfig } from '#/agent/mcp/config-schema';
 import type { ILogger as Logger } from '#/_base/log/log';
 import type { Tool } from '#/kosong/contract/tool';
 
 import { abortable } from '#/_base/utils/abort';
 import { HttpMcpClient } from './client-http';
-import { isRemoteMcpConfig } from './client-remote';
+import { isRemoteMcpConfig } from '#/agent/mcp/client-remote';
 import { SseMcpClient } from './client-sse';
-import type { UnexpectedCloseReason } from './client-shared';
+import type { UnexpectedCloseReason } from '#/agent/mcp/client-shared';
 import { StdioMcpClient } from './client-stdio';
-import type { McpOAuthService } from '#/agent/mcp/oauth/service';
-import { assertMcpInputSchema, type MCPClient, type MCPToolDefinition } from './types';
+import type { McpOAuthService } from './oauth/service';
+import { assertMcpInputSchema, type MCPClient, type MCPToolDefinition } from '#/agent/mcp/types';
 
 export type McpServerStatus = 'pending' | 'connected' | 'failed' | 'disabled' | 'needs-auth';
 

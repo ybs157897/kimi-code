@@ -5,7 +5,7 @@ import { join } from 'pathe';
 import { describe, expect, it } from 'vitest';
 
 import { Error2 } from '#/errors';
-import { mergeStdioEnv, StdioMcpClient } from '#/agent/mcp/client-stdio';
+import { mergeStdioEnv, StdioMcpClient } from '#/session/mcp/client-stdio';
 
 import {
   crashAfterConnectFixture,

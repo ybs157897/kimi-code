@@ -1,7 +1,9 @@
-import type { McpServerHttpConfig } from './config-schema';
+import { ErrorCodes, Error2 } from '#/errors';
+import type { McpServerStdioConfig } from '#/agent/mcp/config-schema';
+import { proxyEnvForChild, reconcileChildNoProxy } from '#/_base/utils/proxy';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import type { OAuthClientProvider } from '@modelcontextprotocol/sdk/client/auth.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { isAbsolute, resolve } from 'pathe';
 
 import {
   buildRequestOptions,
@@ -12,25 +14,25 @@ import {
   toMcpToolResult,
   type UnexpectedCloseListener,
   type UnexpectedCloseReason,
-} from './client-shared';
-import { buildMcpRemoteHeaders } from './client-remote';
-import type { MCPClient, MCPToolDefinition, MCPToolResult } from './types';
+} from '#/agent/mcp/client-shared';
+import type { MCPClient, MCPToolDefinition, MCPToolResult } from '#/agent/mcp/types';
 
-export interface HttpMcpClientOptions {
+export interface StdioMcpClientOptions {
   readonly clientName?: string;
   readonly clientVersion?: string;
   readonly startupTimeoutMs?: number;
   readonly toolCallTimeoutMs?: number;
-  readonly envLookup?: (name: string) => string | undefined;
-  readonly fetch?: typeof fetch;
-  readonly oauthProvider?: OAuthClientProvider;
+  readonly defaultCwd?: string;
 }
 
-export class HttpMcpClient implements MCPClient {
+const STDERR_BUFFER_CAPACITY = 4 * 1024;
+
+export class StdioMcpClient implements MCPClient {
   private readonly client: Client;
-  private readonly transport: StreamableHTTPClientTransport;
+  private readonly transport: StdioClientTransport;
   private readonly startupTimeoutMs?: number;
   private readonly toolCallTimeoutMs?: number;
+  private readonly stderrBuffer = new BoundedTail(STDERR_BUFFER_CAPACITY);
   private started = false;
   private closed = false;
   private ready = false;
@@ -38,16 +40,22 @@ export class HttpMcpClient implements MCPClient {
   private unexpectedCloseListener: UnexpectedCloseListener | undefined;
   private lastTransportError: Error | undefined;
   private pendingUnexpectedClose: UnexpectedCloseReason | undefined;
-  private unexpectedCloseFired = false;
 
-  constructor(config: McpServerHttpConfig, options: HttpMcpClientOptions = {}) {
-    const envLookup = options.envLookup ?? ((name) => process.env[name]);
-    const headers = buildMcpHttpHeaders(config, envLookup);
+  static readonly stderrBufferCapacity = STDERR_BUFFER_CAPACITY;
 
-    this.transport = new StreamableHTTPClientTransport(new URL(config.url), {
-      requestInit: headers !== undefined ? { headers } : undefined,
-      fetch: options.fetch,
-      authProvider: options.oauthProvider,
+  constructor(config: McpServerStdioConfig, options: StdioMcpClientOptions = {}) {
+    if (config.executor !== undefined && config.executor !== 'local') {
+      throw new Error2(ErrorCodes.NOT_IMPLEMENTED, `MCP stdio executor '${config.executor}' is not yet implemented`);
+    }
+    this.transport = new StdioClientTransport({
+      command: config.command,
+      args: config.args,
+      env: mergeStdioEnv(config.env),
+      cwd: resolveStdioCwd(config.cwd, options.defaultCwd),
+      stderr: 'pipe',
+    });
+    this.transport.stderr?.on('data', (chunk: Buffer | string) => {
+      this.stderrBuffer.push(typeof chunk === 'string' ? chunk : chunk.toString('utf8'));
     });
     this.client = new Client({
       name: options.clientName ?? KIMI_MCP_CLIENT_NAME,
@@ -59,7 +67,7 @@ export class HttpMcpClient implements MCPClient {
 
   async connect(): Promise<void> {
     if (this.closed) {
-      throw new Error('MCP HTTP client is closed');
+      throw new Error('MCP stdio client is closed');
     }
     if (this.started) return;
     this.started = true;
@@ -75,7 +83,7 @@ export class HttpMcpClient implements MCPClient {
     }
     if (this.closed) {
       await this.closeStartedClient();
-      throw new Error('MCP HTTP client was closed during startup');
+      throw new Error('MCP stdio client was closed during startup');
     }
     this.ready = true;
   }
@@ -93,6 +101,10 @@ export class HttpMcpClient implements MCPClient {
       this.pendingUnexpectedClose = undefined;
       listener(pending);
     }
+  }
+
+  stderrSnapshot(): string {
+    return this.stderrBuffer.snapshot();
   }
 
   async listTools(): Promise<MCPToolDefinition[]> {
@@ -129,39 +141,56 @@ export class HttpMcpClient implements MCPClient {
     this.client.onclose = () => {
       if (this.closed) return;
       if (!this.ready) return;
-      this.fireUnexpectedClose({ error: this.lastTransportError });
+      const stderr = this.stderrBuffer.snapshot();
+      const reason: UnexpectedCloseReason = {
+        error: this.lastTransportError,
+        stderr: stderr.length > 0 ? stderr : undefined,
+      };
+      const listener = this.unexpectedCloseListener;
+      if (listener !== undefined) {
+        listener(reason);
+      } else {
+        this.pendingUnexpectedClose = reason;
+      }
     };
     this.client.onerror = (error) => {
       this.lastTransportError = error;
-      if (this.closed) return;
-      if (!this.ready) return;
-      if (isTerminalTransportError(error)) {
-        this.fireUnexpectedClose({ error });
-      }
     };
   }
+}
 
-  private fireUnexpectedClose(reason: UnexpectedCloseReason): void {
-    if (this.unexpectedCloseFired) return;
-    this.unexpectedCloseFired = true;
-    const listener = this.unexpectedCloseListener;
-    if (listener !== undefined) {
-      listener(reason);
-    } else {
-      this.pendingUnexpectedClose = reason;
+class BoundedTail {
+  private buffer = '';
+  constructor(private readonly capacity: number) {}
+
+  push(chunk: string): void {
+    this.buffer += chunk;
+    if (this.buffer.length > this.capacity) {
+      this.buffer = this.buffer.slice(this.buffer.length - this.capacity);
     }
+  }
+
+  snapshot(): string {
+    return this.buffer;
   }
 }
 
-export function isTerminalTransportError(error: Error): boolean {
-  if (error.name === 'UnauthorizedError') return true;
-  if (/Maximum reconnection attempts/i.test(error.message)) return true;
-  return false;
+function resolveStdioCwd(configCwd: string | undefined, defaultCwd: string | undefined): string | undefined {
+  if (configCwd === undefined) return defaultCwd;
+  if (defaultCwd !== undefined && !isAbsolute(configCwd)) return resolve(defaultCwd, configCwd);
+  return configCwd;
 }
 
-export function buildMcpHttpHeaders(
-  config: McpServerHttpConfig,
-  envLookup: (name: string) => string | undefined,
-): Record<string, string> | undefined {
-  return buildMcpRemoteHeaders(config, envLookup);
+export function mergeStdioEnv(
+  configEnv?: Record<string, string>,
+  parentEnv: Readonly<Record<string, string | undefined>> = process.env,
+): Record<string, string> {
+  const merged: Record<string, string> = {};
+  for (const [key, value] of Object.entries(parentEnv)) {
+    if (value !== undefined) merged[key] = value;
+  }
+  if (configEnv !== undefined) Object.assign(merged, configEnv);
+  Object.assign(merged, proxyEnvForChild(merged));
+  reconcileChildNoProxy(merged, configEnv);
+  return merged;
 }
