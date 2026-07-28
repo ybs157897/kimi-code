@@ -89,6 +89,8 @@ import {
   IAgentRPCService,
   IAppendLogStore,
   IFileSystemStorageService,
+  IAtomicDocumentStore,
+  JsonAtomicDocumentStore,
   ISessionApprovalService,
   ISessionMetadata,
   IAgentTaskService,
@@ -1040,6 +1042,10 @@ export class AgentTestContext {
             new SyncDescriptor(InMemoryStorageService, []);
           reg.defineDescriptor(IFileSystemStorageService, memoryStorage());
           reg.define(IBlobStore, BlobStoreService);
+          reg.defineDescriptor(
+            IAtomicDocumentStore,
+            new SyncDescriptor(JsonAtomicDocumentStore, []),
+          );
           reg.defineInstance(
             IConfigService,
             configService(() => this.kimiConfig),

@@ -991,6 +991,7 @@ describe('FullCompaction', () => {
 
     await ctx.rpc.beginCompaction({});
     await failed;
+    await ctx.wire.flush();
 
     const events = ctx.newEvents();
     expect(events).toEqual(
@@ -1407,6 +1408,7 @@ describe('FullCompaction', () => {
     await ctx.rpc.beginCompaction({});
     ctx.appendExchange(2, 'new user while compacting', 'new assistant while compacting', 6_000);
     await cancelled;
+    await ctx.wire.flush();
 
     const events = ctx.newEvents();
     expect(countEvents(events, 'full_compaction.cancel')).toBe(1);
@@ -1459,6 +1461,7 @@ describe('FullCompaction', () => {
 
     ctx.get(IAgentFullCompactionService).begin({ source: 'auto', instruction: undefined });
     await completed;
+    await ctx.wire.flush();
 
     const events = ctx.newEvents();
     const compactedPrefixSizes = ctx.llmCalls.map((call) =>

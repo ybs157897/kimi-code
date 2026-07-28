@@ -1,9 +1,9 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
-import path from 'node:path';
+import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
 import type { PluginCapabilityState, PluginGithubMetadata, PluginSource } from './types';
 
-const INSTALLED_REL = path.join('plugins', 'installed.json');
+const INSTALLED_SCOPE = 'plugins';
+const INSTALLED_KEY = 'installed.json';
 
 export interface InstalledRecord {
   readonly id: string;
@@ -24,31 +24,18 @@ export interface InstalledFile {
 
 const EMPTY: InstalledFile = { version: 1, plugins: [] };
 
-export async function readInstalled(kimiHomeDir: string): Promise<InstalledFile> {
-  const filePath = path.join(kimiHomeDir, INSTALLED_REL);
-  let text: string;
-  try {
-    text = await readFile(filePath, 'utf8');
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return EMPTY;
-    throw error;
+export async function readInstalled(store: IAtomicDocumentStore): Promise<InstalledFile> {
+  const parsed = await store.get<InstalledFile>(INSTALLED_SCOPE, INSTALLED_KEY);
+  if (parsed === undefined) return EMPTY;
+  if (typeof parsed !== 'object' || parsed === null || !Array.isArray(parsed.plugins)) {
+    throw new Error('installed.json is not a valid InstalledFile object');
   }
-  try {
-    const parsed = JSON.parse(text) as InstalledFile;
-    if (typeof parsed !== 'object' || parsed === null || !Array.isArray(parsed.plugins)) {
-      throw new Error('installed.json is not a valid InstalledFile object');
-    }
-    return parsed;
-  } catch (error) {
-    throw new Error(`Failed to parse ${filePath}: ${(error as Error).message}`, { cause: error });
-  }
+  return parsed;
 }
 
-export async function writeInstalled(kimiHomeDir: string, data: InstalledFile): Promise<void> {
-  const dir = path.join(kimiHomeDir, 'plugins');
-  await mkdir(dir, { recursive: true });
-  const final = path.join(dir, 'installed.json');
-  const tmp = `${final}.tmp`;
-  await writeFile(tmp, JSON.stringify(data, null, 2), 'utf8');
-  await rename(tmp, final);
+export async function writeInstalled(
+  store: IAtomicDocumentStore,
+  data: InstalledFile,
+): Promise<void> {
+  await store.set(INSTALLED_SCOPE, INSTALLED_KEY, data);
 }

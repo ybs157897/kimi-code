@@ -36,10 +36,12 @@ import {
   isModelAcceptedImageMime,
 } from '#/agent/media/image-format-policy';
 import { persistOriginalImage } from '#/agent/media/image-originals';
+import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import type { MCPContentBlock, MCPToolResult } from './types';
 
 export interface McpOutputOptions {
   readonly originalsDir?: string;
+  readonly hostFs?: IHostFileSystem;
   readonly telemetry?: ITelemetryService;
 }
 
@@ -155,11 +157,10 @@ export async function mcpResultToExecutableOutput(
         : { client: options.telemetry, source: 'mcp_tool_result' },
     annotate: {
       persistOriginal: (bytes, mimeType) =>
-        persistOriginalImage(
-          bytes,
-          mimeType,
-          options.originalsDir === undefined ? {} : { dir: options.originalsDir },
-        ),
+        persistOriginalImage(bytes, mimeType, {
+          dir: options.originalsDir,
+          hostFs: options.hostFs,
+        }),
     },
   });
   const capped = applyBinaryPartCap(compressed.parts);

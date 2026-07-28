@@ -15,6 +15,12 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { PluginManager } from '#/app/plugin/manager';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+
+function makeInstalledStore(home: string): JsonAtomicDocumentStore {
+  return new JsonAtomicDocumentStore(new FileStorageService(home));
+}
 
 describe('PluginManager', () => {
   let home: string;
@@ -60,7 +66,7 @@ describe('PluginManager', () => {
   });
 
   it('loads installed plugins and exposes summaries, hooks, and commands', async () => {
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
 
     expect(manager.summaries()).toEqual([
@@ -88,7 +94,7 @@ describe('PluginManager', () => {
     const sourceRoot = await mkdtemp(join(tmpdir(), 'plugin-install-source-'));
     try {
       await writeFile(join(sourceRoot, 'kimi.plugin.json'), JSON.stringify({ name: 'other' }), 'utf8');
-      const manager = new PluginManager({ kimiHomeDir: home });
+      const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
 
       const record = await manager.install(sourceRoot);
 
@@ -112,7 +118,7 @@ describe('PluginManager', () => {
       await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
       const address = server.address();
       if (address === null || typeof address === 'string') throw new Error('bad server address');
-      const manager = new PluginManager({ kimiHomeDir: home });
+      const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
 
       const record = await manager.install(`http://127.0.0.1:${address.port}/plugin.zip`);
 
@@ -144,7 +150,7 @@ describe('PluginManager', () => {
         return new Response(zip);
       });
       vi.stubGlobal('fetch', fetchMock as typeof fetch);
-      const manager = new PluginManager({ kimiHomeDir: home });
+      const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
 
       const record = await manager.install('https://github.com/owner/repo/tree/v1');
 
@@ -199,7 +205,7 @@ describe('PluginManager', () => {
         headers: new Headers({ location: 'https://github.com/owner/repo/releases/tag/v2' }),
       }),
     );
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
 
     await expect(manager.checkUpdates()).resolves.toEqual([
@@ -253,7 +259,7 @@ describe('PluginManager', () => {
           ),
         ),
     );
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
 
     await expect(manager.checkUpdates()).resolves.toEqual([
@@ -290,7 +296,7 @@ describe('PluginManager', () => {
     );
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
 
     await expect(manager.checkUpdates()).resolves.toEqual([
@@ -335,7 +341,7 @@ describe('PluginManager', () => {
         });
       }) as typeof fetch,
     );
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
 
     await expect(manager.checkUpdates()).resolves.toEqual([
@@ -344,7 +350,7 @@ describe('PluginManager', () => {
   });
 
   it('persists enabled state changes', async () => {
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
 
     await manager.setEnabled('demo', false);

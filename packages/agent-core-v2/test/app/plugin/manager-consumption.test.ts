@@ -16,8 +16,14 @@ import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { PluginManager } from '#/app/plugin/manager';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 
 import { stubSkill } from '../skillCatalog/stubs';
+
+function makeInstalledStore(home: string): JsonAtomicDocumentStore {
+  return new JsonAtomicDocumentStore(new FileStorageService(home));
+}
 
 async function isolatedTmpdir(): Promise<string> {
   const dir = await mkdtemp(path.join(tmpdir(), 'kimi-isolated-tmp-'));
@@ -156,7 +162,7 @@ describe('PluginManager consumption plane', () => {
     const home = await makeKimiHome();
     const a = await makePlugin('a', { skills: true });
     const b = await makePlugin('b', { skills: true });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(a);
     await manager.install(b);
@@ -178,7 +184,7 @@ describe('PluginManager consumption plane', () => {
   it('pluginSkillRoots() excludes plugins in error state', async () => {
     const home = await makeKimiHome();
     const root = await makePlugin('demo');
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     await writeFile(
@@ -196,7 +202,7 @@ describe('PluginManager consumption plane', () => {
     const root = await makePlugin('superpowers', {
       skillNames: ['brainstorming', 'systematic-debugging', 'writing-plans'],
     });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     expect(manager.summaries()).toContainEqual(
@@ -212,6 +218,7 @@ describe('PluginManager consumption plane', () => {
     });
     const manager = new PluginManager({
       kimiHomeDir: home,
+      installedStore: makeInstalledStore(home),
       discoverSkills: async () => ({
         skills: [stubSkill('provided')],
         skipped: [],
@@ -231,7 +238,7 @@ describe('PluginManager consumption plane', () => {
       '---\nname: root-skill\ndescription: at root\n---\nbody',
       'utf8',
     );
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     expect(manager.info('root-skill-plugin')?.skillCount).toBe(1);
@@ -251,7 +258,7 @@ describe('PluginManager consumption plane', () => {
       '---\nname: child\ndescription: c\n---\nbody',
       'utf8',
     );
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     expect(manager.info('nested')?.skillCount).toBe(2);
@@ -262,7 +269,7 @@ describe('PluginManager consumption plane', () => {
     const root = await makePlugin('invalid-fm', { skillNames: ['good'] });
     await mkdir(path.join(root, 'skills', 'bad'), { recursive: true });
     await writeFile(path.join(root, 'skills', 'bad', 'SKILL.md'), 'no frontmatter at all', 'utf8');
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     expect(manager.info('invalid-fm')?.skillCount).toBe(1);
@@ -290,7 +297,7 @@ describe('PluginManager consumption plane', () => {
       '---\nname: unique\ndescription: u\n---\nbody',
       'utf8',
     );
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(await realpath(root));
     expect(manager.info('multiroot')?.skillCount).toBe(2);
@@ -301,7 +308,7 @@ describe('PluginManager consumption plane', () => {
     const home = await makeKimiHome();
     const isolated = await isolatedTmpdir();
     const url = await serveOnce(Buffer.from('this is not a zip archive'));
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await expect(manager.install(url)).rejects.toThrow();
     expect(await zipTempLeftovers(isolated)).toEqual([]);
@@ -314,7 +321,7 @@ describe('PluginManager consumption plane', () => {
     await writeFile(path.join(sourceRoot, 'README.md'), 'no manifest here', 'utf8');
     const isolated = await isolatedTmpdir();
     const url = await serveOnce(await zipDir(sourceRoot));
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
 
     let message = '';
@@ -336,7 +343,7 @@ describe('PluginManager consumption plane', () => {
     const isolated = await isolatedTmpdir();
     const source = 'https://github.com/example/no-manifest-plugin';
     mockGithubFetch({ releaseTag: 'v1.0.0', tarball: await zipDir(sourceRoot) });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
 
     let message = '';
@@ -358,7 +365,7 @@ describe('PluginManager consumption plane', () => {
     const isolated = await isolatedTmpdir();
     const source = 'https://github.com/example/no-manifest-plugin';
     mockGithubFetch({ releaseTag: 'v1.0.0', tarball: await zipDir(sourceRoot) });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
 
     await expect(manager.install(source)).rejects.toThrow();
@@ -372,7 +379,7 @@ describe('PluginManager consumption plane', () => {
   it('reports the real local path when a local-path plugin has no manifest', async () => {
     const home = await makeKimiHome();
     const sourceRoot = await mkdtemp(path.join(tmpdir(), 'plugin-no-manifest-'));
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
 
     let message = '';
@@ -389,7 +396,7 @@ describe('PluginManager consumption plane', () => {
     const root = await makePlugin('zip-demo');
     const isolated = await isolatedTmpdir();
     const url = await serveOnce(await zipDir(root));
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(url);
     expect(manager.get('zip-demo')?.state).toBe('ok');
@@ -400,7 +407,7 @@ describe('PluginManager consumption plane', () => {
   it('enabledSessionStarts() returns only enabled plugin sessionStart declarations', async () => {
     const home = await makeKimiHome();
     const root = await makePlugin('demo', { skills: true, sessionStartSkill: 'demo-skill' });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     expect(manager.enabledSessionStarts()).toEqual([{ pluginId: 'demo', skillName: 'demo-skill' }]);
@@ -417,7 +424,7 @@ describe('PluginManager consumption plane', () => {
         events: { transport: 'sse', url: 'https://example.com/sse' },
       },
     });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     const managedRoot = await managedPluginRoot(manager, 'demo');
@@ -463,7 +470,7 @@ describe('PluginManager consumption plane', () => {
       expect.objectContaining({ mcpServerCount: 3, enabledMcpServerCount: 2 }),
     );
 
-    const reloaded = new PluginManager({ kimiHomeDir: home });
+    const reloaded = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await reloaded.load();
     expect(reloaded.info('demo')?.mcpServers).toContainEqual(
       expect.objectContaining({ name: 'finance', enabled: false }),
@@ -475,7 +482,7 @@ describe('PluginManager consumption plane', () => {
     const root = await makePlugin('demo', {
       mcpServers: { finance: { command: 'finance-mcp', enabled: false } },
     });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     expect(manager.info('demo')?.mcpServers).toContainEqual(
@@ -493,7 +500,7 @@ describe('PluginManager consumption plane', () => {
       }),
     );
 
-    const reloaded = new PluginManager({ kimiHomeDir: home });
+    const reloaded = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await reloaded.load();
     expect(reloaded.info('demo')?.mcpServers).toContainEqual(
       expect.objectContaining({ name: 'finance', enabled: true }),
@@ -505,7 +512,7 @@ describe('PluginManager consumption plane', () => {
     const home = await makeKimiHome();
     const first = await makePlugin('a-b', { mcpServers: { c: { command: 'first-mcp' } } });
     const second = await makePlugin('a', { mcpServers: { 'b-c': { command: 'second-mcp' } } });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(first);
     await manager.install(second);
@@ -528,7 +535,7 @@ describe('PluginManager consumption plane', () => {
   it('enabledMcpServers() excludes disabled plugins', async () => {
     const home = await makeKimiHome();
     const root = await makePlugin('demo', { mcpServers: { finance: { command: 'finance-mcp' } } });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     await manager.setMcpServerEnabled('demo', 'finance', true);
@@ -539,7 +546,7 @@ describe('PluginManager consumption plane', () => {
   it('setMcpServerEnabled() rejects unknown MCP servers', async () => {
     const home = await makeKimiHome();
     const root = await makePlugin('demo');
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     await expect(manager.setMcpServerEnabled('demo', 'missing', true)).rejects.toThrow(
@@ -550,7 +557,7 @@ describe('PluginManager consumption plane', () => {
   it('reload() picks up edits to the managed plugin copy', async () => {
     const home = await makeKimiHome();
     const root = await makePlugin('demo');
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     const managedRoot = await managedPluginRoot(manager, 'demo');
@@ -567,7 +574,7 @@ describe('PluginManager consumption plane', () => {
   it('remove() clears the entry but does not delete the source directory', async () => {
     const home = await makeKimiHome();
     const root = await makePlugin('demo', { skills: true });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     await manager.remove('demo');
@@ -580,7 +587,7 @@ describe('PluginManager consumption plane', () => {
     const root = await makePlugin('demo', {
       hooks: [{ event: 'PreToolUse', command: './hooks/guard.sh', timeout: 10 }],
     });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     const installedRoot = await managedPluginRoot(manager, 'demo');
@@ -598,7 +605,7 @@ describe('PluginManager consumption plane', () => {
   it('enabledHooks() excludes disabled plugins', async () => {
     const home = await makeKimiHome();
     const root = await makePlugin('demo', { hooks: [{ event: 'PreToolUse', command: './x.sh' }] });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     await manager.setEnabled('demo', false);
@@ -635,7 +642,7 @@ describe('PluginManager consumption plane', () => {
       }) as typeof fetch,
     );
 
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     const record = await manager.install('https://github.com/obra/superpowers/tree/v5.1.0');
     expect(codeloadPath).toBe(`/obra/superpowers/zip/${commitSha}`);
@@ -674,7 +681,7 @@ describe('PluginManager consumption plane', () => {
       }) as typeof fetch,
     );
 
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     const record = await manager.install('https://github.com/obra/superpowers/releases/tag/v5.1.0');
     expect(codeloadPath).toBe(`/obra/superpowers/zip/${commitSha}`);
@@ -696,7 +703,7 @@ describe('PluginManager consumption plane', () => {
     let releaseLookups = 0;
     mockGithubFetch({ tarball: zipBuffer, onReleaseLookup: () => releaseLookups++ });
 
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     const record = await manager.install('https://github.com/wbxl2000/superpowers/tree/main');
     expect(releaseLookups).toBe(0);
@@ -708,7 +715,7 @@ describe('PluginManager consumption plane', () => {
   it('install() ignores forged marketplace context from legacy callers', async () => {
     const home = await makeKimiHome();
     const root = await makePlugin('rando', { version: '1.0.0' });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     const record = await (manager.install as (source: string, options?: unknown) => Promise<unknown>)(
       root,
@@ -728,7 +735,7 @@ describe('PluginManager consumption plane', () => {
     );
     const cdnUrl = await serveOnce(await zipDir(cdnSource));
 
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     const first = await manager.install(cdnUrl);
     expect(first.source).toBe('zip-url');
@@ -760,7 +767,7 @@ describe('PluginManager consumption plane', () => {
     const root = await makePlugin('demo', {
       mcpServers: { data: { command: 'node', args: ['./bin/data.mjs'] } },
     });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
     const managedRoot = await managedPluginRoot(manager, 'demo');
@@ -795,7 +802,7 @@ describe('PluginManager consumption plane', () => {
     const root = await makePlugin('demo', {
       mcpServers: { data: { command: 'node', args: ['./bin/data.mjs'] } },
     });
-    const manager = new PluginManager({ kimiHomeDir: home });
+    const manager = new PluginManager({ kimiHomeDir: home, installedStore: makeInstalledStore(home) });
     await manager.load();
     await manager.install(root);
 

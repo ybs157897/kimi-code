@@ -25,6 +25,7 @@
 
 import type { Tool as KosongTool } from '#/kosong/contract/tool';
 import type { ITelemetryService } from '#/app/telemetry/telemetry';
+import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { toErrorMessage } from '#/errors';
 import { isAbortError } from '#/_base/utils/abort';
 
@@ -40,6 +41,7 @@ import {
 
 interface McpToolOptions {
   readonly originalsDir?: string;
+  readonly hostFs?: IHostFileSystem;
   readonly telemetry?: ITelemetryService;
   readonly reconnect?: (signal?: AbortSignal) => Promise<MCPClient | undefined>;
 }
@@ -68,6 +70,7 @@ export function createMcpTool(
         return normalizeMcpToolResult(
           await mcpResultToExecutableOutput(result, qualifiedName, {
             originalsDir: options.originalsDir,
+            hostFs: options.hostFs,
             telemetry: options.telemetry,
           }),
         );

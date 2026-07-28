@@ -26,6 +26,10 @@ import { IPluginService } from '#/app/plugin/plugin';
 import { PluginService } from '#/app/plugin/pluginService';
 import type { ReloadSummary } from '#/app/plugin/types';
 import { IProviderService } from '#/kosong/provider/provider';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IConfigService } from '#/app/config/config';
 import {
@@ -761,6 +765,7 @@ describe('SessionSkillCatalogService', () => {
     store.setPluginSkills([
       stubSkill('demo-skill', { source: 'extra', plugin: { id: 'demo' } }),
     ]);
+    const fileStorage = new FileStorageService(homeDir);
     const host = createScopedTestHost([
       stubPair(ISkillDiscovery, store),
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
@@ -769,6 +774,8 @@ describe('SessionSkillCatalogService', () => {
         _serviceBrand: undefined,
       } as unknown as ISkillCatalogRuntimeOptions),
       stubPair(IProviderService, stubProviderService()),
+      stubPair(IFileSystemStorageService, fileStorage),
+      stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
     ]);
     const { stub: ws } = workspaceStub('/work');
     const session = host.child(LifecycleScope.Session, 's1', [

@@ -17,6 +17,7 @@ import { Error2, PluginErrors } from '#/errors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IProviderService } from '#/kosong/provider/provider';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { HookDef } from '#/agent/externalHooks/types';
 import type { McpServerConfig } from '#/agent/mcp/config-schema';
 import type { SkillRoot } from '#/app/skillCatalog/types';
@@ -63,6 +64,7 @@ export class PluginService extends Disposable implements IPluginService {
     @IBootstrapService bootstrap: IBootstrapService,
     @ISkillDiscovery discovery: ISkillDiscovery,
     @IProviderService private readonly providers: IProviderService,
+    @IAtomicDocumentStore private readonly atomicDocs: IAtomicDocumentStore,
   ) {
     super();
     this.homeDir = bootstrap.homeDir;
@@ -71,6 +73,7 @@ export class PluginService extends Disposable implements IPluginService {
       bootstrap.getEnv(KIMI_CODE_OAUTH_HOST_ENV) ?? bootstrap.getEnv(KIMI_OAUTH_HOST_ENV);
     this.manager = new PluginManager({
       kimiHomeDir: this.homeDir,
+      installedStore: this.atomicDocs,
       discoverSkills: (roots) => discovery.discover(roots),
     });
   }

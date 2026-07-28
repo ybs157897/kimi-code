@@ -12,6 +12,9 @@ import { createMcpTool } from '#/agent/mcp/tools/mcp';
 import type { MCPClient, MCPContentBlock, MCPToolResult } from '#/agent/mcp/types';
 import type { ToolExecution } from '#/tool/toolContract';
 import { sniffImageDimensions } from '#/agent/media/file-type';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+
+const hostFs = new HostFileSystem();
 
 const MCP_OUTPUT_TRUNCATED_TEXT =
   '\n\n[Output truncated: exceeded 100000 character limit. ' +
@@ -387,6 +390,7 @@ describe('mcpResultToExecutableOutput', () => {
   });
 
   test('annotates a downsampled image with a caption and a readable original', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'mcp-originals-'));
     const bigBytes = Buffer.from(
       await new Jimp({ width: 3600, height: 1800, color: 0x3366ccff }).getBuffer('image/png'),
     );
@@ -394,6 +398,7 @@ describe('mcpResultToExecutableOutput', () => {
     const out = await mcpResultToExecutableOutput(
       result([{ type: 'image', data: bigBytes.toString('base64'), mimeType: 'image/png' }]),
       'mcp__s__shot',
+      { originalsDir: dir, hostFs },
     );
 
     const parts = out.output as ContentPart[];
@@ -462,7 +467,7 @@ describe('mcpResultToExecutableOutput', () => {
     const out = await mcpResultToExecutableOutput(
       result([{ type: 'image', data: bigBytes.toString('base64'), mimeType: 'image/png' }]),
       'mcp__s__shot',
-      { originalsDir: dir },
+      { originalsDir: dir, hostFs },
     );
 
     const caption = out.note;
@@ -487,7 +492,7 @@ describe('mcpResultToExecutableOutput', () => {
         { type: 'image', data: big, mimeType: 'image/png' },
       ]),
       'mcp__s__shot',
-      { originalsDir: dir },
+      { originalsDir: dir, hostFs },
     );
 
     const parts = out.output as ContentPart[];
@@ -513,7 +518,7 @@ describe('mcpResultToExecutableOutput', () => {
         { type: 'image', data: big, mimeType: 'image/png' },
       ]),
       'mcp__s__shot',
-      { originalsDir: dir },
+      { originalsDir: dir, hostFs },
     );
 
     expect(out.truncated).toBeUndefined();

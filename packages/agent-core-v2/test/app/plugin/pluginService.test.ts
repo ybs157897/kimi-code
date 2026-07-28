@@ -29,6 +29,10 @@ import { IPluginService } from '#/app/plugin/plugin';
 import { PluginService } from '#/app/plugin/pluginService';
 import { IProviderService, type ProviderConfig } from '#/kosong/provider/provider';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import * as pluginStore from '#/app/plugin/store';
 import type { InstalledFile } from '#/app/plugin/store';
 import type { ReloadSummary } from '#/app/plugin/types';
@@ -53,6 +57,7 @@ function makeHost(
   providers = stubProviderService(),
   env: NodeJS.ProcessEnv = {},
 ): ScopedTestHost {
+  const fileStorage = new FileStorageService(homeDir);
   return createScopedTestHost([
     stubPair(IBootstrapService, stubBootstrap(homeDir, env)),
     stubPair(IProviderService, providers),
@@ -60,6 +65,8 @@ function makeHost(
       _serviceBrand: undefined,
       discover: async () => ({ skills: [], skipped: [], scannedRoots: [] }),
     } satisfies ISkillDiscovery),
+    stubPair(IFileSystemStorageService, fileStorage),
+    stubPair(IAtomicDocumentStore, new JsonAtomicDocumentStore(fileStorage)),
   ]);
 }
 

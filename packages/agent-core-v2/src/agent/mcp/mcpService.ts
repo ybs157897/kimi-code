@@ -32,6 +32,7 @@ import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { createMcpAuthTool } from '#/agent/mcp/tools/auth';
 import { createMcpTool } from '#/agent/mcp/tools/mcp';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { ISessionMcpService } from '#/session/mcp/sessionMcp';
 import type { McpServerEntry } from '#/session/mcp/connection-manager';
 import { IAgentMcpService } from './mcp';
@@ -105,6 +106,7 @@ export class AgentMcpService extends Disposable implements IAgentMcpService {
     @IWireService private readonly wire: IWireService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IHostFileSystem private readonly hostFs: IHostFileSystem,
   ) {
     super();
     this.states.register(mcpMcpToolsByServerKey);
@@ -320,6 +322,7 @@ export class AgentMcpService extends Disposable implements IAgentMcpService {
         this.registry.register(
           createMcpTool(qualified, tool, client, {
             originalsDir: sessionMediaOriginalsDir(this.sessionContext.sessionDir),
+            hostFs: this.hostFs,
             telemetry: this.telemetry,
             reconnect: (signal) => this.reconnectForToolCall(serverName, client, signal),
           }),

@@ -15,6 +15,7 @@ import type { McpServerConfig } from '#/agent/mcp/config-schema';
 import { discoverFileSkills } from '#/app/skillCatalog/fileSkillDiscovery';
 import type { SkillDiscoveryResult } from '#/app/skillCatalog/skillDiscovery';
 import type { SkillRoot } from '#/app/skillCatalog/types';
+import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 
 import { downloadZip, extractZip } from './archive';
 import { loadPluginCommand } from './commands';
@@ -40,6 +41,7 @@ import {
 
 export interface PluginManagerOptions {
   readonly kimiHomeDir: string;
+  readonly installedStore: IAtomicDocumentStore;
   readonly discoverSkills?: (roots: readonly SkillRoot[]) => Promise<SkillDiscoveryResult>;
 }
 
@@ -50,6 +52,7 @@ interface ManagedPluginCopy {
 
 export class PluginManager {
   private readonly kimiHomeDir: string;
+  private readonly installedStore: IAtomicDocumentStore;
   private readonly discoverSkills: (
     roots: readonly SkillRoot[],
   ) => Promise<SkillDiscoveryResult>;
@@ -57,11 +60,12 @@ export class PluginManager {
 
   constructor(options: PluginManagerOptions) {
     this.kimiHomeDir = options.kimiHomeDir;
+    this.installedStore = options.installedStore;
     this.discoverSkills = options.discoverSkills ?? discoverFileSkills;
   }
 
   async load(): Promise<void> {
-    const file = await readInstalled(this.kimiHomeDir);
+    const file = await readInstalled(this.installedStore);
     const next = new Map<string, PluginRecord>();
     for (const entry of file.plugins) {
       next.set(entry.id, await this.materialize(entry));
@@ -245,7 +249,7 @@ export class PluginManager {
 
   async reload(): Promise<ReloadSummary> {
     const prevIds = new Set(this.records.keys());
-    const file = await readInstalled(this.kimiHomeDir);
+    const file = await readInstalled(this.installedStore);
     const next = new Map<string, PluginRecord>();
     const errors: Array<{ id: string; message: string }> = [];
     for (const entry of file.plugins) {
@@ -380,7 +384,7 @@ export class PluginManager {
       capabilities: record.capabilities,
       github: record.github,
     }));
-    await writeInstalled(this.kimiHomeDir, { version: 1, plugins: installed });
+    await writeInstalled(this.installedStore, { version: 1, plugins: installed });
   }
 
   private async materialize(entry: InstalledRecord): Promise<PluginRecord> {
