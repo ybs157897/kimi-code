@@ -30,6 +30,7 @@ import { IntervalTimer } from '#/_base/utils/timer';
 import { IConfigService } from '#/app/config/config';
 import type { CronDeletedEvent, CronScheduledEvent } from '#/app/telemetry/events';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { ILogService } from '#/_base/log/log';
 import { type ClockSources, resolveClockSources, SYSTEM_CLOCKS } from '#/app/cron/clock';
 import { type CronConfig, CRON_SECTION } from '#/app/cron/configSection';
 import { computeNextCronRun, parseCronExpression, type ParsedCronExpression } from '#/app/cron/cron-expr';
@@ -93,6 +94,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     @ICronTaskPersistence private readonly store: ICronTaskPersistence,
     @IAgentLifecycleService private readonly agentLifecycle: IAgentLifecycleService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
+    @ILogService private readonly log: ILogService,
     @IConfigService private readonly config: IConfigService,
   ) {
     super();
@@ -209,7 +211,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     };
     this.tasks.set(task.id, task);
     this.dispatchCron(cronAdd({ task }));
-    this.persistEnqueue(task.id, () =>
+    this.persistEnqueue(task.id, 'save', () =>
       this.store.save(this.ctx.workspaceId, task),
     );
     return task;
@@ -221,7 +223,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
 
     this.dispatchCron(cronDelete({ ids: removed }));
     for (const id of removed) {
-      this.persistEnqueue(id, () =>
+      this.persistEnqueue(id, 'delete', () =>
         this.store.delete(this.ctx.workspaceId, id),
       );
     }
@@ -273,7 +275,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
           tags: { ...task.tags, [CRON_SESSION_TAG]: this.ctx.sessionId },
         };
         this.adopt(claimed);
-        this.persistEnqueue(claimed.id, () =>
+        this.persistEnqueue(claimed.id, 'save', () =>
           this.store.save(this.ctx.workspaceId, claimed),
         );
         continue;
@@ -521,7 +523,7 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
     if (updated === undefined) return;
 
     this.dispatchCron(cronCursor({ id, lastFiredAt }));
-    this.persistEnqueue(id, () =>
+    this.persistEnqueue(id, 'save', () =>
       this.store.save(this.ctx.workspaceId, updated),
     );
   }
@@ -675,12 +677,18 @@ export class SessionCronServiceImpl extends Disposable implements ISessionCronSe
   }
 
 
-  private persistEnqueue(id: string, work: () => Promise<void>): void {
+  private persistEnqueue(id: string, phase: 'save' | 'delete', work: () => Promise<void>): void {
     const prev = this.persistQueues.get(id) ?? Promise.resolve();
     const next = prev
-      .catch(() => {})
+      .catch((error: unknown) => {
+        this.log.error('cron persist chain failed', { taskId: id, phase, error });
+        this.telemetry.track2('cron_persist_failed', { task_id: id, phase });
+      })
       .then(() => work())
-      .catch(() => {})
+      .catch((error: unknown) => {
+        this.log.error('cron persist failed', { taskId: id, phase, error });
+        this.telemetry.track2('cron_persist_failed', { task_id: id, phase });
+      })
       .finally(() => {
         if (this.persistQueues.get(id) === next) {
           this.persistQueues.delete(id);

@@ -957,9 +957,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private persistLive(entry: ManagedTask): Promise<void> {
     const persistence = this.persistence;
     const info = this.toInfo(entry);
+    const taskId = info.taskId;
     entry.persistWriteQueue = entry.persistWriteQueue
       .then(() => persistence.writeTask(info))
-      .catch(() => { });
+      .catch((error: unknown) => {
+        this.log.error('task record persist failed', { taskId, error });
+        this.telemetry.track2('task_persist_failed', { task_id: taskId, phase: 'task' });
+      });
     return entry.persistWriteQueue;
   }
 
@@ -992,9 +996,13 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
 
   private appendTaskOutput(entry: ManagedTask, chunk: string): void {
     const persistence = this.persistence;
+    const taskId = entry.taskId;
     entry.outputWriteQueue = entry.outputWriteQueue
       .then(() => persistence.appendTaskOutput(entry.taskId, chunk))
-      .catch(() => { });
+      .catch((error: unknown) => {
+        this.log.error('task output persist failed', { taskId, error });
+        this.telemetry.track2('task_persist_failed', { task_id: taskId, phase: 'output' });
+      });
   }
 
   private startOutputPersist(entry: ManagedTask): void {

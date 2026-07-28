@@ -252,6 +252,11 @@ export interface BackgroundTaskCompletedEvent {
   status: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
 }
 
+export interface TaskPersistFailedEvent {
+  task_id: string;
+  phase: 'task' | 'output';
+}
+
 export interface ModelSwitchEvent {
   model: string;
 }
@@ -367,6 +372,11 @@ export interface CronScheduledEvent {
 export interface CronDeletedEvent {
   task_id: string;
   agent_id?: string;
+}
+
+export interface CronPersistFailedEvent {
+  task_id: string;
+  phase: 'save' | 'delete';
 }
 
 export interface CronFiredEvent {
@@ -686,6 +696,22 @@ export const telemetryEventDefinitions = {
       kind: 'Task kind',
       duration_ms: 'Task wall-clock time in milliseconds, null when unknown',
       status: 'Terminal task status',
+    },
+  }),
+  task_persist_failed: defineAgentTelemetryEvent<TaskPersistFailedEvent>({
+    owner: 'kimi-code',
+    comment: 'A background task state or output write to the persistence store failed.',
+    properties: {
+      task_id: 'Background task id',
+      phase: 'Whether the failed write was the task record or appended output',
+    },
+  }),
+  cron_persist_failed: defineTelemetryEvent<CronPersistFailedEvent>({
+    owner: 'kimi-code',
+    comment: 'A cron task save or delete against the persistence store failed.',
+    properties: {
+      task_id: 'Cron task id',
+      phase: 'Whether the failed write was a save or delete',
     },
   }),
   model_switch: defineAgentTelemetryEvent<ModelSwitchEvent>({
