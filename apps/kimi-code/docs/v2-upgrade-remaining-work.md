@@ -53,7 +53,7 @@ TUI 粘贴视频时会把缓存副本编码成 `file://` 类型的 `video_url`�
 图片路径也存在两个语义差异：
 
 - v2 TUI 没有 legacy harness，粘贴压缩不会读取 v2 `[image].max_edge_px`。
-- 压缩后的原图会写入共享临时目录，而不是当前 session 的 `media-originals`。
+- ~~压缩后的原图会写入共享临时目录，而不是当前 session 的 `media-originals`。~~（engine 侧已修复：`persistOriginalImage` 现在通过 `IHostFileSystem` 端口写入，调用方传入 session 的 `media-originals` 目录；TUI 侧仍需 R1 的 host capability 把该目录接到粘贴压缩路径上。）
 
 相关代码：
 
