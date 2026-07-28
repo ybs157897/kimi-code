@@ -21,6 +21,8 @@
 import * as pathe from 'pathe';
 
 import type { IHostEnvironment } from '#/os/interface/hostEnvironment';
+import { Error2 } from '#/errors';
+import { ToolErrors, type ToolErrorCode } from '#/tool/errors';
 
 export interface WorkspaceConfig {
   readonly workspaceDir: string;
@@ -117,15 +119,23 @@ export interface PathAccess {
   readonly outsideWorkspace: boolean;
 }
 
-export class PathSecurityError extends Error {
-  readonly code: PathSecurityCode;
+const PATH_SECURITY_CODE_MAP: Readonly<Record<PathSecurityCode, ToolErrorCode>> = {
+  PATH_OUTSIDE_WORKSPACE: ToolErrors.codes.PATH_OUTSIDE_WORKSPACE,
+  PATH_SENSITIVE: ToolErrors.codes.PATH_SENSITIVE,
+  PATH_INVALID: ToolErrors.codes.PATH_INVALID,
+};
+
+export class PathSecurityError extends Error2 {
+  readonly pathSecurityCode: PathSecurityCode;
   readonly rawPath: string;
   readonly canonicalPath: string;
 
   constructor(code: PathSecurityCode, rawPath: string, canonicalPath: string, message: string) {
-    super(message);
-    this.name = 'PathSecurityError';
-    this.code = code;
+    super(PATH_SECURITY_CODE_MAP[code], message, {
+      name: 'PathSecurityError',
+      details: { rawPath, canonicalPath, pathSecurityCode: code },
+    });
+    this.pathSecurityCode = code;
     this.rawPath = rawPath;
     this.canonicalPath = canonicalPath;
   }

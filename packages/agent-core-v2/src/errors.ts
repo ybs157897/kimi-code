@@ -32,6 +32,7 @@ import { SessionErrors } from '#/session/errors';
 import { SkillErrors } from '#/app/skillCatalog/errors';
 import { StorageErrors } from '#/persistence/interface/storage';
 import { TerminalErrors } from '#/os/interface/terminalErrors';
+import { ToolErrors } from '#/tool/errors';
 import { UsageErrors } from '#/agent/usage/errors';
 import { WireErrors } from '#/wire/errors';
 import { WorkspaceErrors } from '#/app/workspace/errors';
@@ -65,6 +66,7 @@ export { SessionErrors } from '#/session/errors';
 export { SkillErrors } from '#/app/skillCatalog/errors';
 export { StorageErrors } from '#/persistence/interface/storage';
 export { TerminalErrors } from '#/os/interface/terminalErrors';
+export { ToolErrors } from '#/tool/errors';
 export { UsageErrors } from '#/agent/usage/errors';
 export { WireErrors } from '#/wire/errors';
 export { WorkspaceErrors } from '#/app/workspace/errors';
@@ -95,6 +97,7 @@ export const ErrorCodes = {
   ...SkillErrors.codes,
   ...StorageErrors.codes,
   ...TerminalErrors.codes,
+  ...ToolErrors.codes,
   ...UsageErrors.codes,
   ...WireErrors.codes,
   ...WorkspaceErrors.codes,
