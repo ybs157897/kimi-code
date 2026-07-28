@@ -75,7 +75,13 @@ export class SessionMcpService extends Disposable implements ISessionMcpService 
       },
     });
     this.mcpManager = manager;
-    this._register({ dispose: () => void manager.shutdown() });
+    this._register({
+      dispose: () => {
+        void manager.shutdown().catch((error: unknown) => {
+          this.log.error('mcp manager shutdown failed during dispose', { error });
+        });
+      },
+    });
     return manager;
   }
 
