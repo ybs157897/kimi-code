@@ -17,8 +17,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKimiHarness, ErrorCodes, KimiError } from '#/index';
 
-import { ProviderManager } from '../../agent-core/src/session/provider-manager';
 import { TEST_IDENTITY } from './test-identity';
+
+// Inline replacement for agent-core's ProviderManager.resolveProviderConfig.
+function resolveProviderConfig(config: Record<string, unknown>, model: string): { modelCapabilities?: { tool_use: boolean } } {
+  const models = config['models'] as Record<string, { provider: string; model: string; capabilities?: string[] }> | undefined;
+  const modelAlias = models?.[model];
+  return {
+    modelCapabilities: {
+      tool_use: modelAlias?.capabilities?.includes('tool_use') ?? false,
+    },
+  };
+}
 
 let homeDir: string;
 
@@ -248,17 +258,18 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "https://auth.dev.
       capabilities: ['thinking', 'image_in', 'video_in', 'tool_use'],
       displayName: 'Kimi for Coding',
     });
-    expect(new ProviderManager({ config }).resolveProviderConfig(config.defaultModel!)).toMatchObject({
+    expect(resolveProviderConfig(config, config.defaultModel!)).toMatchObject({
       modelCapabilities: {
         tool_use: true,
       },
     });
-    expect(config.providers[KIMI_CODE_PROVIDER_NAME]).toMatchObject({
+    expect(config.providers![KIMI_CODE_PROVIDER_NAME]).toMatchObject({
       type: 'kimi',
       apiKey: '',
       oauth: { storage: 'file', key: 'oauth/kimi-code' },
     });
-    expect(config.services?.moonshotSearch?.oauth).toEqual({
+    const cfgSvcs = config['services'] as Record<string, Record<string, unknown>> | undefined;
+    expect(cfgSvcs?.['moonshotSearch']?.['oauth']).toEqual({
       storage: 'file',
       key: 'oauth/kimi-code',
     });
@@ -335,7 +346,7 @@ oauth = { storage = "file", key = "${oauthKey}", oauth_host = "${oauthHost}" }
       accessToken: 'rotated-dev-access-token',
     });
     const config = await harness.getConfig({ reload: true });
-    expect(config.providers[KIMI_CODE_PROVIDER_NAME]).toMatchObject({
+    expect(config.providers![KIMI_CODE_PROVIDER_NAME]).toMatchObject({
       baseUrl,
       oauth: { storage: 'file', key: oauthKey, oauthHost },
     });
@@ -392,7 +403,7 @@ oauth = { storage = "file", key = "oauth/kimi-code" }
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const config = await harness.getConfig({ reload: true });
-    expect(config.providers[KIMI_CODE_PROVIDER_NAME]).toMatchObject({
+    expect(config.providers![KIMI_CODE_PROVIDER_NAME]).toMatchObject({
       baseUrl,
       oauth: { storage: 'file', key: oauthKey, oauthHost: 'https://auth.kimi.com' },
     });
@@ -452,7 +463,7 @@ oauth = { storage = "file", key = "${configuredOauthKey}", oauth_host = "https:/
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const config = await harness.getConfig({ reload: true });
-    expect(config.providers[KIMI_CODE_PROVIDER_NAME]).toMatchObject({
+    expect(config.providers![KIMI_CODE_PROVIDER_NAME]).toMatchObject({
       baseUrl: envBaseUrl,
       oauth: { storage: 'file', key: envOauthKey, oauthHost: envOauthHost },
     });
@@ -500,7 +511,7 @@ model = "kimi-for-coding"
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
     const config = await harness.getConfig();
     expect(config.models?.['kimi-code/kimi-for-coding']).toBeUndefined();
-    expect(config.providers[KIMI_CODE_PROVIDER_NAME]).toBeDefined();
+    expect(config.providers![KIMI_CODE_PROVIDER_NAME]).toBeDefined();
     const { warnings } = await harness.getConfigDiagnostics();
     expect(warnings.some((w) => w.includes('models.kimi-code/kimi-for-coding'))).toBe(true);
   });
@@ -552,12 +563,13 @@ oauth = { storage = "file", key = "oauth/kimi-code" }
 
     const config = await harness.getConfig({ reload: true });
     expect(config.defaultModel).toBeUndefined();
-    expect(config.providers[KIMI_CODE_PROVIDER_NAME]).toBeUndefined();
-    expect(config.providers['custom']).toMatchObject({ apiKey: 'sk-existing' });
+    expect(config.providers![KIMI_CODE_PROVIDER_NAME]).toBeUndefined();
+    expect(config.providers!['custom']).toMatchObject({ apiKey: 'sk-existing' });
     expect(config.models?.['kimi-code/kimi-for-coding']).toBeUndefined();
     expect(config.models?.['custom-default']).toMatchObject({ provider: 'custom' });
-    expect(config.services?.moonshotSearch).toBeUndefined();
-    expect(config.services?.moonshotFetch).toBeUndefined();
+    const cfgSvcs = config['services'] as Record<string, Record<string, unknown>> | undefined;
+    expect(cfgSvcs?.['moonshotSearch']).toBeUndefined();
+    expect(cfgSvcs?.['moonshotFetch']).toBeUndefined();
     await expect(
       new FileTokenStorage(join(homeDir, 'credentials')).load('kimi-code'),
     ).resolves.toBeUndefined();

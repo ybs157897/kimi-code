@@ -1,36 +1,108 @@
 // apps/vis/server/src/lib/agent-record-types.ts
-// Single source of truth: everything below comes from agent-core directly.
-// Do NOT add local interfaces that duplicate upstream shapes.
+// Wire record types for the vis server. Mix of re-exports from upstream
+// packages and local DTOs for shapes not publicly exposed by agent-core-v2.
 
+export type { ContentPart, ToolCall, TokenUsage } from '@moonshot-ai/kosong';
+export { WIRE_PROTOCOL_VERSION as AGENT_WIRE_PROTOCOL_VERSION } from '@moonshot-ai/agent-core-v2';
 export type {
-  AgentRecord,
-  AgentRecordEvents,
-  AgentRecordOf,
-  AgentConfigUpdateData,
-  CompactionBeginData,
-  CompactionResult,
-  PermissionApprovalResultRecord,
-  PermissionMode,
-  UsageRecordScope,
-  ToolStoreUpdate,
-  LoopRecordedEvent,
   ContextMessage,
   PromptOrigin,
-  // Background-task shapes are part of agent-core's public surface, so the
-  // visualizer tracks them directly instead of duplicating the union.
-  BackgroundTaskInfo,
-  BackgroundTaskStatus,
-  ProcessBackgroundTaskInfo,
-  AgentBackgroundTaskInfo,
-  QuestionBackgroundTaskInfo,
-} from '@moonshot-ai/agent-core';
-export { AGENT_WIRE_PROTOCOL_VERSION } from '@moonshot-ai/agent-core';
-export type { Message, ContentPart, ToolCall, TokenUsage } from '@moonshot-ai/kosong';
+  PermissionMode,
+  AgentConfigUpdateData,
+} from '@moonshot-ai/agent-core-v2';
 
-// Local bindings for the upstream types referenced by the vis-only DTOs
-// below. The `export type { … }` re-export above forwards the names to
-// consumers but does NOT bring them into this module's scope.
-import type { AgentRecord, BackgroundTaskInfo } from '@moonshot-ai/agent-core';
+/**
+ * AgentRecord — vis-side DTO for a single deserialised wire record.
+ *
+ * This is NOT a complete discriminated union of every record shape; instead it
+ * enumerates every field the vis projection code accesses across all record
+ * types.  agent-core-v2's WireRecord is too loose for the structural access
+ * patterns the context projector relies on, and the legacy AgentRecord
+ * discriminated union was massive and coupled to agent-core internals.
+ *
+ * Fields are `readonly` and optional where they may be absent; consumers check
+ * `type` to know which fields to expect.
+ */
+export interface AgentRecord {
+  readonly type: string;
+  readonly time?: number;
+
+  // context.append_message / context.undo / context.clear
+  readonly message?: Record<string, unknown>;
+
+  // context.append_loop_event
+  readonly event?: Record<string, unknown>;
+
+  // context.update_token_count
+  readonly tokenCount?: number;
+
+  // context.apply_compaction
+  readonly summary?: string;
+  readonly contextSummary?: string;
+  readonly compactedCount?: number;
+  readonly tokensBefore?: number;
+  readonly tokensAfter?: number;
+  readonly keptUserMessageCount?: number;
+  readonly keptHeadUserMessageCount?: number;
+
+  // usage.record
+  readonly usageScope?: string;
+  readonly usage?: Record<string, unknown>;
+  readonly model?: string;
+
+  // config.update / permission.set_mode / plan_mode.*
+  readonly mode?: string;
+  readonly id?: string;
+  readonly cwd?: string;
+  readonly modelAlias?: string;
+  readonly profileName?: string;
+  readonly thinkingLevel?: string;
+  readonly systemPrompt?: string;
+
+  // context.undo
+  readonly count?: number;
+
+  // micro_compaction.apply
+  readonly cutoff?: number;
+
+  // goal.create / goal.update
+  readonly goalId?: string;
+  readonly objective?: string;
+  readonly completionCriterion?: string;
+  readonly status?: string;
+  readonly actor?: string;
+  readonly reason?: string;
+  readonly tokensUsed?: number;
+  readonly turnsUsed?: number;
+  readonly wallClockMs?: number;
+
+  // swarm_mode.enter
+  readonly trigger?: string;
+}
+
+// Background-task types — agent-core-v2 does not re-export a canonical
+// BackgroundTaskInfo, so vis defines its own read-only projection for the UI.
+export type BackgroundTaskStatus =
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'timed_out'
+  | 'killed'
+  | 'lost';
+
+export interface BackgroundTaskInfo {
+  readonly taskId: string;
+  readonly description: string;
+  readonly status: BackgroundTaskStatus;
+  readonly kind: string;
+  readonly detached?: boolean;
+  readonly startedAt: number;
+  readonly endedAt: number | null;
+  readonly stopReason?: string;
+  readonly terminalNotificationSuppressed?: boolean;
+  readonly timeoutMs?: number;
+  [key: string]: unknown;
+}
 
 /**
  * Persistent representation of a cron task.

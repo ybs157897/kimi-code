@@ -121,7 +121,7 @@ disallowedTools:
 
 ### 选择主 Agent
 
-两个 CLI flag 用于选择驱动会话的 Agent。**目前二者仅在 `KIMI_CODE_EXPERIMENTAL_FLAG=1` 时的 `kimi -p` 下可用**；交互式 TUI 会以明确错误拒绝它们：
+两个 CLI flag 用于选择驱动会话的 Agent，在 prompt 模式（`kimi -p`）下可用：
 
 - **`--agent <name>`**：以指定 Agent 作为主 Agent 启动会话。名称可以指向内置 Agent 或任何已发现的文件；名称不存在时会报错，并列出可用的 Agent。
 - **`--agent-file <path>`**：以最高优先级加载一个 Agent 文件（仅本次启动）并以其启动。该 flag 只接受一个文件：不可重复传入，也不能与 `--agent` 同时使用。
@@ -129,7 +129,7 @@ disallowedTools:
 例如在 print 模式下：
 
 ```sh
-KIMI_CODE_EXPERIMENTAL_FLAG=1 kimi -p --agent reviewer "审查这个分支上的改动"
+kimi -p --agent reviewer "审查这个分支上的改动"
 ```
 
 绑定的 Agent 即会话的身份：在会话首次绑定后即固定，之后不可切换。重复选择已绑定的 Agent（例如以相同的 `--agent` 恢复会话）是 no-op；选择不同的 Agent 会报 "already bound" 错误。
@@ -138,7 +138,7 @@ KIMI_CODE_EXPERIMENTAL_FLAG=1 kimi -p --agent reviewer "审查这个分支上的
 
 ### 用 SYSTEM.md 覆盖主 Agent 的系统提示词
 
-希望永久覆盖主 Agent 的系统提示词、而不必每次启动都传入 `--agent` 或 `--agent-file` 时，可以写一份 `$KIMI_CODE_HOME/SYSTEM.md`（默认：`~/.kimi-code/SYSTEM.md`，随 `KIMI_CODE_HOME` 移动）。文件存在且非空期间，它整体替换内置默认主 Agent 的系统提示词——但只替换提示词，描述与工具集仍沿用内置默认值。SYSTEM.md 目前仅在 `kimi web`，以及 `KIMI_CODE_EXPERIMENTAL_FLAG=1` 时的 `kimi -p` 下生效；交互式 TUI 会忽略该文件。
+希望永久覆盖主 Agent 的系统提示词、而不必每次启动都传入 `--agent` 或 `--agent-file` 时，可以写一份 `$KIMI_CODE_HOME/SYSTEM.md`（默认：`~/.kimi-code/SYSTEM.md`，随 `KIMI_CODE_HOME` 移动）。文件存在且非空期间，它整体替换内置默认主 Agent 的系统提示词——但只替换提示词，描述与工具集仍沿用内置默认值。SYSTEM.md 在所有运行时模式（`kimi web`、`kimi -p` 和 TUI）下均生效。
 
 SYSTEM.md 是纯 Markdown 正文，不需要也不读取 Frontmatter。文件缺失或为空时不生效；读取失败时会告警并回退到内置提示词。优先级上，显式意图仍然胜出：项目作用域中声明了 `override: true` 的同名 Agent 文件、通过 `--agent-file` 传入的文件都排在 SYSTEM.md 之前，用 `--agent` 选择其他 Agent 时 SYSTEM.md 也不会生效；而在用户作用域内部，SYSTEM.md 优先于 `agents/` 目录中扫描到的同名文件。
 

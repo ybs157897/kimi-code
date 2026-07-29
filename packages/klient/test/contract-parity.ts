@@ -42,7 +42,7 @@ import type {
   GoalToolResult,
 } from '@moonshot-ai/agent-core-v2/agent/goal/types';
 import type { TurnEndReason } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
-import type { McpServerEntry } from '@moonshot-ai/agent-core-v2/agent/mcp/connection-manager';
+import type { McpServerEntry } from '@moonshot-ai/agent-core-v2/session/mcp/connection-manager';
 import type { IAgentMcpService } from '@moonshot-ai/agent-core-v2/agent/mcp/mcp';
 import type { IAgentPermissionModeService } from '@moonshot-ai/agent-core-v2/agent/permissionMode/permissionMode';
 import type {

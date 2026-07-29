@@ -1,6 +1,6 @@
 /**
  * Scenario: code-extension slash commands cross the TUI runtime boundary.
- * Responsibilities: legacy and Klient-shaped adapters preserve list, reload,
+ * Responsibilities: Klient-shaped adapters preserve list, reload,
  * and activation semantics. Each runtime facade is the single stubbed boundary.
  * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/runtime/extension-command-port.test.ts
  */
@@ -9,10 +9,9 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { dispatchInput, type SlashCommandHost } from '#/tui/commands/dispatch';
 import { createKlientExtensionCommandPort } from '#/tui/runtime/klient-extension-command-adapter';
-import { createLegacyExtensionCommandPort } from '#/tui/runtime/legacy-extension-command-adapter';
 
 describe('extension command runtime port (adapter contract)', () => {
-  it('dispatches a registered extension command without a legacy Session argument', () => {
+  it('dispatches a registered extension command without a Session argument', () => {
     const activateExtensionCommand = vi.fn();
     const host = {
       state: { appState: { streamingPhase: 'idle', isCompacting: false } },
@@ -29,42 +28,6 @@ describe('extension command runtime port (adapter contract)', () => {
       'review:check',
       'src/main.ts',
     );
-  });
-
-  it('lists legacy extension commands through the neutral definition shape', async () => {
-    const commands = [
-      { extensionId: 'review', name: 'check', description: 'Review changes' },
-    ];
-    const session = legacySession({ listExtensionCommands: vi.fn(async () => commands) });
-
-    const result = await createLegacyExtensionCommandPort(session).list();
-
-    expect(result).toEqual([
-      { extensionId: 'review', name: 'check', description: 'Review changes' },
-    ]);
-  });
-
-  it('reloads the legacy runtime with its existing session semantics', async () => {
-    const reloadSession = vi.fn(async () => ({}));
-    const session = legacySession({ reloadSession });
-
-    await createLegacyExtensionCommandPort(session).reload();
-
-    expect(reloadSession).toHaveBeenCalledWith({
-      forcePluginSessionStartReminder: true,
-    });
-  });
-
-  it('returns legacy prompt activations for the TUI prompt pipeline', async () => {
-    const activateExtensionCommand = vi.fn(async () => ({ prompt: 'Review src/main.ts' }));
-    const session = legacySession({ activateExtensionCommand });
-
-    const result = await createLegacyExtensionCommandPort(session).activate(
-      'review:check',
-      'src/main.ts',
-    );
-
-    expect(result).toEqual({ prompt: 'Review src/main.ts' });
   });
 
   it('lists Klient extension commands from the session facade', async () => {
@@ -121,28 +84,6 @@ describe('extension command runtime port (adapter contract)', () => {
     );
   });
 });
-
-function legacySession(
-  overrides: Partial<{
-    listExtensionCommands: () => Promise<
-      readonly { extensionId: string; name: string; description: string }[]
-    >;
-    reloadSession: (options: {
-      forcePluginSessionStartReminder: boolean;
-    }) => Promise<unknown>;
-    activateExtensionCommand: (
-      name: string,
-      args?: string,
-    ) => Promise<{ prompt?: string } | undefined>;
-  }> = {},
-) {
-  return {
-    listExtensionCommands: vi.fn(async () => []),
-    reloadSession: vi.fn(async () => ({})),
-    activateExtensionCommand: vi.fn(async () => undefined),
-    ...overrides,
-  };
-}
 
 function klientSession(
   overrides: Partial<{

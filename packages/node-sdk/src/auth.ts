@@ -4,8 +4,7 @@ import {
   readConfigFileForUpdate,
   writeConfigFile,
   type KimiConfig,
-  type OAuthRef,
-} from '@moonshot-ai/agent-core';
+} from '#/sdk-config';
 import {
   applyManagedKimiCodeConfig,
   applyManagedKimiCodeLogoutConfig,
@@ -22,6 +21,7 @@ import {
   type KimiHostIdentity,
   type KimiOAuthLoginOptions,
   type ManagedKimiConfigShape,
+  type ManagedKimiOAuthRef,
   type OAuthRefreshOutcome,
 } from '@moonshot-ai/kimi-code-oauth';
 
@@ -249,7 +249,7 @@ export class KimiAuthFacade {
 
   async getCachedAccessToken(
     providerName?: string,
-    oauthRef?: OAuthRef | undefined,
+    oauthRef?: ManagedKimiOAuthRef | undefined,
   ): Promise<string | undefined> {
     return this.toolkit.getCachedAccessToken(
       providerName,
@@ -259,7 +259,7 @@ export class KimiAuthFacade {
 
   readonly resolveOAuthTokenProvider = (
     providerName: string,
-    oauthRef?: OAuthRef | undefined,
+    oauthRef?: ManagedKimiOAuthRef | undefined,
   ): BearerTokenProvider => {
     const provider = this.toolkit.tokenProvider(
       providerName,
@@ -279,7 +279,7 @@ export class KimiAuthFacade {
   };
 
   private resolveManagedAuth(providerName?: string | undefined): {
-    readonly oauthRef?: OAuthRef | undefined;
+    readonly oauthRef?: ManagedKimiOAuthRef | undefined;
     readonly baseUrl?: string | undefined;
   } {
     const name = providerName ?? KIMI_CODE_PROVIDER_NAME;
@@ -287,15 +287,15 @@ export class KimiAuthFacade {
     // instead of failing the session when an unrelated section is broken.
     // Write paths (the toolkit's configAdapter.read) stay strict.
     const config = loadRuntimeConfigSafe(this.options.configPath).config;
-    const provider = config.providers[name];
+    const provider = (config.providers ?? {})[name];
     return {
-      oauthRef: provider?.oauth,
-      baseUrl: provider?.baseUrl,
+      oauthRef: provider?.oauth as ManagedKimiOAuthRef | undefined,
+      baseUrl: provider?.baseUrl as string | undefined,
     };
   }
 
   private resolveRuntimeManagedAuth(providerName?: string | undefined): {
-    readonly oauthRef: OAuthRef;
+    readonly oauthRef: ManagedKimiOAuthRef;
     readonly baseUrl?: string | undefined;
   } {
     const auth = this.resolveManagedAuth(providerName);
@@ -307,8 +307,8 @@ export class KimiAuthFacade {
 
   private runtimeOAuthRef(
     providerName: string | undefined,
-    oauthRef?: OAuthRef | undefined,
-  ): OAuthRef | undefined {
+    oauthRef?: ManagedKimiOAuthRef | undefined,
+  ): ManagedKimiOAuthRef | undefined {
     if ((providerName ?? KIMI_CODE_PROVIDER_NAME) !== KIMI_CODE_PROVIDER_NAME) return oauthRef;
     const auth = this.resolveManagedAuth(providerName);
     return resolveKimiCodeRuntimeAuth({

@@ -1,5 +1,4 @@
 import type { Component, Focusable } from '@moonshot-ai/pi-tui';
-import type { KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
 
 import type { ColorToken, ThemeName } from '#/tui/theme';
 
@@ -104,8 +103,6 @@ export { handleWebCommand } from './web';
 
 export interface SlashCommandHost {
   state: TUIState;
-  session: Session | undefined;
-  readonly harness: KimiHarness | undefined;
   readonly runtime: TUIRuntime;
   cancelInFlight: (() => void) | undefined;
   deferUserMessages: boolean;
@@ -123,16 +120,12 @@ export interface SlashCommandHost {
   refreshSlashCommandAutocomplete(): void;
 
   // Session
-  requireSession(): Session;
   requireSessionRuntime(): TUISessionRuntime;
-  switchToSession(session: Session, message: string): Promise<void>;
   switchToSessionIdentity(identity: SessionIdentity, message: string): Promise<void>;
   reloadCurrentSessionView(message: string): Promise<void>;
   beginSessionRequest(): void;
   failSessionRequest(message: string): void;
   sendQueuedMessage(item: QueuedMessage): void;
-  /** Compatibility for the still-legacy `/init` flow, which already owns a raw Session. */
-  sendQueuedMessage(session: Session, item: QueuedMessage): void;
   requestQueuedGoalPromotion?(): void;
 
   // UI

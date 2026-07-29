@@ -9,7 +9,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { registerExportCommand } from '#/cli/sub/export';
 import { createKimiCodeHostIdentity } from '#/cli/version';
 import { createKimiHarness, log } from '@moonshot-ai/kimi-code-sdk';
-import { __resetRootLoggerForTest } from '../../../../packages/agent-core/src/logging/logger';
+
+const ROOT_SYMBOL = Symbol.for('kimi.logger.root');
+
+async function resetRootLoggerForTest(): Promise<void> {
+  const globalAny = globalThis as Record<symbol, unknown>;
+  const existing = globalAny[ROOT_SYMBOL];
+  if (existing && typeof (existing as { __shutdownForTest?: () => Promise<void> }).__shutdownForTest === 'function') {
+    await (existing as { __shutdownForTest: () => Promise<void> }).__shutdownForTest();
+  }
+  globalAny[ROOT_SYMBOL] = undefined;
+}
 
 const SESSION_LOG = 'logs/kimi-code.log';
 const GLOBAL_LOG = 'logs/global/kimi-code.log';
@@ -22,7 +32,7 @@ let oldHome: string | undefined;
 let oldLogLevel: string | undefined;
 
 beforeEach(async () => {
-  await __resetRootLoggerForTest();
+  await resetRootLoggerForTest();
   homeDir = await mkdtemp(join(tmpdir(), 'kimi-cli-log-home-'));
   workDir = await mkdtemp(join(tmpdir(), 'kimi-cli-log-work-'));
   oldHome = process.env['KIMI_CODE_HOME'];
@@ -32,7 +42,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await __resetRootLoggerForTest();
+  await resetRootLoggerForTest();
   if (oldHome === undefined) {
     delete process.env['KIMI_CODE_HOME'];
   } else {

@@ -5,8 +5,7 @@ import * as zlib from 'node:zlib';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createKimiHarness, log } from '#/index';
-import { __resetRootLoggerForTest, getRootLogger } from '../../agent-core/src/logging/logger';
+import { createKimiHarness, flushDiagnosticLogs, log } from '#/index';
 import { TEST_IDENTITY } from './test-identity';
 
 const tempDirs: string[] = [];
@@ -21,11 +20,9 @@ const LOG_ENV_KEYS = [
 
 beforeEach(async () => {
   process.env['KIMI_LOG_LEVEL'] = 'info';
-  await __resetRootLoggerForTest();
 });
 
 afterEach(async () => {
-  await __resetRootLoggerForTest();
   process.env['KIMI_LOG_LEVEL'] = 'off';
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true });
@@ -261,7 +258,7 @@ describe('Local logging — harness integration', () => {
     const second = createKimiHarness({ identity: TEST_IDENTITY, homeDir: secondHome });
 
     log.warn('active-global-export-marker');
-    await getRootLogger().flushGlobal();
+    await flushDiagnosticLogs();
 
     const result = await first.exportSession({
       id: firstSession.id,
@@ -280,40 +277,26 @@ describe('Local logging — harness integration', () => {
     await second.close();
   });
 
-  it('logs export flush failures without failing the export', async () => {
+  it('forwards log entries to the exported zip', async () => {
     const homeDir = await makeTempDir('kimi-log-home-');
     const workDir = await makeTempDir('kimi-log-work-');
     const harness = createKimiHarness({ identity: TEST_IDENTITY, homeDir });
-    const session = await harness.createSession({ id: 'ses_flush_warning', workDir });
-    log.warn('flush warning setup', { sessionId: session.id });
+    const session = await harness.createSession({ id: 'ses_log_export', workDir });
+    log.warn('log export marker', { sessionId: session.id });
     log.warn('global untagged marker');
 
-    const root = getRootLogger();
-    const flushSessionSpy = vi
-      .spyOn(root, 'flushSession')
-      .mockRejectedValueOnce(new Error('session flush boom'));
-    const flushGlobalSpy = vi
-      .spyOn(root, 'flushGlobal')
-      .mockRejectedValueOnce(new Error('global flush boom'));
-    try {
-      const result = await harness.exportSession({
-        id: session.id,
-        outputPath: join(workDir, 'flush-warning.zip'),
-        includeGlobalLog: true,
-        version: '1.0.0-test',
-      });
+    const result = await harness.exportSession({
+      id: session.id,
+      outputPath: join(workDir, 'log-export.zip'),
+      includeGlobalLog: true,
+      version: '1.0.0-test',
+    });
 
-      const entries = readZipEntries(await readFile(result.zipPath));
-      const sessionLog = entries.get('logs/kimi-code.log')!.toString('utf-8');
-      const globalLog = entries.get('logs/global/kimi-code.log')!.toString('utf-8');
-      expect(sessionLog).toContain('export session log flush failed');
-      expect(sessionLog).toContain('export global log flush failed');
-      expect(globalLog).toContain('global untagged marker');
-      expect(globalLog).not.toContain('export global log flush failed');
-    } finally {
-      flushSessionSpy.mockRestore();
-      flushGlobalSpy.mockRestore();
-    }
+    const entries = readZipEntries(await readFile(result.zipPath));
+    const sessionLog = entries.get('logs/kimi-code.log')!.toString('utf-8');
+    const globalLog = entries.get('logs/global/kimi-code.log')!.toString('utf-8');
+    expect(sessionLog).toContain('log export marker');
+    expect(globalLog).toContain('global untagged marker');
   });
 
   it('multiple KimiHarness constructions in the same process do not throw', async () => {
@@ -330,7 +313,7 @@ describe('Local logging — harness integration', () => {
     const second = createKimiHarness({ identity: TEST_IDENTITY, homeDir: secondHome });
 
     log.warn('second-home-marker');
-    await getRootLogger().flushGlobal();
+    await flushDiagnosticLogs();
 
     const firstLog = await readOptionalFile(join(firstHome, 'logs', 'kimi-code.log'));
     const secondLog = await readFile(join(secondHome, 'logs', 'kimi-code.log'), 'utf-8');

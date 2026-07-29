@@ -1,4 +1,3 @@
-import type { KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
 import type { KimiV2Runtime } from '@moonshot-ai/kimi-code-sdk/v2';
 
 import type { ExtensionCommandPort } from './extension-command-port';
@@ -20,24 +19,6 @@ import { createKlientSessionSkillsPort } from './klient-session-skills-adapter';
 import { createKlientSessionSwarmPort } from './klient-session-swarm-adapter';
 import { createKlientSessionWarningsPort } from './klient-session-warnings-adapter';
 import { createKlientSessionWorkspacePort } from './klient-session-workspace-adapter';
-import { createLegacyExtensionCommandPort } from './legacy-extension-command-adapter';
-import { createLegacySessionAgentEventsPort } from './legacy-agent-events-adapter';
-import { createLegacySessionBtwPort } from './legacy-session-btw-adapter';
-import { createLegacySessionContextControlPort } from './legacy-session-context-control-adapter';
-import { createLegacySessionContextViewPort } from './legacy-session-context-view-adapter';
-import { createLegacySessionControlPort } from './legacy-session-control-adapter';
-import { createLegacySessionScopedEventsPort } from './legacy-session-events-adapter';
-import { createLegacySessionExpertTeamPort } from './legacy-session-expert-team-adapter';
-import { createLegacySessionGoalQueuePort } from './legacy-session-goal-queue-adapter';
-import { createLegacySessionInitPort } from './legacy-session-init-adapter';
-import { createLegacySessionMcpPort } from './legacy-session-mcp-adapter';
-import { createLegacySessionPluginCommandsPort } from './legacy-session-plugin-commands-adapter';
-import { createLegacySessionPluginsPort } from './legacy-session-plugins-adapter';
-import { createLegacySessionRefreshPort } from './legacy-session-refresh-adapter';
-import { createLegacySessionSkillsPort } from './legacy-session-skills-adapter';
-import { createLegacySessionSwarmPort } from './legacy-session-swarm-adapter';
-import { createLegacySessionWarningsPort } from './legacy-session-warnings-adapter';
-import { createLegacySessionWorkspacePort } from './legacy-session-workspace-adapter';
 import type { SessionBtwPort } from './session-btw-port';
 import {
   MAIN_AGENT_ID,
@@ -84,39 +65,6 @@ export interface TUISessionRuntime {
   readonly skills: SessionSkillsPort;
   readonly warnings: SessionWarningsPort;
   readonly workspace: SessionWorkspacePort;
-}
-
-/** Bind one active legacy Session and interactive agent to neutral TUI ports. */
-export function createLegacyTUISessionRuntime(
-  harness: KimiHarness,
-  session: Session,
-  agentId = MAIN_AGENT_ID,
-): TUISessionRuntime {
-  const sessionId = session.id;
-  const control = createLegacySessionControlPort(harness);
-  return {
-    sessionId,
-    agentId,
-    lifecycle: control.session(sessionId),
-    agent: control.agent(sessionId, agentId),
-    swarm: createLegacySessionSwarmPort(harness, sessionId, agentId),
-    expertTeam: createLegacySessionExpertTeamPort(session),
-    init: createLegacySessionInitPort(session),
-    btw: createLegacySessionBtwPort(session),
-    context: createLegacySessionContextControlPort(session),
-    contextView: createLegacySessionContextViewPort(harness, session, agentId),
-    sessionEvents: createLegacySessionScopedEventsPort(session),
-    agentEvents: createLegacySessionAgentEventsPort(session, agentId),
-    goalQueue: createLegacySessionGoalQueuePort(session),
-    mcp: createLegacySessionMcpPort(session),
-    pluginCommands: createLegacySessionPluginCommandsPort(session),
-    plugins: createLegacySessionPluginsPort(session),
-    refresh: createLegacySessionRefreshPort(session),
-    extensionCommands: createLegacyExtensionCommandPort(session),
-    skills: createLegacySessionSkillsPort(session),
-    warnings: createLegacySessionWarningsPort(session),
-    workspace: createLegacySessionWorkspacePort(session),
-  };
 }
 
 /** Bind one Klient session scope and interactive agent to neutral TUI ports. */

@@ -4,29 +4,49 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import type { KimiConfig } from '@moonshot-ai/agent-core';
 import { createKimiDefaultHeaders, KIMI_CODE_PLATFORM } from '@moonshot-ai/kimi-code-oauth';
 
-import { ProviderManager } from '../../agent-core/src/session/provider-manager';
+import type { KimiConfig } from '../src/sdk-config';
 import { SDKRpcClient } from '#/index';
 import { TEST_IDENTITY } from './test-identity';
 
 const tempDirs: string[] = [];
 
+// Inline replacement for agent-core's ProviderManager.resolveProviderConfig.
 function resolveRuntimeProvider(options: {
   readonly config: KimiConfig;
   readonly model?: string;
   readonly kimiRequestHeaders?: Record<string, string>;
 }) {
-  const manager = new ProviderManager({
-    config: options.config,
-    kimiRequestHeaders: options.kimiRequestHeaders,
-  });
   const model = options.model ?? options.config.defaultModel;
   if (model === undefined) {
     throw new Error('No model selected');
   }
-  return manager.resolveProviderConfig(model);
+  const modelAlias = options.config.models?.[model];
+  if (modelAlias === undefined) {
+    throw new Error(`Model alias "${model}" not found in config`);
+  }
+  const providerName = modelAlias.provider;
+  const providerConfig = options.config.providers?.[providerName];
+  if (providerConfig === undefined) {
+    throw new Error(`Provider "${providerName}" not found in config`);
+  }
+  const capabilities = modelAlias.capabilities;
+  return {
+    providerName,
+    model,
+    provider: {
+      ...providerConfig,
+      model,
+      defaultHeaders: {
+        ...(options.kimiRequestHeaders ?? {}),
+        ...(providerConfig['customHeaders'] as Record<string, string> | undefined ?? {}),
+      },
+      modelCapabilities: {
+        tool_use: capabilities?.includes('tool_use') ?? false,
+      },
+    },
+  };
 }
 
 async function makeTempDir(): Promise<string> {

@@ -1,164 +1,15 @@
 /**
  * Scenario: process-level model catalogs cross the TUI runtime boundary.
- * Responsibilities: both adapters project the same read-only snapshot,
+ * Responsibilities: the Klient facade projects the same read-only snapshot,
  * reload precedes Klient reads, and missing config yields an empty catalog.
- * The legacy harness and Klient facade are the only stubbed boundaries.
  * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/runtime/runtime-model-catalog-port.test.ts
  */
 
 import { describe, expect, it, vi } from 'vitest';
 
 import { createKlientRuntimeModelCatalogPort } from '#/tui/runtime/klient-runtime-model-catalog-adapter';
-import { createLegacyRuntimeModelCatalogPort } from '#/tui/runtime/legacy-runtime-model-catalog-adapter';
 
 describe('runtime model catalog adapters', () => {
-  it('preserves legacy model display config when the harness catalog loads', async () => {
-    const getConfig = vi.fn(async () => ({
-      models: {
-        'anthropic/opus': {
-          provider: 'anthropic',
-          model: 'claude-opus',
-          maxContextSize: 200_000,
-          maxInputSize: 180_000,
-          maxOutputSize: 20_000,
-          capabilities: ['thinking', 'tool_use'],
-          displayName: 'Claude Opus',
-          reasoningKey: 'reasoning_effort',
-          protocol: 'anthropic' as const,
-          adaptiveThinking: true,
-          supportEfforts: ['low', 'high'],
-          defaultEffort: 'high',
-          offEffort: 'none',
-          betaApi: true,
-          baseUrl: 'https://api.example.test',
-          overrides: {
-            displayName: 'Opus (custom)',
-            maxContextSize: 190_000,
-            capabilities: ['thinking'],
-            supportEfforts: ['high'],
-          },
-        },
-      },
-      providers: {
-        anthropic: {
-          type: 'anthropic',
-          apiKey: 'YOUR_API_KEY',
-          baseUrl: 'https://api.example.test',
-          defaultModel: 'anthropic/opus',
-        },
-        local: {
-          type: 'openai',
-          baseUrl: 'http://127.0.0.1:8080',
-        },
-      },
-      defaultModel: 'anthropic/opus',
-      thinking: { enabled: true, effort: 'high', keep: 'all' },
-    }));
-    const port = createLegacyRuntimeModelCatalogPort({ getConfig });
-
-    await expect(port.load({ reload: true })).resolves.toEqual({
-      models: {
-        'anthropic/opus': {
-          provider: 'anthropic',
-          model: 'claude-opus',
-          maxContextSize: 200_000,
-          maxInputSize: 180_000,
-          maxOutputSize: 20_000,
-          capabilities: ['thinking', 'tool_use'],
-          displayName: 'Claude Opus',
-          reasoningKey: 'reasoning_effort',
-          protocol: 'anthropic',
-          adaptiveThinking: true,
-          supportEfforts: ['low', 'high'],
-          defaultEffort: 'high',
-          offEffort: 'none',
-          betaApi: true,
-          baseUrl: 'https://api.example.test',
-          overrides: {
-            displayName: 'Opus (custom)',
-            maxContextSize: 190_000,
-            capabilities: ['thinking'],
-            supportEfforts: ['high'],
-          },
-        },
-      },
-      providers: {
-        anthropic: {
-          type: 'anthropic',
-          baseUrl: 'https://api.example.test',
-          defaultModel: 'anthropic/opus',
-          status: 'connected',
-          hasApiKey: true,
-          env: undefined,
-          customHeaders: undefined,
-          source: undefined,
-        },
-        local: {
-          type: 'openai',
-          baseUrl: 'http://127.0.0.1:8080',
-          defaultModel: undefined,
-          status: 'unconfigured',
-          hasApiKey: false,
-          env: undefined,
-          customHeaders: undefined,
-          source: undefined,
-        },
-      },
-      defaultModel: 'anthropic/opus',
-      thinking: { enabled: true, effort: 'high' },
-    });
-    expect(getConfig).toHaveBeenCalledWith({ reload: true });
-  });
-
-  it('returns an isolated legacy provider config view without exposing its api key', async () => {
-    const env = { EXAMPLE_REGION: 'test' };
-    const customHeaders = { 'X-Example': 'header-value' };
-    const nested = { retries: 2 };
-    const source = {
-      kind: 'apiJson',
-      url: 'https://catalog.example.test/api.json',
-      apiKey: 'YOUR_REGISTRY_API_KEY',
-      options: ['stable', nested],
-    };
-    const port = createLegacyRuntimeModelCatalogPort({
-      getConfig: vi.fn(async () => ({
-        providers: {
-          example: {
-            type: 'openai',
-            apiKey: 'YOUR_PROVIDER_API_KEY',
-            baseUrl: 'https://api.example.test',
-            defaultModel: 'example/model',
-            env,
-            customHeaders,
-            source,
-          },
-        },
-      })),
-    });
-
-    const snapshot = await port.load();
-    env.EXAMPLE_REGION = 'changed';
-    customHeaders['X-Example'] = 'changed';
-    nested.retries = 9;
-
-    expect(snapshot.providers['example']).toEqual({
-      type: 'openai',
-      baseUrl: 'https://api.example.test',
-      defaultModel: 'example/model',
-      status: 'connected',
-      hasApiKey: true,
-      env: { EXAMPLE_REGION: 'test' },
-      customHeaders: { 'X-Example': 'header-value' },
-      source: {
-        kind: 'apiJson',
-        url: 'https://catalog.example.test/api.json',
-        apiKey: 'YOUR_REGISTRY_API_KEY',
-        options: ['stable', { retries: 2 }],
-      },
-    });
-    expect(snapshot.providers['example']).not.toHaveProperty('apiKey');
-  });
-
   it('projects Klient snake-case catalogs when the snapshot loads', async () => {
     const port = createKlientRuntimeModelCatalogPort(
       klientFacade({
@@ -306,25 +157,14 @@ describe('runtime model catalog adapters', () => {
   });
 
   it('returns the neutral empty snapshot when no runtime catalog is configured', async () => {
-    const legacy = createLegacyRuntimeModelCatalogPort({
-      getConfig: vi.fn(async () => ({ providers: {} })),
-    });
-    const klient = createKlientRuntimeModelCatalogPort(klientFacade());
+    const port = createKlientRuntimeModelCatalogPort(klientFacade());
 
-    await expect(Promise.all([legacy.load(), klient.load()])).resolves.toEqual([
-      {
-        models: {},
-        providers: {},
-        defaultModel: undefined,
-        thinking: undefined,
-      },
-      {
-        models: {},
-        providers: {},
-        defaultModel: undefined,
-        thinking: undefined,
-      },
-    ]);
+    await expect(port.load()).resolves.toEqual({
+      models: {},
+      providers: {},
+      defaultModel: undefined,
+      thinking: undefined,
+    });
   });
 });
 

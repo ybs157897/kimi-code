@@ -1,11 +1,7 @@
-import {
-  createRPC,
-  ErrorCodes,
-  KimiError,
-  parseConfigString,
-  resolveConfigPath,
-  type RPCMethods,
-} from '@moonshot-ai/agent-core';
+import { ErrorCodes, KimiError } from '#/sdk-errors';
+import { createRPC, type RPCMethods, type PromisableMethods } from '#/sdk-rpc';
+import { parseConfigString } from '#/sdk-config';
+import { resolveConfigPath } from '#/sdk-paths';
 import { z } from 'zod';
 
 export type KimiConfigValidationPathSegment = string | number;
@@ -60,7 +56,7 @@ export class KimiConfigRpcClient implements KimiConfigRpc {
 
   constructor() {
     const [coreRpc, clientRpc] = createRPC<KimiConfigCoreRpc, KimiConfigClientRpc>();
-    void coreRpc(new KimiConfigCoreRpcImpl());
+    void coreRpc(new KimiConfigCoreRpcImpl() as unknown as PromisableMethods<KimiConfigCoreRpc>);
     this.ready = clientRpc({});
   }
 

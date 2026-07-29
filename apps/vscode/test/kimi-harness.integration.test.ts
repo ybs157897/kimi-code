@@ -1029,7 +1029,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
     await expect(runSlash(runtime, "/import notes.md")).resolves.toBe(true);
 
-    await expect(runtime.session.getContext()).resolves.toMatchObject({
+    await expect((runtime.session as any).getContext()).resolves.toMatchObject({
       history: [
         {
           role: "user",
@@ -1053,13 +1053,13 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
   it("clears imported context without replacing the current session", async () => {
     const rig = await createRuntimeRig();
     const runtime = await openRuntimeSession(rig);
-    await runtime.session.importContext("Prior context.", "file 'prior.md'");
+    await (runtime.session as any).importContext("Prior context.", "file 'prior.md'");
     const sessionId = runtime.id;
 
     await expect(runSlash(runtime, "/clear")).resolves.toBe(true);
 
     expect(runtime.id).toBe(sessionId);
-    await expect(runtime.session.getContext()).resolves.toEqual({ history: [], tokenCount: 0 });
+    await expect((runtime.session as any).getContext()).resolves.toEqual({ history: [], tokenCount: 0 });
   });
 
   it("applies the composer-submitted model before the turn starts", async () => {
@@ -1101,7 +1101,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     await rig.runtime.detachView("view-1");
     const resumed = await openRuntimeSession(rig, sessionId);
 
-    expect(resumed.session.summary?.additionalDirs).toContain(additionalDir);
+    expect((resumed.session as any).summary?.additionalDirs).toContain(additionalDir);
   });
 
   it("rejects an invalid plan subcommand without leaving the runtime busy", async () => {
@@ -1154,7 +1154,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     const rig = await createRuntimeRig();
     const blocked = routeBlockedPrompt(rig.provider);
     const runtime = await openRuntimeSession(rig);
-    await runtime.session.importContext("Enough prior context to compact.", "file 'prior.md'");
+    await (runtime.session as any).importContext("Enough prior context to compact.", "file 'prior.md'");
     const command = runSlash(runtime, "/compact keep decisions");
     await blocked.started;
 
@@ -1169,7 +1169,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     const rig = await createRuntimeRig();
     routeSuccessfulPrompt(rig.provider);
     const runtime = await openRuntimeSession(rig);
-    await runtime.session.importContext("Enough prior context to compact.", "file 'prior.md'");
+    await (runtime.session as any).importContext("Enough prior context to compact.", "file 'prior.md'");
 
     const command = runSlash(runtime, "/compact keep decisions");
     expect(runtime.isBusy).toBe(true);
@@ -1219,7 +1219,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
   it("exports current context as Markdown under the workspace", async () => {
     const rig = await createRuntimeRig();
     const runtime = await openRuntimeSession(rig);
-    await runtime.session.importContext("Prior context.", "file 'prior.md'");
+    await (runtime.session as any).importContext("Prior context.", "file 'prior.md'");
 
     await expect(runSlash(runtime, "/export exported.md")).resolves.toBe(true);
 
@@ -1251,7 +1251,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     await expect(runSlash(runtime, "/import archive.zip")).rejects.toThrow(
       "/import only supports text-based files",
     );
-    await expect(runtime.session.getContext()).resolves.toEqual({ history: [], tokenCount: 0 });
+    await expect((runtime.session as any).getContext()).resolves.toEqual({ history: [], tokenCount: 0 });
   });
 
   it("rejects invalid UTF-8 import bytes with a readable error", async () => {
@@ -1278,7 +1278,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     const rig = await createRuntimeRig();
     await writeFile(join(rig.workDir, "not-a-directory"), "blocking file", "utf8");
     const runtime = await openRuntimeSession(rig);
-    await runtime.session.importContext("Prior context.", "file 'prior.md'");
+    await (runtime.session as any).importContext("Prior context.", "file 'prior.md'");
 
     await expect(runSlash(runtime, "/export not-a-directory/export.md")).rejects.toThrow();
 

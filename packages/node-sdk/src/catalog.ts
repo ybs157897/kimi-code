@@ -1,4 +1,4 @@
-import type { KimiConfig, ModelAlias } from '@moonshot-ai/agent-core';
+import type { KimiConfig, ModelAlias } from '#/sdk-config';
 import {
   catalogBaseUrl,
   catalogProviderModels,
@@ -131,6 +131,7 @@ export function applyCatalogProvider(
   config: KimiConfig,
   options: ApplyCatalogProviderOptions,
 ): { defaultModel: string } {
+  config.providers = config.providers ?? {};
   config.providers[options.providerId] = {
     type: options.wire,
     baseUrl: options.baseUrl,

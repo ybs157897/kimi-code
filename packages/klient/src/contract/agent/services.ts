@@ -318,6 +318,11 @@ const toolInfoSchema = z.object({
   info: z.record(z.string(), z.unknown()).optional(),
 });
 
+const todoItemSchema = z.object({
+  title: z.string(),
+  status: z.enum(['pending', 'in_progress', 'done']),
+});
+
 export const resumedAgentStateSchema = z.object({
   type: z.enum(['main', 'sub']),
   config: agentConfigDataSchema,
@@ -329,6 +334,7 @@ export const resumedAgentStateSchema = z.object({
   usage: usageStatusSchema,
   tools: z.array(toolInfoSchema),
   tasks: z.array(agentTaskInfoSchema),
+  todos: z.array(todoItemSchema),
 });
 
 export const agentReplayViewContract = {

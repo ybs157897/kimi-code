@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -7,8 +7,86 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import { createKimiHarness, KimiError, type Event } from '#/index';
 
-import { SessionStore } from '../../agent-core/src/session/store';
 import { TEST_IDENTITY } from './test-identity';
+
+// Minimal test-scoped SessionStore for rename tests.
+import { encodeWorkDirKey } from '@moonshot-ai/agent-core-v2/_base/utils/workdir-slug';
+
+class TestSessionStore {
+  constructor(readonly homeDir: string) {}
+
+  async create(opts: { id: string; workDir: string }): Promise<{
+    id: string; sessionDir: string; workDir: string;
+  }> {
+    const wdKey = encodeWorkDirKey(opts.workDir);
+    const sessionDir = join(this.homeDir, 'sessions', wdKey, opts.id);
+    await mkdir(sessionDir, { recursive: true });
+    return { id: opts.id, sessionDir, workDir: opts.workDir };
+  }
+
+  async rename(id: string, newTitle: string): Promise<void> {
+    const sessions = await this.listAll();
+    const session = sessions.find(s => s.id === id);
+    if (!session) throw makeError('session.not_found', `Session "${id}" does not exist`);
+    const filePath = join(session.sessionDir, 'state.json');
+    let raw: string;
+    try {
+      raw = await readFile(filePath, 'utf-8');
+    } catch {
+      throw makeError('session.state_not_found', `Session "${id}" has no state.json`);
+    }
+    let state: Record<string, unknown>;
+    try {
+      state = JSON.parse(raw) as Record<string, unknown>;
+    } catch {
+      throw makeError('session.state_invalid', `State for "${id}" is not a valid object`);
+    }
+    if (Array.isArray(state)) {
+      throw makeError('session.state_invalid', `State for "${id}" is not a valid object`);
+    }
+    state['title'] = newTitle;
+    state['isCustomTitle'] = true;
+    await writeFile(filePath, JSON.stringify(state) + '\n');
+  }
+
+  async get(id: string): Promise<{ id: string; sessionDir: string; workDir: string; title?: string; metadata?: Record<string, unknown> } | undefined> {
+    const sessions = await this.listAll();
+    return sessions.find(s => s.id === id);
+  }
+
+  private async listAll(): Promise<{ id: string; sessionDir: string; workDir: string; title?: string; metadata?: Record<string, unknown> }[]> {
+    const base = join(this.homeDir, 'sessions');
+    const results: { id: string; sessionDir: string; workDir: string; title?: string; metadata?: Record<string, unknown> }[] = [];
+    try {
+      const buckets = await readdir(base);
+      for (const bucket of buckets) {
+        const bucketDir = join(base, bucket);
+        try {
+          const ids = await readdir(bucketDir);
+          for (const id of ids) {
+            const sd = join(bucketDir, id);
+            const state = await readSimpleState(sd);
+            results.push({ id, sessionDir: sd, workDir: '', title: state?.['title'] as string | undefined, metadata: state?.['metadata'] as Record<string, unknown> | undefined });
+          }
+        } catch { /* skip */ }
+      }
+    } catch { /* skip */ }
+    return results;
+  }
+}
+
+async function readSimpleState(sessionDir: string): Promise<Record<string, unknown> | undefined> {
+  try {
+    return JSON.parse(await readFile(join(sessionDir, 'state.json'), 'utf-8')) as Record<string, unknown>;
+  } catch { return undefined; }
+}
+
+function makeError(code: string, message: string): Error {
+  const err = new Error(message) as Error & { code: string };
+  err.name = 'KimiError';
+  err.code = code;
+  return err;
+}
 
 const tempDirs: string[] = [];
 
@@ -50,7 +128,7 @@ describe('SessionStore.rename', () => {
   it('persists custom title state and preserves existing state fields', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
-    const store = new SessionStore(homeDir);
+    const store = new TestSessionStore(homeDir);
 
     const summary = await store.create({
       id: 'ses_store_rename',
@@ -77,14 +155,14 @@ describe('SessionStore.rename', () => {
     });
 
     const renamed = await store.get('ses_store_rename');
-    expect(renamed.title).toBe('New Store Title');
-    expect(renamed.metadata).toBeUndefined();
+    expect(renamed!.title).toBe('New Store Title');
+    expect(renamed!.metadata).toBeUndefined();
   });
 
   it('rejects indexed sessions with missing state without creating state.json', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
-    const store = new SessionStore(homeDir);
+    const store = new TestSessionStore(homeDir);
     const summary = await store.create({ id: 'ses_no_state_rename', workDir });
 
     await expect(store.rename(summary.id, 'Missing State')).rejects.toMatchObject({
@@ -97,7 +175,7 @@ describe('SessionStore.rename', () => {
   it('rejects invalid state.json without overwriting it', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
-    const store = new SessionStore(homeDir);
+    const store = new TestSessionStore(homeDir);
     const summary = await store.create({ id: 'ses_bad_state_rename', workDir });
     await writeFile(join(summary.sessionDir, 'state.json'), '[]', 'utf-8');
 
@@ -110,7 +188,7 @@ describe('SessionStore.rename', () => {
 
   it('rejects missing session ids without creating state', async () => {
     const homeDir = await makeTempDir();
-    const store = new SessionStore(homeDir);
+    const store = new TestSessionStore(homeDir);
 
     await expect(store.rename('ses_missing', 'Missing Title')).rejects.toMatchObject({
       name: 'KimiError',

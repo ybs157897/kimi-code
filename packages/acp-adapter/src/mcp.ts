@@ -20,14 +20,28 @@
  * single ACP request collapse with last-write-wins — same behaviour as
  * the kernel's own `loadMcpServers` user/project merge.
  *
- * @see packages/agent-core/src/config/schema.ts (McpServerConfigSchema)
- * @see packages/agent-core/src/mcp/session-config.ts (mergeCallerMcpServers)
+ * @see packages/agent-core-v2/src/agent/mcp/config-schema.ts (McpServerConfigSchema)
+ * @see packages/agent-core-v2/src/session/mcp/session-config.ts (mergeCallerMcpServers)
  * @see node_modules/@agentclientprotocol/sdk/dist/schema/types.gen.d.ts (McpServer)
  */
 
 import type { McpServer, McpServerStdio } from '@agentclientprotocol/sdk';
-import type { McpServerConfig } from '@moonshot-ai/agent-core';
 import { log } from '@moonshot-ai/kimi-code-sdk';
+
+/**
+ * Minimal `McpServerConfig` type — mirrors the subset of fields the ACP
+ * adapter actually projects when converting ACP MCP server entries into
+ * the kernel-native config map. The canonical type and schema live in
+ * `@moonshot-ai/agent-core-v2`'s `McpServerConfigSchema`.
+ */
+interface McpServerConfig {
+  readonly transport: string;
+  readonly url?: string;
+  readonly headers?: Record<string, string>;
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly env?: Record<string, string>;
+}
 
 /**
  * Convert an ACP `McpServer[]` into the kernel-native

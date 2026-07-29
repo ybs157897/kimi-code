@@ -21,10 +21,6 @@ export default defineConfig({
   alias: {
     '@moonshot-ai/kimi-code-sdk': resolve(root, '../../packages/node-sdk/src/index.ts'),
     '@moonshot-ai/migration-legacy': resolve(root, '../../packages/migration-legacy/src/index.ts'),
-    '@moonshot-ai/agent-core': resolve(root, '../../packages/agent-core/src/index.ts'),
-    '@moonshot-ai/kaos': resolve(root, '../../packages/kaos/src/index.ts'),
-    '@moonshot-ai/kimi-code-oauth': resolve(root, '../../packages/oauth/src/index.ts'),
-    '@moonshot-ai/kosong': resolve(root, '../../packages/kosong/src/index.ts'),
   },
   define: {
     __EXTENSION_VERSION__: JSON.stringify(pkg.version),
@@ -39,7 +35,7 @@ export default defineConfig({
   },
   deps: {
     onlyBundle: false,
-    alwaysBundle: [/^@moonshot-ai\//, 'zod'],
+    alwaysBundle: [/^@moonshot-ai\/(kimi-code-sdk|migration-legacy)$/, 'zod'],
     neverBundle: ['vscode'],
   },
   outputOptions: {

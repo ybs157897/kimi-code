@@ -214,6 +214,7 @@ const REPLAY_SNAPSHOT = {
   usage: {},
   tools: [],
   tasks: [],
+  todos: [],
 };
 
 const SKILL = {

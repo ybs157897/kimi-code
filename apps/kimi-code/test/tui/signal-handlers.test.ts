@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { KimiTUI, type KimiTUIStartupInput, type TUIState } from '#/tui/kimi-tui';
+import type { TUIRuntime } from '#/tui/runtime/tui-runtime';
 
 interface SignalDriver {
   state: TUIState;
@@ -8,6 +9,32 @@ interface SignalDriver {
   unregisterSignalHandlers(): void;
   emergencyTerminalExit(): never;
   stop(): Promise<void>;
+}
+
+function makeMockRuntime(): TUIRuntime {
+  return {
+    environment: {
+      homeDir: '/tmp/test',
+      getExperimentalFeatures: vi.fn(async () => []),
+      getConfigDiagnostics: vi.fn(async () => []),
+      close: vi.fn(),
+    },
+    telemetry: { track: vi.fn(), setContext: vi.fn() },
+    sessionControl: {
+      sessions: {
+        list: vi.fn(async () => []),
+        create: vi.fn(async () => ({ id: 'test', workDir: '/tmp/proj-signals', createdAt: Date.now(), updatedAt: Date.now(), archived: false })),
+        resume: vi.fn(),
+      },
+    },
+    auth: { status: vi.fn(), login: vi.fn(), logout: vi.fn(), getManagedUsage: vi.fn(), ensureReady: vi.fn() },
+    models: { load: vi.fn(async () => ({ defaultModel: '', models: {}, providers: {} })) },
+    modelConfig: { apply: vi.fn(), removeProvider: vi.fn() },
+    featureFlags: { list: vi.fn(async () => []), apply: vi.fn() },
+    providerRefresh: { refresh: vi.fn() },
+    sessionExport: { export: vi.fn() },
+    bindSession: vi.fn(() => ({}) as never),
+  };
 }
 
 function makeStartupInput(): KimiTUIStartupInput {
@@ -34,29 +61,12 @@ function makeStartupInput(): KimiTUIStartupInput {
     },
     version: '0.0.0-test',
     workDir: '/tmp/proj-signals',
-  };
-}
-
-function makeHarness() {
-  return {
-    getConfig: vi.fn(async () => ({})),
-    createSession: vi.fn(),
-    resumeSession: vi.fn(),
-    listSessions: vi.fn(async () => []),
-    close: vi.fn(async () => {}),
-    track: vi.fn(),
-    setTelemetryContext: vi.fn(),
-    auth: {
-      status: vi.fn(async () => ({ providers: [] })),
-      login: vi.fn(),
-      logout: vi.fn(),
-      getManagedUsage: vi.fn(),
-    },
+    runtime: makeMockRuntime(),
   };
 }
 
 function makeDriver(): { driver: SignalDriver; tui: KimiTUI } {
-  const tui = new KimiTUI(makeHarness() as never, makeStartupInput());
+  const tui = new KimiTUI(makeStartupInput());
   const driver = tui as unknown as SignalDriver;
   return { driver, tui };
 }
@@ -216,9 +226,6 @@ describe('KimiTUI signal handlers', () => {
   it('SIGTERM handler routes through stop(143) and forces exit 143 on success', async () => {
     Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
     const { driver, tui } = makeDriver();
-    // `stop()` resolving without exiting models the defensive fallback path
-    // where `onExit` was not wired up. The handler must still exit 143 so
-    // supervisors see signal termination.
     const stopSpy = vi.spyOn(tui, 'stop').mockResolvedValue(undefined);
     const captured = captureHandlers(driver);
 
@@ -290,7 +297,6 @@ describe('KimiTUI signal handlers', () => {
 
   it('stop() unregisters previously-installed signal handlers', async () => {
     const { driver, tui } = makeDriver();
-    // Suppress real stop work for this test — focus on the cleanup contract.
     vi.spyOn(tui, 'stop').mockImplementation(async () => {
       (tui as unknown as SignalDriver).unregisterSignalHandlers();
     });
@@ -325,14 +331,9 @@ describe('KimiTUI signal handlers', () => {
 
   it('start() unregisters signal handlers when initialization throws', async () => {
     const { tui } = makeDriver();
-    // Force the very first awaited call inside start() to reject. We don't
-    // care which method blows up — only that the failure surfaces and any
-    // listeners we installed up front get cleaned up before the throw escapes.
     vi.spyOn(tui as unknown as { initMainTui(): Promise<boolean> }, 'initMainTui').mockRejectedValue(
       new Error('init boom'),
     );
-    // Stub state.ui.stop so the failure-path cleanup does not touch the real
-    // event loop.
     vi.spyOn(
       (tui as unknown as { state: { ui: { stop(): void } } }).state.ui,
       'stop',

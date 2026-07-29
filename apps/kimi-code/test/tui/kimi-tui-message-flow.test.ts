@@ -49,6 +49,7 @@ import {
   PluginsPanelComponent,
 } from '#/tui/components/dialogs/plugins-selector';
 import { KimiTUI, type KimiTUIStartupInput, type TUIState } from '#/tui/kimi-tui';
+import type { TUIRuntime } from '#/tui/runtime/tui-runtime';
 import type { StreamingUIController } from '#/tui/controllers/streaming-ui';
 import { handleFeedbackCommand } from '#/tui/commands/info';
 import {
@@ -90,7 +91,6 @@ import type { RuntimeAuthPort } from '#/tui/runtime/runtime-auth-port';
 import type { RuntimeModelCatalogPort } from '#/tui/runtime/runtime-model-catalog-port';
 import type { RuntimeModelConfigPort } from '#/tui/runtime/runtime-model-config-port';
 import type { RuntimeProviderRefreshPort } from '#/tui/runtime/runtime-provider-refresh-port';
-import type { TUIRuntime } from '#/tui/runtime/tui-runtime';
 import type { TUISessionRuntime } from '#/tui/runtime/tui-session-runtime';
 import { packageCodebase, scanCodebase } from '../../src/feedback/codebase';
 import { uploadArchive } from '../../src/feedback/upload';
@@ -171,7 +171,7 @@ interface MessageDriver {
   refreshSkillCommands(): Promise<void>;
   refreshSlashCommandAutocomplete(): void;
   sendSkillActivation(skillName: string, skillArgs: string): void;
-  switchToSession(session: unknown, statusMessage: string): Promise<void>;
+  switchToSessionIdentity(identity: SessionIdentity, statusMessage: string): Promise<void>;
   persistInputHistory(text: string): Promise<void>;
   sendQueuedMessage(item: QueuedMessage): void;
   cancelRunningShellCommand(): void;
@@ -198,6 +198,32 @@ interface ModelSelectorDriver extends MessageDriver {
   ): Promise<{ alias: string; thinking: boolean } | undefined>;
 }
 
+function makeMockRuntime(): TUIRuntime {
+  return {
+    environment: {
+      homeDir: '/tmp/test',
+      getExperimentalFeatures: vi.fn(async () => []),
+      getConfigDiagnostics: vi.fn(async () => []),
+      close: vi.fn(),
+    },
+    telemetry: { track: vi.fn(), setContext: vi.fn() },
+    sessionControl: {
+      sessions: {
+        list: vi.fn(async () => []),
+        create: vi.fn(async () => ({ id: 'test', workDir: '/tmp/proj-a', createdAt: Date.now(), updatedAt: Date.now(), archived: false })),
+        resume: vi.fn(),
+      },
+    },
+    auth: { status: vi.fn(), login: vi.fn(), logout: vi.fn(), getManagedUsage: vi.fn(), ensureReady: vi.fn() },
+    models: { load: vi.fn(async () => ({ defaultModel: '', models: {}, providers: {} })) },
+    modelConfig: { apply: vi.fn(), removeProvider: vi.fn() },
+    featureFlags: { list: vi.fn(async () => []), apply: vi.fn() },
+    providerRefresh: { refresh: vi.fn() },
+    sessionExport: { export: vi.fn() },
+    bindSession: vi.fn(() => ({}) as never),
+  };
+}
+
 function makeStartupInput(): KimiTUIStartupInput {
   return {
     cliOptions: {
@@ -222,6 +248,7 @@ function makeStartupInput(): KimiTUIStartupInput {
     },
     version: '0.0.0-test',
     workDir: '/tmp/proj-a',
+    runtime: makeMockRuntime(),
   };
 }
 
@@ -559,19 +586,17 @@ async function makeDriver(
 ): Promise<{
   driver: MessageDriver;
   session: ReturnType<typeof makeSession>;
-  harness: ReturnType<typeof makeHarness>;
 }> {
-  const harness = makeHarness(session, harnessOverrides);
-  const driver = new KimiTUI(harness as never, {
+  const driver = new KimiTUI({
     ...makeStartupInput(),
     sessionControl,
-    runtime,
+    ...(runtime !== undefined ? { runtime } : {}),
   }) as unknown as MessageDriver;
   vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
   vi.spyOn(driver.state.terminal, 'setProgress').mockImplementation(() => {});
   driver.persistInputHistory = vi.fn(async () => {});
   await driver.init();
-  return { driver, session, harness };
+  return { driver, session };
 }
 
 function makeEventRuntime(
@@ -979,7 +1004,8 @@ afterEach(async () => {
 
 describe('KimiTUI message flow', () => {
   it('tracks editor shortcut and paste hooks', async () => {
-    const { driver, harness } = await makeDriver();
+    const { driver, session } = await makeDriver();
+    const harness = makeHarness(session);
     harness.track.mockClear();
 
     driver.state.editor.handleInput('\u001F');
@@ -996,7 +1022,8 @@ describe('KimiTUI message flow', () => {
   });
 
   it('tracks /clear as the clear alias for /new', async () => {
-    const { driver, harness } = await makeDriver(makeSession({ id: 'ses-1' }));
+    const { driver, session } = await makeDriver(makeSession({ id: 'ses-1' }));
+    const harness = makeHarness(session);
     const nextSession = makeSession({ id: 'ses-2' });
     harness.createSession.mockResolvedValueOnce(nextSession);
     harness.getSession.mockReturnValue(nextSession);
@@ -1013,7 +1040,8 @@ describe('KimiTUI message flow', () => {
 
   it('tracks theme changes from slash commands', async () => {
     process.env['KIMI_CODE_HOME'] = await makeTempHome();
-    const { driver, harness } = await makeDriver();
+    const { driver, session } = await makeDriver();
+    const harness = makeHarness(session);
     harness.track.mockClear();
 
     driver.handleUserInput('/theme light');
@@ -1038,7 +1066,8 @@ command = "vim"
 `,
       'utf-8',
     );
-    const { driver, session, harness } = await makeDriver();
+    const { driver, session } = await makeDriver();
+    const harness = makeHarness(session);
     harness.track.mockClear();
     session.reloadSession.mockClear();
 
@@ -1056,7 +1085,8 @@ command = "vim"
     const homeDir = await makeTempHome();
     process.env['KIMI_CODE_HOME'] = homeDir;
     await writeFile(join(homeDir, 'tui.toml'), 'theme = "light"\n', 'utf-8');
-    const { driver, session, harness } = await makeDriver();
+    const { driver, session } = await makeDriver();
+    const harness = makeHarness(session);
     harness.track.mockClear();
     session.reloadSession.mockClear();
     driver.handleUserInput('hello before reload');
@@ -1152,20 +1182,18 @@ command = "vim"
   });
 
   it('tracks successful feedback submissions only after the request succeeds', async () => {
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {
-        getConfig: vi.fn(async () => ({
-          models: {
-            k2: {
-              model: 'moonshot-v1',
-              maxContextSize: 100,
-              provider: 'managed:kimi-code',
-            },
+    const { driver, session } = await makeDriver(makeSession());
+    const harness = makeHarness(session, {
+      getConfig: vi.fn(async () => ({
+        models: {
+          k2: {
+            model: 'moonshot-v1',
+            maxContextSize: 100,
+            provider: 'managed:kimi-code',
           },
-        })),
-      },
-    );
+        },
+      })),
+    });
     const feedbackDriver = driver as unknown as FeedbackDriver;
     vi.mocked(promptFeedbackInput).mockImplementation(async () => ({ value: 'useful feedback' }));
     vi.mocked(promptFeedbackAttachment).mockImplementation(async () => 'none');
@@ -1189,20 +1217,18 @@ command = "vim"
   });
 
   it('submits text feedback before preparing requested attachments', async () => {
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {
-        getConfig: vi.fn(async () => ({
-          models: {
-            k2: {
-              model: 'moonshot-v1',
-              maxContextSize: 100,
-              provider: 'managed:kimi-code',
-            },
+    const { driver, session } = await makeDriver(makeSession());
+    const harness = makeHarness(session, {
+      getConfig: vi.fn(async () => ({
+        models: {
+          k2: {
+            model: 'moonshot-v1',
+            maxContextSize: 100,
+            provider: 'managed:kimi-code',
           },
-        })),
-      },
-    );
+        },
+      })),
+    });
     const feedbackDriver = driver as unknown as FeedbackDriver;
     vi.mocked(promptFeedbackInput).mockImplementation(async () => ({ value: 'useful feedback' }));
     vi.mocked(promptFeedbackAttachment).mockImplementation(async () => 'logs');
@@ -1256,20 +1282,18 @@ command = "vim"
   });
 
   it('waits for the codebase upload to finish before returning', async () => {
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {
-        getConfig: vi.fn(async () => ({
-          models: {
-            k2: {
-              model: 'moonshot-v1',
-              maxContextSize: 100,
-              provider: 'managed:kimi-code',
-            },
+    const { driver, session } = await makeDriver(makeSession());
+    const harness = makeHarness(session, {
+      getConfig: vi.fn(async () => ({
+        models: {
+          k2: {
+            model: 'moonshot-v1',
+            maxContextSize: 100,
+            provider: 'managed:kimi-code',
           },
-        })),
-      },
-    );
+        },
+      })),
+    });
     const feedbackDriver = driver as unknown as FeedbackDriver;
     vi.mocked(scanCodebase).mockReset();
     harness.exportSession.mockReset();
@@ -1344,20 +1368,18 @@ command = "vim"
   });
 
   it('uploads session logs when codebase scanning fails but the session directory is available', async () => {
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {
-        getConfig: vi.fn(async () => ({
-          models: {
-            k2: {
-              model: 'moonshot-v1',
-              maxContextSize: 100,
-              provider: 'managed:kimi-code',
-            },
+    const { driver, session } = await makeDriver(makeSession());
+    const harness = makeHarness(session, {
+      getConfig: vi.fn(async () => ({
+        models: {
+          k2: {
+            model: 'moonshot-v1',
+            maxContextSize: 100,
+            provider: 'managed:kimi-code',
           },
-        })),
-      },
-    );
+        },
+      })),
+    });
     const feedbackDriver = driver as unknown as FeedbackDriver;
     vi.mocked(scanCodebase).mockReset();
     harness.exportSession.mockReset();
@@ -1394,20 +1416,18 @@ command = "vim"
   });
 
   it('tells the user when feedback is sent but codebase packaging fails', async () => {
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {
-        getConfig: vi.fn(async () => ({
-          models: {
-            k2: {
-              model: 'moonshot-v1',
-              maxContextSize: 100,
-              provider: 'managed:kimi-code',
-            },
+    const { driver, session } = await makeDriver(makeSession());
+    const harness = makeHarness(session, {
+      getConfig: vi.fn(async () => ({
+        models: {
+          k2: {
+            model: 'moonshot-v1',
+            maxContextSize: 100,
+            provider: 'managed:kimi-code',
           },
-        })),
-      },
-    );
+        },
+      })),
+    });
     const feedbackDriver = driver as unknown as FeedbackDriver;
     vi.mocked(scanCodebase).mockReset();
     vi.mocked(packageCodebase).mockReset();
@@ -1449,20 +1469,18 @@ command = "vim"
   });
 
   it('tells the user when the codebase upload fails', async () => {
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {
-        getConfig: vi.fn(async () => ({
-          models: {
-            k2: {
-              model: 'moonshot-v1',
-              maxContextSize: 100,
-              provider: 'managed:kimi-code',
-            },
+    const { driver, session } = await makeDriver(makeSession());
+    const harness = makeHarness(session, {
+      getConfig: vi.fn(async () => ({
+        models: {
+          k2: {
+            model: 'moonshot-v1',
+            maxContextSize: 100,
+            provider: 'managed:kimi-code',
           },
-        })),
-      },
-    );
+        },
+      })),
+    });
     const feedbackDriver = driver as unknown as FeedbackDriver;
     vi.mocked(promptFeedbackInput).mockImplementation(async () => ({ value: 'useful feedback' }));
     vi.mocked(promptFeedbackAttachment).mockImplementation(async () => 'logs+codebase');
@@ -1492,20 +1510,18 @@ command = "vim"
   });
 
   it('shows feedback API error messages without replacing them with HTTP status text', async () => {
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {
-        getConfig: vi.fn(async () => ({
-          models: {
-            k2: {
-              model: 'moonshot-v1',
-              maxContextSize: 100,
-              provider: 'managed:kimi-code',
-            },
+    const { driver, session } = await makeDriver(makeSession());
+    const harness = makeHarness(session, {
+      getConfig: vi.fn(async () => ({
+        models: {
+          k2: {
+            model: 'moonshot-v1',
+            maxContextSize: 100,
+            provider: 'managed:kimi-code',
           },
-        })),
-      },
-    );
+        },
+      })),
+    });
     const feedbackDriver = driver as unknown as FeedbackDriver;
     vi.mocked(promptFeedbackInput).mockImplementation(async () => ({ value: 'useful feedback' }));
     vi.mocked(promptFeedbackAttachment).mockImplementation(async () => 'none');
@@ -1524,20 +1540,18 @@ command = "vim"
   });
 
   it('does not track feedback when the dialog is cancelled', async () => {
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {
-        getConfig: vi.fn(async () => ({
-          models: {
-            k2: {
-              model: 'moonshot-v1',
-              maxContextSize: 100,
-              provider: 'managed:kimi-code',
-            },
+    const { driver, session } = await makeDriver(makeSession());
+    const harness = makeHarness(session, {
+      getConfig: vi.fn(async () => ({
+        models: {
+          k2: {
+            model: 'moonshot-v1',
+            maxContextSize: 100,
+            provider: 'managed:kimi-code',
           },
-        })),
-      },
-    );
+        },
+      })),
+    });
     const feedbackDriver = driver as unknown as FeedbackDriver;
     vi.mocked(promptFeedbackInput).mockImplementation(async () => undefined);
     harness.track.mockClear();
@@ -1549,7 +1563,8 @@ command = "vim"
   });
 
   it('tracks blocked slash commands as invalid without counting them as executed commands', async () => {
-    const { driver, harness } = await makeDriver();
+    const { driver, session } = await makeDriver();
+    const harness = makeHarness(session);
     driver.state.appState.streamingPhase = 'waiting';
 
     for (const command of ['/new', '/sessions']) {
@@ -1583,7 +1598,8 @@ command = "vim"
         throw new Error('Already in plan mode');
       }),
     });
-    const { driver, harness } = await makeDriver(session);
+    const { driver } = await makeDriver(session);
+    const harness = makeHarness(session);
     harness.createSession.mockClear();
     session.setPlanMode.mockClear();
     driver.state.appState.planMode = true;
@@ -1629,7 +1645,8 @@ command = "vim"
   });
 
   it('tracks Shift-Tab mode switches through the editor handler', async () => {
-    const { driver, session, harness } = await makeDriver();
+    const { driver, session } = await makeDriver();
+    const harness = makeHarness(session);
     harness.track.mockClear();
 
     driver.state.editor.onShiftTab?.();
@@ -1642,7 +1659,8 @@ command = "vim"
   });
 
   it('routes /yolo through session permission state without app-layer telemetry duplication', async () => {
-    const { driver, session, harness } = await makeDriver();
+    const { driver, session } = await makeDriver();
+    const harness = makeHarness(session);
     harness.track.mockClear();
 
     driver.handleUserInput('/yolo on');
@@ -1772,7 +1790,7 @@ command = "vim"
     await vi.waitFor(() => {
       expect(list).toHaveBeenCalledOnce();
     });
-    await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
+    await driver.switchToSessionIdentity({ id: 'ses-2' as const, workDir: '/tmp/proj-a', createdAt: 1, updatedAt: 1, archived: false }, 'Session switched.');
     await vi.waitFor(() => {
       expect(renderTranscript(driver)).toContain('MCP server "current-tools" connected');
     });
@@ -1990,7 +2008,7 @@ command = "vim"
     );
 
     driver.activateExtensionCommand('review:check', '');
-    await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
+    await driver.switchToSessionIdentity({ id: 'ses-2' as const, workDir: '/tmp/proj-a', createdAt: 1, updatedAt: 1, archived: false }, 'Session switched.');
     resolveActivation?.({ prompt: 'Stale prompt' });
     await Promise.resolve();
 
@@ -2239,7 +2257,7 @@ command = "vim"
     const staleListener = eventRuntime.agentListeners[0];
     if (staleListener === undefined) throw new Error('Expected the initial event listener.');
 
-    await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
+    await driver.switchToSessionIdentity({ id: 'ses-2' as const, workDir: '/tmp/proj-a', createdAt: 1, updatedAt: 1, archived: false }, 'Session switched.');
     driver.state.appState.streamingPhase = 'waiting';
     driver.state.queuedMessages = [{ text: 'new session message', agentId: 'main' }];
 
@@ -2712,7 +2730,8 @@ command = "vim"
   });
 
   it('queues editor input instead of prompting while a turn is already streaming', async () => {
-    const { driver, session, harness } = await makeDriver();
+    const { driver, session } = await makeDriver();
+    const harness = makeHarness(session);
     driver.state.appState.streamingPhase = 'waiting';
     harness.track.mockClear();
 
@@ -2991,7 +3010,7 @@ command = "vim"
     );
 
     driver.sendQueuedMessage({ text: 'sleep 10', mode: 'bash' });
-    await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
+    await driver.switchToSessionIdentity({ id: 'ses-2' as const, workDir: '/tmp/proj-a', createdAt: 1, updatedAt: 1, archived: false }, 'Session switched.');
     driver.state.queuedMessages = [{ text: 'current session message', agentId: 'main' }];
 
     finishShellCommand?.({ stdout: '', stderr: '', isError: false });
@@ -3686,7 +3705,8 @@ command = "vim"
           }),
       ),
     });
-    const { driver, harness } = await makeDriver(session);
+    const { driver } = await makeDriver(session);
+    const harness = makeHarness(session);
     harness.track.mockClear();
 
     driver.handleUserInput('/init');
@@ -3709,7 +3729,8 @@ command = "vim"
 
   it('starts /btw through a forked side agent without changing the main busy state', async () => {
     const session = makeSession();
-    const { driver, harness } = await makeDriver(session);
+    const { driver } = await makeDriver(session);
+    const harness = makeHarness(session);
     harness.track.mockClear();
     driver.state.appState.streamingPhase = 'composing';
     driver.state.livePane.mode = 'thinking';
@@ -4061,7 +4082,8 @@ command = "vim"
 
   it('cancels a running /btw panel on Ctrl-C without closing it or cancelling main streaming', async () => {
     const session = makeSession();
-    const { driver, harness } = await makeDriver(session);
+    const { driver } = await makeDriver(session);
+    const harness = makeHarness(session);
     const cancelledAgentIds: string[] = [];
     session.cancel.mockImplementation(async () => {
       cancelledAgentIds.push(harness.interactiveAgentId);
@@ -4123,7 +4145,8 @@ command = "vim"
       .fn()
       .mockResolvedValueOnce(initialSession)
       .mockResolvedValueOnce(nextSession);
-    const { driver, harness } = await makeDriver(initialSession, { createSession });
+    const { driver } = await makeDriver(initialSession);
+    const harness = makeHarness(initialSession, { createSession });
     const cancelledAgentIds: string[] = [];
     initialSession.cancel.mockImplementation(async () => {
       cancelledAgentIds.push(harness.interactiveAgentId);
@@ -4235,7 +4258,8 @@ command = "vim"
           }),
       ),
     });
-    const { driver, harness } = await makeDriver(session);
+    const { driver } = await makeDriver(session);
+    const harness = makeHarness(session);
 
     await openBtwPanel(driver, session, 'slow side question');
 
@@ -6409,7 +6433,8 @@ command = "vim"
 
   it('deletes Kitty inline images when /new clears the transcript', async () => {
     setCapabilities({ images: 'kitty', trueColor: true, hyperlinks: true });
-    const { driver, harness } = await makeDriver(makeSession({ id: 'ses-1' }));
+    const { driver, session } = await makeDriver(makeSession({ id: 'ses-1' }));
+    const harness = makeHarness(session);
     const nextSession = makeSession({ id: 'ses-2' });
     harness.createSession.mockResolvedValueOnce(nextSession);
     harness.getSession.mockReturnValue(nextSession);
@@ -6463,7 +6488,8 @@ command = "vim"
       summary: { title: 'Fork: Source title' },
     });
     const forkSession = vi.fn(async () => forked);
-    const { driver, harness } = await makeDriver(source, { forkSession });
+    const { driver } = await makeDriver(source);
+    const harness = makeHarness(source, { forkSession });
     const setTitle = vi.spyOn(driver.state.terminal, 'setTitle').mockImplementation(() => {});
 
     try {
@@ -6760,12 +6786,8 @@ describe('/login and /logout runtime routing', () => {
       });
     });
     vi.mocked(promptPlatformSelection).mockResolvedValue('kimi-code');
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {},
-      undefined,
-      eventRuntime.runtime,
-    );
+    const { driver, session } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
+    const harness = makeHarness(session);
     harness.getConfig.mockClear();
     driver.session = undefined;
     Object.defineProperty(driver, 'harness', { value: undefined });
@@ -6903,12 +6925,8 @@ describe('/login and /logout runtime routing', () => {
       model,
       thinking: 'high',
     });
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {},
-      undefined,
-      eventRuntime.runtime,
-    );
+    const { driver, session } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
+    const harness = makeHarness(session);
     harness.getConfig.mockClear();
     harness.setConfig.mockClear();
 
@@ -6985,12 +7003,8 @@ describe('/login and /logout runtime routing', () => {
       .mockResolvedValueOnce(configuredCatalog)
       .mockResolvedValueOnce(refreshedCatalog);
     vi.mocked(promptLogoutProviderSelection).mockResolvedValue('moonshot-cn');
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {},
-      undefined,
-      eventRuntime.runtime,
-    );
+    const { driver, session } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
+    const harness = makeHarness(session);
     harness.getConfig.mockClear();
     Object.defineProperty(driver, 'harness', { value: undefined });
 
@@ -7127,12 +7141,8 @@ describe('/model status displayName override', () => {
       defaultModel: 'k2',
       thinking: { enabled: false },
     });
-    const { driver, harness } = await makeDriver(
-      session,
-      {},
-      undefined,
-      eventRuntime.runtime,
-    );
+    const { driver } = await makeDriver(session, {}, undefined, eventRuntime.runtime);
+    const harness = makeHarness(session);
     harness.setConfig.mockClear();
     driver.session = undefined;
 
@@ -7172,12 +7182,8 @@ describe('/model status displayName override', () => {
       defaultModel: 'k2',
       thinking: { enabled: false },
     });
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {},
-      undefined,
-      eventRuntime.runtime,
-    );
+    const { driver, session } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
+    const harness = makeHarness(session);
     harness.setConfig.mockClear();
     driver.session = undefined;
 
@@ -7232,12 +7238,8 @@ describe('/settings experiments runtime routing', () => {
     });
     const eventRuntime = makeEventRuntime();
     eventRuntime.runtime.featureFlags.apply.mockResolvedValue([feature]);
-    const { driver, harness } = await makeDriver(
-      makeSession(),
-      {},
-      undefined,
-      eventRuntime.runtime,
-    );
+    const { driver, session } = await makeDriver(makeSession(), {}, undefined, eventRuntime.runtime);
+    const harness = makeHarness(session);
     driver.session = undefined;
     driver.refreshSlashCommandAutocomplete = vi.fn();
     Object.defineProperty(driver, 'harness', { value: undefined });

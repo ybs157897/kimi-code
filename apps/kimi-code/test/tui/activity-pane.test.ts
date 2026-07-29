@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { AgentSwarmProgressComponent } from '#/tui/components/messages/agent-swarm-progress';
 import type { SessionEventHandler } from '#/tui/controllers/session-event-handler';
 import { KimiTUI, type KimiTUIStartupInput, type TUIState } from '#/tui/kimi-tui';
+import type { TUIRuntime } from '#/tui/runtime/tui-runtime';
 
 interface ActivityDriver {
   state: TUIState;
@@ -12,6 +13,32 @@ interface ActivityDriver {
 
 function strip(text: string): string {
   return text.replaceAll(/\u001B\[[0-9;]*m/g, '');
+}
+
+function makeMockRuntime(): TUIRuntime {
+  return {
+    environment: {
+      homeDir: '/tmp/test',
+      getExperimentalFeatures: vi.fn(async () => []),
+      getConfigDiagnostics: vi.fn(async () => []),
+      close: vi.fn(),
+    },
+    telemetry: { track: vi.fn(), setContext: vi.fn() },
+    sessionControl: {
+      sessions: {
+        list: vi.fn(async () => []),
+        create: vi.fn(async () => ({ id: 'test', workDir: '/tmp/proj-a', createdAt: Date.now(), updatedAt: Date.now(), archived: false })),
+        resume: vi.fn(),
+      },
+    },
+    auth: { status: vi.fn(), login: vi.fn(), logout: vi.fn(), getManagedUsage: vi.fn(), ensureReady: vi.fn() },
+    models: { load: vi.fn(async () => ({ defaultModel: '', models: {}, providers: {} })) },
+    modelConfig: { apply: vi.fn(), removeProvider: vi.fn() },
+    featureFlags: { list: vi.fn(async () => []), apply: vi.fn() },
+    providerRefresh: { refresh: vi.fn() },
+    sessionExport: { export: vi.fn() },
+    bindSession: vi.fn(() => ({}) as never),
+  };
 }
 
 function makeStartupInput(): KimiTUIStartupInput {
@@ -38,6 +65,7 @@ function makeStartupInput(): KimiTUIStartupInput {
     },
     version: '0.0.0-test',
     workDir: '/tmp/proj-a',
+    runtime: makeMockRuntime(),
   };
 }
 
@@ -47,7 +75,7 @@ function makeDriverWithTerminalProgress(): {
   setProgress: ReturnType<typeof vi.fn<(active: boolean) => void>>;
 } {
   const setProgress = vi.fn<(active: boolean) => void>();
-  const driver = new KimiTUI({} as never, makeStartupInput()) as unknown as ActivityDriver;
+  const driver = new KimiTUI(makeStartupInput()) as unknown as ActivityDriver;
   vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
   driver.state.terminal = { columns: 80, setProgress } as unknown as TUIState['terminal'];
   driver.state.terminalState.supportsProgress = true;

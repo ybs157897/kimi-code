@@ -516,6 +516,7 @@ describe('agent replay view contract', () => {
           exitCode: 0,
         },
       ],
+      todos: [],
     };
 
     expect(agentReplayViewContract.read.output.parse(snapshot)).toEqual(snapshot);

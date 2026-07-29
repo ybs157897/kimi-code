@@ -70,6 +70,8 @@ export class AgentReplayViewService implements IAgentReplayView {
       usage: this.usage.status(),
       tools: this.tools.list(),
       tasks: this.tasks.list(false),
+      // TODO(CORE-103): wire ISessionTodoService to populate typed todos
+      todos: [],
     };
   }
 }

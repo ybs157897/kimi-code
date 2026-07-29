@@ -38,6 +38,8 @@ export type {
   FetchCatalogOptions,
 } from '#/catalog';
 
+// Error protocol — re-exported from the SDK-local module so consumers
+// can keep using instanceof / code-based discrimination.
 export {
   ErrorCodes,
   KimiError,
@@ -49,29 +51,32 @@ export {
   fromKimiErrorPayload,
   isKimiError,
   toKimiErrorPayload,
-} from '@moonshot-ai/agent-core';
+} from '#/sdk-errors';
 
 // Diagnostic logging — public surface only.
-// RootLogger / getRootLogger / LoggingConfig stay inside agent-core.
 export {
   flushDiagnosticLogs,
   flushDiagnosticLogsSync,
   log,
   redact,
-  resolveGlobalLogPath,
-  resolveKimiHome,
-} from '@moonshot-ai/agent-core';
-export type { LogContext, LogLevel, LogPayload, Logger } from '@moonshot-ai/agent-core';
+} from '#/sdk-logger';
+export type { LogContext, LogLevel, LogPayload, Logger } from '#/sdk-logger';
+
+// Path / home / config resolution — standalone helpers.
+export { resolveGlobalLogPath, resolveKimiHome } from '#/sdk-paths';
 
 // Host-side config helpers — safe config reader + config path resolution, used
 // by hosts (e.g. the CLI's server telemetry bootstrap) that need to inspect
 // config without spinning up a full KimiCore.
-export { effectiveModelAlias, loadRuntimeConfigSafe, resolveConfigPath } from '@moonshot-ai/agent-core';
-export { limitAgentReplayByTurns } from '@moonshot-ai/agent-core';
+export { loadRuntimeConfigSafe } from '#/sdk-config';
+export { resolveConfigPath } from '#/sdk-paths';
+
+// Model alias helpers and replay-turn limiter.
+export { effectiveModelAlias, limitAgentReplayByTurns } from '#/sdk-model';
 
 // Process-wide HTTP proxy bootstrap — installed once at CLI startup so all
 // outbound fetch honors HTTP_PROXY / HTTPS_PROXY / NO_PROXY.
-export { installGlobalProxyDispatcher } from '@moonshot-ai/agent-core';
+export { installGlobalProxyDispatcher } from '#/sdk-proxy';
 
 // Image compression — ingestion sites (e.g. the CLI's clipboard paste, the ACP
 // adapter) shrink oversized images while constructing the content part, before
@@ -89,18 +94,19 @@ export {
   normalizeImageMime,
   parseImageDataUrl,
   persistOriginalImage,
+  resolveMaxImageEdgePx,
   sessionMediaOriginalsDir,
   IMAGE_BYTE_BUDGET,
   MAX_IMAGE_EDGE_PX,
-} from '@moonshot-ai/agent-core';
-export { ImageLimits } from '@moonshot-ai/agent-core';
+} from '#/sdk-image';
+export { ImageLimits } from '#/sdk-image';
 export type {
   CompressImageOptions,
   CompressImageResult,
   CompressBase64Result,
   ImageCompressionCaptionInput,
   ImageCompressionTelemetry,
-} from '@moonshot-ai/agent-core';
+} from '#/sdk-image';
 
 // Experimental feature flags — types only. Resolved values come from
 // `KimiHarness.getExperimentalFeatures()` over RPC, not from a re-exported runtime value.
@@ -112,7 +118,7 @@ export type {
   FlagDefinitionInput,
   FlagId,
   FlagSurface,
-} from '@moonshot-ai/agent-core';
+} from '#/sdk-flags';
 
 export type {
   KimiAuthCompleteFeedbackUploadInput,

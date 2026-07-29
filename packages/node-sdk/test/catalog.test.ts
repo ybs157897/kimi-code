@@ -1,4 +1,4 @@
-import type { KimiConfig } from '@moonshot-ai/agent-core';
+import type { KimiConfig } from '../src/sdk-config';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -106,7 +106,7 @@ describe('applyCatalogProvider', () => {
     });
 
     expect(result.defaultModel).toBe('anthropic/m1');
-    expect(config.providers['anthropic']).toMatchObject({ type: 'anthropic', apiKey: 'sk' });
+    expect((config as Record<string, unknown>)['providers']).toMatchObject({ anthropic: { type: 'anthropic', apiKey: 'sk' } });
     expect(config.models?.['anthropic/m1']).toMatchObject({
       provider: 'anthropic',
       model: 'm1',

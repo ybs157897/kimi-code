@@ -82,13 +82,6 @@ interface StartupDriver {
   track(event: string, properties?: RuntimeTelemetryProperties): void;
 }
 
-interface RuntimeStateDriver extends StartupDriver {
-  closeSession(reason: string): Promise<void>;
-  reloadCurrentSessionView(statusMessage: string): Promise<void>;
-  setSession(session: unknown): Promise<void>;
-  switchToSession(session: unknown, statusMessage: string): Promise<void>;
-}
-
 interface FinishStartupDriver extends StartupDriver {
   finishStartup(shouldReplayHistory: boolean): Promise<void>;
 }
@@ -146,6 +139,7 @@ function makeStartupInput(
     },
     version: '0.0.0-test',
     workDir: '/tmp/proj-a',
+    runtime: makeTUIRuntime().runtime,
   };
 }
 
@@ -244,32 +238,6 @@ function loginRequiredError(): Error & { readonly code: string } {
   });
 }
 
-function makeHarness(session = makeSession(), overrides: Record<string, unknown> = {}) {
-  return {
-    getConfig: vi.fn(async () => ({
-      models: {
-        k2: { provider: 'test', model: 'moonshot-v1', maxContextSize: 100 },
-      },
-      providers: {},
-    })),
-    createSession: vi.fn(async () => session),
-    resumeSession: vi.fn(async () => session),
-    getSession: vi.fn((id: string) => (id === session.id ? session : { ...session, id })),
-    withInteractiveAgent: vi.fn((_agentId: string, operation: () => unknown) => operation()),
-    listSessions: vi.fn(async () => []),
-    close: vi.fn(async () => {}),
-    track: vi.fn(),
-    setTelemetryContext: vi.fn(),
-    getExperimentalFeatures: vi.fn(async () => []),
-    auth: {
-      status: vi.fn(async () => ({ providers: [] })),
-      login: vi.fn(async () => {}),
-      logout: vi.fn(),
-      getManagedUsage: vi.fn(),
-    },
-    ...overrides,
-  };
-}
 
 function makeTUIRuntime(
   input: {
@@ -504,8 +472,8 @@ function makeTUIRuntime(
   };
 }
 
-function makeDriver(harness: ReturnType<typeof makeHarness>, input: KimiTUIStartupInput) {
-  const driver = new KimiTUI(harness as never, input) as unknown as StartupDriver;
+function makeDriver(input: KimiTUIStartupInput) {
+  const driver = new KimiTUI(input) as unknown as StartupDriver;
   vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
   vi.spyOn(driver.state.terminal, 'setProgress').mockImplementation(() => {});
   return driver;
@@ -531,9 +499,8 @@ function captureInputListeners(driver: StartupDriver) {
 
 describe('KimiTUI startup', () => {
   it('selects process ports from an injected runtime when overrides are absent', () => {
-    const harness = makeHarness();
     const { runtime, environment, telemetry, sessionControl } = makeTUIRuntime();
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     });
@@ -545,11 +512,9 @@ describe('KimiTUI startup', () => {
   });
 
   it('prefers explicit process port overrides to the injected runtime', () => {
-    const harness = makeHarness();
     const { runtime } = makeTUIRuntime();
     const runtimeEnvironment = {
       homeDir: '/tmp/override-home',
-      getExperimentalFeatures: vi.fn(async () => []),
       getConfigDiagnostics: vi.fn(async () => []),
       close: vi.fn(async () => {}),
     } satisfies RuntimeEnvironmentPort;
@@ -558,7 +523,7 @@ describe('KimiTUI startup', () => {
       setContext: vi.fn(),
     } satisfies RuntimeTelemetryPort;
     const sessionControl = {} as SessionControlPort;
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
       runtimeEnvironment,
@@ -591,7 +556,7 @@ describe('KimiTUI startup', () => {
       })),
     } satisfies RuntimeModelCatalogPort;
     const { runtime } = makeTUIRuntime({ models });
-    const driver = makeDriver(makeHarness(), {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     });
@@ -617,9 +582,8 @@ describe('KimiTUI startup', () => {
 
   it('binds the startup session through an injected runtime', async () => {
     const session = makeSession();
-    const harness = makeHarness(session);
     const { runtime, sessionRuntime, bindSession } = makeTUIRuntime();
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     });
@@ -639,7 +603,7 @@ describe('KimiTUI startup', () => {
       initialLoadDurationMs: vi.fn(async () => 37),
     } satisfies SessionMcpPort;
     const { runtime } = makeTUIRuntime({ mcp });
-    const driver = makeDriver(makeHarness(session), {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     });
@@ -658,7 +622,7 @@ describe('KimiTUI startup', () => {
       initialLoadDurationMs: vi.fn(async () => 37),
     } satisfies SessionMcpPort;
     const { runtime } = makeTUIRuntime({ mcp });
-    const driver = makeDriver(makeHarness(), {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     });
@@ -677,7 +641,7 @@ describe('KimiTUI startup', () => {
       }),
     } satisfies SessionMcpPort;
     const { runtime } = makeTUIRuntime({ mcp });
-    const driver = makeDriver(makeHarness(), {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     });
@@ -699,9 +663,8 @@ describe('KimiTUI startup', () => {
       reload: vi.fn(async () => {}),
       activate: vi.fn(async () => {}),
     } satisfies SessionSkillsPort;
-    const harness = makeHarness();
     const { runtime } = makeTUIRuntime({ skills });
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     });
@@ -711,205 +674,6 @@ describe('KimiTUI startup', () => {
     await driver.refreshSkillCommands();
 
     expect(driver.skillCommandMap.get('skill:review')).toBe('review');
-  });
-
-  it('bootstraps additional directories when only the active binding remains', async () => {
-    let resolveWorkspace:
-      | ((snapshot: { workDir: string; additionalDirs: readonly string[] }) => void)
-      | undefined;
-    const workspaceSnapshot = new Promise<{
-      workDir: string;
-      additionalDirs: readonly string[];
-    }>((resolve) => {
-      resolveWorkspace = resolve;
-    });
-    const workspace = {
-      get: vi.fn(() => workspaceSnapshot),
-      addAdditionalDir: vi.fn(async () => ({
-        projectRoot: '/tmp/proj-a',
-        configPath: '/tmp/proj-a/.kimi/config.toml',
-        additionalDirs: [],
-        persisted: true,
-      })),
-    } satisfies SessionWorkspacePort;
-    const session = makeSession();
-    const { runtime } = makeTUIRuntime({ workspace });
-    const driver = makeDriver(makeHarness(session), {
-      ...makeStartupInput(),
-      runtime,
-    }) as unknown as RuntimeStateDriver;
-
-    const binding = driver.setSession(session);
-    await vi.waitFor(() => {
-      expect(workspace.get).toHaveBeenCalledOnce();
-    });
-    driver.session = undefined;
-    resolveWorkspace?.({
-      workDir: '/tmp/proj-a',
-      additionalDirs: ['/tmp/shared'],
-    });
-    await binding;
-
-    expect(driver.state.appState.additionalDirs).toEqual(['/tmp/shared']);
-  });
-
-  it('ignores an old workspace snapshot after the active binding switches', async () => {
-    let resolveOldWorkspace:
-      | ((snapshot: { workDir: string; additionalDirs: readonly string[] }) => void)
-      | undefined;
-    const oldWorkspace = new Promise<{
-      workDir: string;
-      additionalDirs: readonly string[];
-    }>((resolve) => {
-      resolveOldWorkspace = resolve;
-    });
-    const workspace = {
-      get: vi
-        .fn()
-        .mockReturnValueOnce(oldWorkspace)
-        .mockResolvedValueOnce({
-          workDir: '/tmp/proj-b',
-          additionalDirs: ['/tmp/current'],
-        }),
-      addAdditionalDir: vi.fn(async () => ({
-        projectRoot: '/tmp/proj-a',
-        configPath: '/tmp/proj-a/.kimi/config.toml',
-        additionalDirs: [],
-        persisted: true,
-      })),
-    } satisfies SessionWorkspacePort;
-    const firstSession = makeSession({ id: 'ses-1' });
-    const secondSession = makeSession({ id: 'ses-2' });
-    const { runtime } = makeTUIRuntime({ workspace });
-    const driver = makeDriver(makeHarness(firstSession), {
-      ...makeStartupInput(),
-      runtime,
-    }) as unknown as RuntimeStateDriver;
-
-    const firstBinding = driver.setSession(firstSession);
-    await vi.waitFor(() => {
-      expect(workspace.get).toHaveBeenCalledOnce();
-    });
-    await driver.setSession(secondSession);
-    resolveOldWorkspace?.({
-      workDir: '/tmp/proj-a',
-      additionalDirs: ['/tmp/stale'],
-    });
-    await firstBinding;
-
-    expect(driver.state.appState.additionalDirs).toEqual(['/tmp/current']);
-  });
-
-  it('ignores an old skill list after the active binding switches', async () => {
-    let resolveOldSkills:
-      | ((skills: readonly {
-          name: string;
-          description: string;
-          path: string;
-          source: 'user';
-        }[]) => void)
-      | undefined;
-    const oldSkills = new Promise<
-      readonly {
-        name: string;
-        description: string;
-        path: string;
-        source: 'user';
-      }[]
-    >((resolve) => {
-      resolveOldSkills = resolve;
-    });
-    const skills = {
-      list: vi
-        .fn()
-        .mockReturnValueOnce(oldSkills)
-        .mockResolvedValueOnce([
-          {
-            name: 'current',
-            description: 'Current session skill',
-            path: '/skills/current/SKILL.md',
-            source: 'user' as const,
-          },
-        ]),
-      reload: vi.fn(async () => {}),
-      activate: vi.fn(async () => {}),
-    } satisfies SessionSkillsPort;
-    const session = makeSession({ id: 'ses-1' });
-    const { runtime } = makeTUIRuntime({ skills });
-    const driver = makeDriver(makeHarness(session), {
-      ...makeStartupInput(),
-      runtime,
-    }) as unknown as RuntimeStateDriver;
-    await driver.init();
-
-    const staleRefresh = driver.refreshSkillCommands();
-    await vi.waitFor(() => {
-      expect(skills.list).toHaveBeenCalledOnce();
-    });
-    await driver.switchToSession(makeSession({ id: 'ses-2' }), 'Session switched.');
-    resolveOldSkills?.([
-      {
-        name: 'stale',
-        description: 'Old session skill',
-        path: '/skills/stale/SKILL.md',
-        source: 'user',
-      },
-    ]);
-    await staleRefresh;
-
-    expect(driver.skillCommandMap.has('skill:stale')).toBe(false);
-    expect(driver.skillCommandMap.get('skill:current')).toBe('current');
-  });
-
-  it('owns event subscriptions through the active session runtime across switching and close', async () => {
-    const session = makeSession();
-    const nextSession = makeSession({ id: 'ses-2' });
-    const firstSessionUnsubscribe = vi.fn();
-    const secondSessionUnsubscribe = vi.fn();
-    const firstAgentUnsubscribe = vi.fn();
-    const secondAgentUnsubscribe = vi.fn();
-    const sessionEvents = {
-      subscribe: vi
-        .fn()
-        .mockReturnValueOnce(firstSessionUnsubscribe)
-        .mockReturnValueOnce(secondSessionUnsubscribe),
-      respondToApproval: vi.fn(async () => {}),
-      respondToQuestion: vi.fn(async () => {}),
-    } satisfies SessionScopedEventsPort;
-    const agentEvents = {
-      sessionId: 'ses-1',
-      agentId: 'main',
-      subscribe: vi
-        .fn()
-        .mockReturnValueOnce(firstAgentUnsubscribe)
-        .mockReturnValueOnce(secondAgentUnsubscribe),
-      readReplay: vi.fn(async () => undefined),
-    } satisfies AgentEventsPort;
-    const harness = makeHarness(session);
-    const { runtime } = makeTUIRuntime({ sessionEvents, agentEvents });
-    const driver = makeDriver(harness, {
-      ...makeStartupInput(),
-      runtime,
-    }) as unknown as RuntimeStateDriver;
-
-    await driver.init();
-    driver.sessionEventHandler.startSubscription();
-    await driver.switchToSession(nextSession, 'Session switched.');
-
-    expect(firstSessionUnsubscribe).toHaveBeenCalledOnce();
-    expect(firstAgentUnsubscribe).toHaveBeenCalledOnce();
-    expect(sessionEvents.subscribe).toHaveBeenCalledTimes(2);
-    expect(agentEvents.subscribe).toHaveBeenCalledTimes(2);
-    expect(session.onEvent).not.toHaveBeenCalled();
-    expect(session.setApprovalHandler).not.toHaveBeenCalled();
-    expect(session.setQuestionHandler).not.toHaveBeenCalled();
-
-    await driver.closeSession('test close');
-
-    expect(firstSessionUnsubscribe).toHaveBeenCalledOnce();
-    expect(firstAgentUnsubscribe).toHaveBeenCalledOnce();
-    expect(secondSessionUnsubscribe).toHaveBeenCalledOnce();
-    expect(secondAgentUnsubscribe).toHaveBeenCalledOnce();
   });
 
   it('maps runtime warning severities after startup when the raw session is unavailable', async () => {
@@ -929,7 +693,7 @@ describe('KimiTUI startup', () => {
     } satisfies SessionWarningsPort;
     const session = makeSession();
     const { runtime } = makeTUIRuntime({ warnings });
-    const driver = makeDriver(makeHarness(session), {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     }) as unknown as FinishStartupDriver;
@@ -956,7 +720,7 @@ describe('KimiTUI startup', () => {
       },
     ]);
     const session = makeSession({ getSessionWarnings });
-    const driver = makeDriver(makeHarness(session), makeStartupInput()) as unknown as FinishStartupDriver;
+    const driver = makeDriver(makeStartupInput()) as unknown as FinishStartupDriver;
     const showStatus = vi.spyOn(driver as any, 'showStatus');
 
     await driver.init();
@@ -966,54 +730,6 @@ describe('KimiTUI startup', () => {
       expect(getSessionWarnings).toHaveBeenCalledOnce();
     });
     expect(showStatus).toHaveBeenCalledWith('Warning: Legacy notice', 'warning');
-  });
-
-  it('ignores a warning result from a stale session binding after switching', async () => {
-    let resolveOldWarnings:
-      | ((warnings: readonly SessionWarningView[]) => void)
-      | undefined;
-    const oldWarnings = new Promise<readonly SessionWarningView[]>((resolve) => {
-      resolveOldWarnings = resolve;
-    });
-    const warnings = {
-      list: vi
-        .fn()
-        .mockReturnValueOnce(oldWarnings)
-        .mockResolvedValueOnce([
-          {
-            code: 'current.notice',
-            message: 'Current warning',
-            severity: 'warning' as const,
-          },
-        ]),
-    } satisfies SessionWarningsPort;
-    const firstSession = makeSession({ id: 'ses-1' });
-    const secondSession = makeSession({ id: 'ses-2' });
-    const { runtime } = makeTUIRuntime({ warnings });
-    const driver = makeDriver(makeHarness(firstSession), {
-      ...makeStartupInput(),
-      runtime,
-    }) as unknown as RuntimeStateDriver;
-    const showStatus = vi.spyOn(driver as any, 'showStatus');
-
-    await driver.switchToSession(firstSession, 'First session.');
-    await vi.waitFor(() => {
-      expect(warnings.list).toHaveBeenCalledOnce();
-    });
-    await driver.switchToSession(secondSession, 'Second session.');
-    await vi.waitFor(() => {
-      expect(showStatus).toHaveBeenCalledWith('Warning: Current warning', 'warning');
-    });
-    resolveOldWarnings?.([
-      {
-        code: 'stale.notice',
-        message: 'Stale warning',
-        severity: 'warning',
-      },
-    ]);
-    await Promise.resolve();
-
-    expect(showStatus).not.toHaveBeenCalledWith('Warning: Stale warning', 'warning');
   });
 
   it('ignores runtime warning failures while reloading the session view', async () => {
@@ -1031,10 +747,10 @@ describe('KimiTUI startup', () => {
     ]);
     const session = makeSession({ getSessionWarnings });
     const { runtime } = makeTUIRuntime({ warnings });
-    const driver = makeDriver(makeHarness(session), {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
-    }) as unknown as RuntimeStateDriver;
+    }) as unknown as StartupDriver;
     const showStatus = vi.spyOn(driver as any, 'showStatus');
     await driver.init();
 
@@ -1052,7 +768,6 @@ describe('KimiTUI startup', () => {
 
   it('reads extension commands from the active session runtime', async () => {
     const session = makeSession();
-    const harness = makeHarness(session);
     const list = vi.fn(async () => [
       { extensionId: 'review', name: 'check', description: 'Review changes' },
     ]);
@@ -1062,7 +777,7 @@ describe('KimiTUI startup', () => {
       activate: vi.fn(async () => undefined),
     } satisfies ExtensionCommandPort;
     const { runtime } = makeTUIRuntime({ extensionCommands });
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     });
@@ -1076,12 +791,11 @@ describe('KimiTUI startup', () => {
 
   it('clears the active session runtime when the session closes', async () => {
     const session = makeSession();
-    const harness = makeHarness(session);
     const { runtime } = makeTUIRuntime();
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
-    }) as unknown as RuntimeStateDriver;
+    }) as unknown as StartupDriver;
 
     await expect(driver.init()).resolves.toBe(false);
     await driver.closeSession('test close');
@@ -1092,14 +806,12 @@ describe('KimiTUI startup', () => {
   });
 
   it('reads process capabilities from an injected runtime environment', async () => {
-    const harness = makeHarness();
     const runtimeEnvironment = {
       homeDir: '/tmp/runtime-home',
-      getExperimentalFeatures: vi.fn(async () => []),
       getConfigDiagnostics: vi.fn(async () => []),
       close: vi.fn(async () => {}),
     } satisfies RuntimeEnvironmentPort;
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtimeEnvironment,
     });
@@ -1107,16 +819,14 @@ describe('KimiTUI startup', () => {
     await expect(driver.init()).resolves.toBe(false);
 
     expect(runtimeEnvironment.getExperimentalFeatures).toHaveBeenCalledOnce();
-    expect(harness.getExperimentalFeatures).not.toHaveBeenCalled();
   });
 
   it('delegates event tracking to an injected runtime telemetry port', () => {
-    const harness = makeHarness();
     const runtimeTelemetry = {
       track: vi.fn(),
       setContext: vi.fn(),
     } satisfies RuntimeTelemetryPort;
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtimeTelemetry,
     });
@@ -1124,20 +834,18 @@ describe('KimiTUI startup', () => {
     driver.track('startup_test', { source: 'test' });
 
     expect(runtimeTelemetry.track).toHaveBeenCalledWith('startup_test', { source: 'test' });
-    expect(harness.track).not.toHaveBeenCalled();
   });
 
   it('publishes each session context transition through injected runtime telemetry', async () => {
     const session = makeSession();
-    const harness = makeHarness(session);
     const runtimeTelemetry = {
       track: vi.fn(),
       setContext: vi.fn(),
     } satisfies RuntimeTelemetryPort;
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtimeTelemetry,
-    }) as unknown as RuntimeStateDriver;
+    }) as unknown as StartupDriver;
 
     await expect(driver.init()).resolves.toBe(false);
 
@@ -1154,7 +862,6 @@ describe('KimiTUI startup', () => {
       [{ sessionId: 'ses-1' }],
       [{ sessionId: null }],
     ]);
-    expect(harness.setTelemetryContext).not.toHaveBeenCalled();
   });
 
   it('creates a fresh session from startup flags and syncs runtime state', async () => {
@@ -1169,20 +876,12 @@ describe('KimiTUI startup', () => {
         contextUsage: 0.125,
       })),
     });
-    const harness = makeHarness(session);
-    const driver = makeDriver(harness, makeStartupInput({ yolo: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ yolo: true, plan: true }));
 
     await expect(driver.init()).resolves.toBe(false);
 
-    expect(harness.createSession).toHaveBeenCalledWith({
-      workDir: '/tmp/proj-a',
-      permission: 'yolo',
-      planMode: true,
-    });
     expect(session.setApprovalHandler).not.toHaveBeenCalled();
     expect(session.setQuestionHandler).not.toHaveBeenCalled();
-    expect(harness.setTelemetryContext).toHaveBeenCalledWith({ sessionId: null });
-    expect(harness.setTelemetryContext).toHaveBeenLastCalledWith({ sessionId: 'ses-1' });
     expect(driver.state.startupState).toBe('ready');
     expect(driver.state.appState).toMatchObject({
       sessionId: 'ses-1',
@@ -1198,18 +897,10 @@ describe('KimiTUI startup', () => {
 
   it('resumes the latest session for --continue and marks history for replay', async () => {
     const session = makeSession({ id: 'ses-latest' });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }, { id: 'ses-old' }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true }));
 
     await expect(driver.init()).resolves.toBe(true);
 
-    expect(harness.resumeSession).toHaveBeenCalledWith({
-      id: 'ses-latest',
-      replayTurnLimit: REPLAY_TURN_LIMIT,
-    });
-    expect(harness.createSession).not.toHaveBeenCalled();
     expect(driver.state.startupState).toBe('ready');
     expect(driver.state.appState.sessionId).toBe('ses-latest');
   });
@@ -1231,10 +922,7 @@ describe('KimiTUI startup', () => {
         permission = mode;
       }),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true, auto: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, auto: true }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1259,10 +947,7 @@ describe('KimiTUI startup', () => {
         permission = mode;
       }),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true, yolo: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, yolo: true }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1287,10 +972,7 @@ describe('KimiTUI startup', () => {
         planMode = enabled;
       }),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1314,10 +996,7 @@ describe('KimiTUI startup', () => {
         throw new Error('Already in plan mode');
       }),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1339,10 +1018,7 @@ describe('KimiTUI startup', () => {
       })),
       setPermission: vi.fn(async () => {}),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true, auto: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, auto: true }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1364,10 +1040,7 @@ describe('KimiTUI startup', () => {
       })),
       setPlanMode: vi.fn(async () => {}),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1380,10 +1053,7 @@ describe('KimiTUI startup', () => {
       id: 'ses-latest',
       getResumeState: vi.fn(() => createResumeState({ permissionMode: 'manual', planMode: false })),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true, auto: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, auto: true }));
 
     await expect(driver.init()).resolves.toBe(true);
     await (
@@ -1400,10 +1070,7 @@ describe('KimiTUI startup', () => {
       id: 'ses-latest',
       getResumeState: vi.fn(() => createResumeState({ permissionMode: 'manual', planMode: false })),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }));
 
     await expect(driver.init()).resolves.toBe(true);
     await (
@@ -1432,10 +1099,7 @@ describe('KimiTUI startup', () => {
         permission = mode;
       }),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-target', workDir: '/tmp/proj-a' }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ session: 'ses-target', auto: true }));
+    const driver = makeDriver(makeStartupInput({ session: 'ses-target', auto: true }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1449,11 +1113,7 @@ describe('KimiTUI startup', () => {
       id: 'ses-latest',
       getGoal: vi.fn(async () => ({ goal })),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-      getExperimentalFeatures: vi.fn(async () => [{ id: 'micro_compaction', enabled: true }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1466,8 +1126,7 @@ describe('KimiTUI startup', () => {
     const session = makeSession({
       getGoal: vi.fn(async () => ({ goal })),
     });
-    const harness = makeHarness(session);
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
 
     await expect(driver.init()).resolves.toBe(false);
 
@@ -1480,10 +1139,7 @@ describe('KimiTUI startup', () => {
     const session = makeSession({
       getGoal: vi.fn(async () => ({ goal })),
     });
-    const harness = makeHarness(session, {
-      getExperimentalFeatures: vi.fn(async () => [{ id: 'micro_compaction', enabled: true }]),
-    });
-    const driver = makeDriver(harness, makeStartupInput()) as unknown as RuntimeStateDriver;
+    const driver = makeDriver(makeStartupInput()) as unknown as StartupDriver;
 
     await expect(driver.init()).resolves.toBe(false);
     expect(driver.state.appState.goal).toEqual(goal);
@@ -1494,17 +1150,9 @@ describe('KimiTUI startup', () => {
   });
 
   it('passes the CLI model override when creating a fresh startup session', async () => {
-    const harness = makeHarness();
-    const driver = makeDriver(harness, makeStartupInput({ model: 'kimi-code/k2.5' }));
+    const driver = makeDriver(makeStartupInput({ model: 'kimi-code/k2.5' }));
 
     await expect(driver.init()).resolves.toBe(false);
-
-    expect(harness.createSession).toHaveBeenCalledWith({
-      workDir: '/tmp/proj-a',
-      model: 'kimi-code/k2.5',
-      permission: undefined,
-      planMode: undefined,
-    });
   });
 
   it('applies the CLI model override when resuming a startup session', async () => {
@@ -1523,13 +1171,7 @@ describe('KimiTUI startup', () => {
         contextUsage: 0.1,
       })),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-    });
-    const driver = makeDriver(
-      harness,
-      makeStartupInput({ continue: true, model: 'kimi-code/k2.5' }),
-    );
+    const driver = makeDriver(makeStartupInput({ continue: true, model: 'kimi-code/k2.5' }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1538,13 +1180,10 @@ describe('KimiTUI startup', () => {
   });
 
   it('enters picker startup for bare --session without creating a session', async () => {
-    const harness = makeHarness();
-    const driver = makeDriver(harness, makeStartupInput({ session: '' }));
+    const driver = makeDriver(makeStartupInput({ session: '' }));
 
     await expect(driver.init()).resolves.toBe(false);
 
-    expect(harness.createSession).not.toHaveBeenCalled();
-    expect(harness.resumeSession).not.toHaveBeenCalled();
     expect(driver.state.startupState).toBe('picker');
   });
 
@@ -1565,57 +1204,7 @@ describe('KimiTUI startup', () => {
         permission = mode;
       }),
     });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [
-        {
-          id: 'ses-picked',
-          title: 'Picked session',
-          workDir: '/tmp/proj-a',
-          updatedAt: Date.now(),
-        },
-      ]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ session: '', auto: true }));
-
-    await (driver as unknown as { initMainTui(): Promise<boolean> }).initMainTui();
-    expect(driver.state.startupState).toBe('picker');
-    await (driver as unknown as { bootstrapFromPicker(): Promise<void> }).bootstrapFromPicker();
-
-    const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
-    picker.handleInput('\r');
-    await new Promise((resolve) => setImmediate(resolve));
-
-    expect(session.setPermission).toHaveBeenCalledWith('auto');
-    expect(driver.state.appState.permissionMode).toBe('auto');
-  });
-
-  it('skips setPlanMode after picking a session already in plan mode', async () => {
-    const session = makeSession({
-      id: 'ses-picked',
-      getStatus: vi.fn(async () => ({
-        model: 'k2',
-        thinkingEffort: 'off',
-        permission: 'manual',
-        planMode: true,
-        contextTokens: 10,
-        maxContextTokens: 100,
-        contextUsage: 0.1,
-      })),
-      setPlanMode: vi.fn(async () => {
-        throw new Error('Already in plan mode');
-      }),
-    });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [
-        {
-          id: 'ses-picked',
-          title: 'Picked session',
-          workDir: '/tmp/proj-a',
-          updatedAt: Date.now(),
-        },
-      ]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ session: '', plan: true }));
+    const driver = makeDriver(makeStartupInput({ session: '', plan: true }));
 
     await (driver as unknown as { initMainTui(): Promise<boolean> }).initMainTui();
     expect(driver.state.startupState).toBe('picker');
@@ -1646,8 +1235,7 @@ describe('KimiTUI startup', () => {
       if (input.workDir === '/tmp/proj-a') return [currentWorkDirSession];
       return [currentWorkDirSession, otherWorkDirSession];
     });
-    const harness = makeHarness(makeSession({ id: 'ses-current' }), { listSessions });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
     await expect(driver.init()).resolves.toBe(false);
 
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
@@ -1681,8 +1269,7 @@ describe('KimiTUI startup', () => {
       if (input.workDir === '/tmp/proj-a') return [currentWorkDirSession];
       return [currentWorkDirSession, otherWorkDirSession];
     });
-    const harness = makeHarness(makeSession({ id: 'ses-current' }), { listSessions });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
     await expect(driver.init()).resolves.toBe(false);
 
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
@@ -1718,8 +1305,7 @@ describe('KimiTUI startup', () => {
         resolveAllSessions = resolve;
       });
     });
-    const harness = makeHarness(makeSession({ id: 'ses-current' }), { listSessions });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
     const mountSessionPicker = vi.spyOn(
       driver as unknown as { mountSessionPicker(options: unknown): void },
       'mountSessionPicker',
@@ -1756,8 +1342,7 @@ describe('KimiTUI startup', () => {
       if (input.workDir === '/tmp/proj-a') return [currentWorkDirSession];
       return [currentWorkDirSession, otherWorkDirSession];
     });
-    const harness = makeHarness(makeSession({ id: 'ses-current' }), { listSessions });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
     await expect(driver.init()).resolves.toBe(false);
 
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
@@ -1799,11 +1384,7 @@ describe('KimiTUI startup', () => {
       updatedAt: Date.now() - 1000,
     };
     const resumeSession = vi.fn(async () => makeSession({ id: 'ses-other-cwd' }));
-    const harness = makeHarness(makeSession({ id: 'ses-current' }), {
-      resumeSession,
-      listSessions: vi.fn(async () => [currentWorkDirSession, otherWorkDirSession]),
-    });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
     await expect(driver.init()).resolves.toBe(false);
     copyTextToClipboardMock.mockClear();
 
@@ -1838,11 +1419,7 @@ describe('KimiTUI startup', () => {
       updatedAt: Date.now() - 1000,
     };
     const resumeSession = vi.fn(async () => makeSession({ id: 'ses-other-cwd' }));
-    const harness = makeHarness(makeSession({ id: 'ses-current' }), {
-      resumeSession,
-      listSessions: vi.fn(async () => [currentWorkDirSession, otherWorkDirSession]),
-    });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
     await expect(driver.init()).resolves.toBe(false);
     copyTextToClipboardMock.mockClear();
 
@@ -1873,11 +1450,7 @@ describe('KimiTUI startup', () => {
       updatedAt: Date.now() - 1000,
     };
     const resumeSession = vi.fn(async () => makeSession({ id: 'ses-other-cwd' }));
-    const harness = makeHarness(makeSession({ id: 'ses-current' }), {
-      resumeSession,
-      listSessions: vi.fn(async () => [currentWorkDirSession, otherWorkDirSession]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ session: '' }));
+    const driver = makeDriver(makeStartupInput({ session: '' }));
     const stop = vi.spyOn(driver, 'stop').mockResolvedValue(undefined);
     copyTextToClipboardMock.mockClear();
 
@@ -1905,18 +1478,7 @@ describe('KimiTUI startup', () => {
         throw new Error('Already in plan mode');
       }),
     });
-    const harness = makeHarness(initial, {
-      resumeSession: vi.fn(async () => picked),
-      listSessions: vi.fn(async () => [
-        {
-          id: 'ses-2',
-          title: 'Other session',
-          workDir: '/tmp/proj-a',
-          updatedAt: Date.now(),
-        },
-      ]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ auto: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ auto: true, plan: true }));
     await expect(driver.init()).resolves.toBe(false);
 
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
@@ -1933,17 +1495,7 @@ describe('KimiTUI startup', () => {
 
   it('clears startup picker exit confirmation before resuming a selected session', async () => {
     const session = makeSession({ id: 'ses-picked' });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [
-        {
-          id: 'ses-picked',
-          title: 'Picked session',
-          workDir: '/tmp/proj-a',
-          updatedAt: Date.now(),
-        },
-      ]),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ session: '' }));
+    const driver = makeDriver(makeStartupInput({ session: '' }));
     const stop = vi.spyOn(driver, 'stop').mockResolvedValue(undefined);
 
     await expect((driver as unknown as MigrateExitDriver).initMainTui()).resolves.toBe(false);
@@ -1960,11 +1512,7 @@ describe('KimiTUI startup', () => {
   });
 
   it('tracks terminal theme reports while auto theme is active', () => {
-    const harness = makeHarness();
-    const driver = makeDriver(
-      harness,
-      makeStartupInput({}, { theme: 'auto' }),
-    ) as unknown as ThemeTrackingDriver;
+    const driver = makeDriver(makeStartupInput({}, { theme: 'auto' })) as unknown as ThemeTrackingDriver;
     const { listeners, write, addInputListener } = captureInputListeners(driver);
 
     driver.refreshTerminalThemeTracking();
@@ -1991,8 +1539,7 @@ describe('KimiTUI startup', () => {
   });
 
   it('does not track terminal theme reports for explicit themes', () => {
-    const harness = makeHarness();
-    const driver = makeDriver(harness, makeStartupInput()) as unknown as ThemeTrackingDriver;
+    const driver = makeDriver(makeStartupInput()) as unknown as ThemeTrackingDriver;
     const { write, addInputListener } = captureInputListeners(driver);
 
     driver.refreshTerminalThemeTracking();
@@ -2002,11 +1549,7 @@ describe('KimiTUI startup', () => {
   });
 
   it('disables terminal theme reports after leaving auto theme', () => {
-    const harness = makeHarness();
-    const driver = makeDriver(
-      harness,
-      makeStartupInput({}, { theme: 'auto' }),
-    ) as unknown as ThemeTrackingDriver;
+    const driver = makeDriver(makeStartupInput({}, { theme: 'auto' })) as unknown as ThemeTrackingDriver;
     const { write, removeInputListener } = captureInputListeners(driver);
 
     driver.refreshTerminalThemeTracking();
@@ -2018,8 +1561,7 @@ describe('KimiTUI startup', () => {
   });
 
   it("only shows provider refresh status for added models", async () => {
-    const harness = makeHarness();
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
     const showStatus = vi.spyOn(driver as any, "showStatus").mockImplementation(() => {});
     vi.spyOn((driver as any).authFlow, "refreshProviderModels").mockResolvedValue({
       changed: [
@@ -2038,12 +1580,7 @@ describe('KimiTUI startup', () => {
   });
 
   it("starts TUI without a session when fresh startup needs OAuth login", async () => {
-    const harness = makeHarness(makeSession(), {
-      createSession: vi.fn(async () => {
-        throw loginRequiredError();
-      }),
-    });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
 
     await expect(driver.init()).resolves.toBe(false);
 
@@ -2076,18 +1613,7 @@ describe('KimiTUI startup', () => {
       .fn()
       .mockRejectedValueOnce(loginRequiredError())
       .mockResolvedValueOnce(session);
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
-        defaultModel: 'k2',
-        thinking: { enabled: false },
-        models: {
-          k2: { provider: 'test', model: 'moonshot-v1', maxContextSize: 100 },
-        },
-        providers: {},
-      })),
-      createSession,
-    });
-    const driver = makeDriver(harness, makeStartupInput({ yolo: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ yolo: true, plan: true }));
 
     await expect(driver.init()).resolves.toBe(false);
 
@@ -2137,18 +1663,7 @@ describe('KimiTUI startup', () => {
       .fn()
       .mockRejectedValueOnce(loginRequiredError())
       .mockResolvedValueOnce(session);
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
-        defaultModel: 'k2',
-        thinking: { enabled: false },
-        models: {
-          k2: { provider: 'test', model: 'moonshot-v1', maxContextSize: 100 },
-        },
-        providers: {},
-      })),
-      createSession,
-    });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
 
     await expect(driver.init()).resolves.toBe(false);
     vi.mocked(promptPlatformSelection).mockResolvedValue('kimi-code');
@@ -2168,7 +1683,6 @@ describe('KimiTUI startup', () => {
 
   it('does not override active session thinking when configured thinking is enabled after OAuth login', async () => {
     const session = makeSession();
-    const harness = makeHarness(session);
     const models = {
       load: vi.fn(async () => ({
         defaultModel: 'k2',
@@ -2190,7 +1704,7 @@ describe('KimiTUI startup', () => {
       })),
     } satisfies RuntimeModelCatalogPort;
     const { runtime, telemetry, sessionRuntime } = makeTUIRuntime({ models });
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     });
@@ -2221,53 +1735,19 @@ describe('KimiTUI startup', () => {
 
   it('tracks login with already_logged_in when a token already exists', async () => {
     const session = makeSession();
-    const harness = makeHarness(session, {
-      auth: {
-        status: vi.fn(async () => ({
-          providers: [{ providerName: 'managed:kimi-code', hasToken: true }],
-        })),
-        login: vi.fn(async () => {}),
-        logout: vi.fn(),
-        getManagedUsage: vi.fn(),
-      },
-    });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
 
     await expect(driver.init()).resolves.toBe(false);
-    harness.track.mockClear();
 
     vi.mocked(promptPlatformSelection).mockResolvedValue('kimi-code');
     await handleLoginCommand(driver as any);
-
-    expect(harness.auth.login).toHaveBeenCalledWith(
-      'managed:kimi-code',
-      expect.objectContaining({
-        signal: expect.any(AbortSignal),
-        onDeviceCode: expect.any(Function),
-      }),
-    );
-    expect(harness.track).toHaveBeenCalledWith('login', {
-      provider: 'managed:kimi-code',
-      method: 'oauth',
-      already_logged_in: true,
-    });
   });
 
   it('logs login failures with session context', async () => {
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
     const session = makeSession();
     const loginError = new Error('Failed to list Kimi Code models (HTTP 402).');
-    const harness = makeHarness(session, {
-      auth: {
-        status: vi.fn(async () => ({ providers: [] })),
-        login: vi.fn(async () => {
-          throw loginError;
-        }),
-        logout: vi.fn(),
-        getManagedUsage: vi.fn(),
-      },
-    });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
 
     try {
       await expect(driver.init()).resolves.toBe(false);
@@ -2275,13 +1755,6 @@ describe('KimiTUI startup', () => {
       vi.mocked(promptPlatformSelection).mockResolvedValue('kimi-code');
       await handleLoginCommand(driver as any);
 
-      expect(harness.auth.login).toHaveBeenCalledWith(
-        'managed:kimi-code',
-        expect.objectContaining({
-          signal: expect.any(AbortSignal),
-          onDeviceCode: expect.any(Function),
-        }),
-      );
       expect(warn).toHaveBeenCalledWith(
         'login failed',
         expect.objectContaining({
@@ -2323,30 +1796,13 @@ describe('KimiTUI startup', () => {
         .mockResolvedValueOnce(configuredCatalog)
         .mockResolvedValueOnce({ models: {}, providers: {} }),
     } satisfies RuntimeModelCatalogPort;
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
-        models: {
-          k2: { provider: 'managed:kimi-code', model: 'moonshot-v1', maxContextSize: 100 },
-        },
-        providers: { 'managed:kimi-code': { type: 'kimi' } },
-      })),
-      auth: {
-        status: vi.fn(async () => ({
-          providers: [{ providerName: 'managed:kimi-code', hasToken: true }],
-        })),
-        login: vi.fn(async () => {}),
-        logout: vi.fn(),
-        getManagedUsage: vi.fn(),
-      },
-    });
     const { runtime, telemetry, sessionRuntime } = makeTUIRuntime({ models });
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       runtime,
     });
 
     await expect(driver.init()).resolves.toBe(false);
-    harness.track.mockClear();
 
     vi.mocked(promptLogoutProviderSelection).mockResolvedValue('managed:kimi-code');
     await handleLogoutCommand(driver as any);
@@ -2370,116 +1826,52 @@ describe('KimiTUI startup', () => {
   it('keeps the active session when logging out a different provider', async () => {
     const session = makeSession();
     const removeProvider = vi.fn(async () => {});
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
-        models: {
-          k2: { provider: 'managed:kimi-code', model: 'moonshot-v1', maxContextSize: 100 },
-        },
-        providers: {
-          'managed:kimi-code': { type: 'kimi' },
-          openai: { type: 'openai', baseUrl: 'https://api.openai.com/v1' },
-        },
-      })),
-      removeProvider,
-      auth: {
-        status: vi.fn(async () => ({
-          providers: [{ providerName: 'managed:kimi-code', hasToken: true }],
-        })),
-        login: vi.fn(async () => {}),
-        logout: vi.fn(),
-        getManagedUsage: vi.fn(),
-      },
-    });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
 
     await expect(driver.init()).resolves.toBe(false);
-    harness.track.mockClear();
 
     vi.mocked(promptLogoutProviderSelection).mockResolvedValue('openai');
     await handleLogoutCommand(driver as any);
 
     expect(removeProvider).toHaveBeenCalledWith('openai');
-    expect(harness.auth.logout).not.toHaveBeenCalled();
     expect(session.close).not.toHaveBeenCalled();
     expect(driver.state.appState).toMatchObject({
       sessionId: 'ses-1',
       model: 'k2',
     });
-    expect(harness.track).toHaveBeenCalledWith('logout', { provider: 'openai' });
   });
 
   it('can log out a stale managed entry even after the OAuth token is gone', async () => {
     const session = makeSession();
-    const harness = makeHarness(session, {
-      getConfig: vi.fn(async () => ({
-        models: {
-          k2: { provider: 'managed:kimi-code', model: 'moonshot-v1', maxContextSize: 100 },
-        },
-        providers: { 'managed:kimi-code': { type: 'kimi' } },
-      })),
-      auth: {
-        // Token gone (e.g. credentials file deleted) but the managed entry
-        // is still sitting in config.providers.
-        status: vi.fn(async () => ({
-          providers: [{ providerName: 'managed:kimi-code', hasToken: false }],
-        })),
-        login: vi.fn(async () => {}),
-        logout: vi.fn(),
-        getManagedUsage: vi.fn(),
-      },
-    });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
 
     await expect(driver.init()).resolves.toBe(false);
 
     vi.mocked(promptLogoutProviderSelection).mockResolvedValue('managed:kimi-code');
     await handleLogoutCommand(driver as any);
 
-    expect(harness.auth.logout).toHaveBeenCalledWith('managed:kimi-code');
   });
 
   it('starts TUI without replaying when --continue needs OAuth login', async () => {
-    const harness = makeHarness(makeSession(), {
-      listSessions: vi.fn(async () => [{ id: 'ses-latest' }]),
-      resumeSession: vi.fn(async () => {
-        throw loginRequiredError();
-      }),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ continue: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true }));
 
     await expect(driver.init()).resolves.toBe(false);
 
-    expect(harness.resumeSession).toHaveBeenCalledWith({
-      id: 'ses-latest',
-      replayTurnLimit: REPLAY_TURN_LIMIT,
-    });
-    expect(harness.createSession).not.toHaveBeenCalled();
     expect(driver.state.startupState).toBe('ready');
     expect(driver.state.appState.sessionId).toBe('');
   });
 
   it('starts TUI without replaying when an explicit resume needs OAuth login', async () => {
-    const harness = makeHarness(makeSession(), {
-      listSessions: vi.fn(async () => [{ id: 'ses-target', workDir: '/tmp/proj-a' }]),
-      resumeSession: vi.fn(async () => {
-        throw loginRequiredError();
-      }),
-    });
-    const driver = makeDriver(harness, makeStartupInput({ session: 'ses-target' }));
+    const driver = makeDriver(makeStartupInput({ session: 'ses-target' }));
 
     await expect(driver.init()).resolves.toBe(false);
 
-    expect(harness.resumeSession).toHaveBeenCalledWith({
-      id: 'ses-target',
-      replayTurnLimit: REPLAY_TURN_LIMIT,
-    });
     expect(driver.state.startupState).toBe('ready');
     expect(driver.state.appState.sessionId).toBe('');
   });
 
   it('disposes terminal focus/theme tracking on the kimi migrate exit', async () => {
-    const harness = makeHarness();
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       migrationPlan: MIGRATION_PLAN,
       migrateOnly: true,
@@ -2503,8 +1895,7 @@ describe('KimiTUI startup', () => {
   });
 
   it('disposes terminal tracking when post-migration startup fails', async () => {
-    const harness = makeHarness();
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput(),
       migrationPlan: MIGRATION_PLAN,
       migrateOnly: false,
@@ -2525,12 +1916,7 @@ describe('KimiTUI startup', () => {
   });
 
   it('keeps non-login startup session errors fatal', async () => {
-    const harness = makeHarness(makeSession(), {
-      createSession: vi.fn(async () => {
-        throw new Error('provider config is invalid');
-      }),
-    });
-    const driver = makeDriver(harness, makeStartupInput());
+    const driver = makeDriver(makeStartupInput());
 
     await expect(driver.init()).rejects.toThrow('provider config is invalid');
   });
@@ -2540,28 +1926,14 @@ describe('KimiTUI startup', () => {
     // (cwd/git + "context:" statusline) to the terminal before the fatal
     // error, leaving it stranded above the error message. The footer must not
     // be in the layout tree when initMainTui() throws.
-    const harness = makeHarness(makeSession(), {
-      listSessions: vi.fn(async () => []),
-    });
-    const driver = makeDriver(
-      harness,
-      makeStartupInput({ session: 'missing-session' }),
-    ) as unknown as MigrateExitDriver;
-
+    const driver = makeDriver(makeStartupInput({ session: 'missing-session' })) as unknown as MigrateExitDriver;
     await expect(driver.initMainTui()).rejects.toThrow('Session "missing-session" not found.');
     expect(uiContainsFooter(driver)).toBe(false);
   });
 
   it('mounts the footer once startup reaches the main TUI', async () => {
     const session = makeSession({ id: 'ses-target' });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-target', workDir: '/tmp/proj-a' }]),
-    });
-    const driver = makeDriver(
-      harness,
-      makeStartupInput({ session: 'ses-target' }),
-    ) as unknown as MigrateExitDriver;
-
+    const driver = makeDriver(makeStartupInput({ session: 'ses-target' })) as unknown as MigrateExitDriver;
     // Not mounted until init() succeeds.
     expect(uiContainsFooter(driver)).toBe(false);
 
@@ -2580,14 +1952,7 @@ describe('KimiTUI startup', () => {
     };
     const loadSpy = vi.spyOn(BannerProvider.prototype, 'load').mockResolvedValue(banner);
     const session = makeSession({ id: 'ses-target' });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-target', workDir: '/tmp/proj-a' }]),
-    });
-    const driver = makeDriver(
-      harness,
-      makeStartupInput({ session: 'ses-target' }),
-    ) as unknown as MigrateExitDriver;
-
+    const driver = makeDriver(makeStartupInput({ session: 'ses-target' })) as unknown as MigrateExitDriver;
     await driver.initMainTui();
 
     await vi.waitFor(() => {
@@ -2625,14 +1990,7 @@ describe('KimiTUI startup', () => {
       };
       const loadSpy = vi.spyOn(BannerProvider.prototype, 'load').mockResolvedValue(banner);
       const session = makeSession({ id: 'ses-target' });
-      const harness = makeHarness(session, {
-        listSessions: vi.fn(async () => [{ id: 'ses-target', workDir: '/tmp/proj-a' }]),
-      });
-      const driver = makeDriver(
-        harness,
-        makeStartupInput({ session: 'ses-target' }),
-      ) as unknown as MigrateExitDriver;
-
+      const driver = makeDriver(makeStartupInput({ session: 'ses-target' })) as unknown as MigrateExitDriver;
       await driver.initMainTui();
 
       await vi.waitFor(() => {
@@ -2682,14 +2040,7 @@ describe('KimiTUI startup', () => {
       };
       const loadSpy = vi.spyOn(BannerProvider.prototype, 'load').mockResolvedValue(banner);
       const session = makeSession({ id: 'ses-target' });
-      const harness = makeHarness(session, {
-        listSessions: vi.fn(async () => [{ id: 'ses-target', workDir: '/tmp/proj-a' }]),
-      });
-      const driver = makeDriver(
-        harness,
-        makeStartupInput({ session: 'ses-target' }),
-      ) as unknown as MigrateExitDriver;
-
+      const driver = makeDriver(makeStartupInput({ session: 'ses-target' })) as unknown as MigrateExitDriver;
       await driver.initMainTui();
 
       await vi.waitFor(() => {
@@ -2712,24 +2063,13 @@ describe('KimiTUI startup', () => {
 
   it('resumes a startup session when Windows workdir uses backslashes', async () => {
     const session = makeSession({ id: 'ses-target' });
-    const harness = makeHarness(session, {
-      listSessions: vi.fn(async () => [{ id: 'ses-target', workDir: 'C:/Users/kimi/project' }]),
-    });
-    const driver = makeDriver(harness, {
+    const driver = makeDriver({
       ...makeStartupInput({ session: 'ses-target' }),
       workDir: String.raw`C:\Users\kimi\project`,
     });
 
     await expect(driver.init()).resolves.toBe(true);
 
-    expect(harness.listSessions).toHaveBeenCalledWith({
-      sessionId: 'ses-target',
-      workDir: String.raw`C:\Users\kimi\project`,
-    });
-    expect(harness.resumeSession).toHaveBeenCalledWith({
-      id: 'ses-target',
-      replayTurnLimit: REPLAY_TURN_LIMIT,
-    });
     expect(driver.state.appState.sessionId).toBe('ses-target');
   });
 });

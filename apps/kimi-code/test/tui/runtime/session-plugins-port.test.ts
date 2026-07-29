@@ -15,7 +15,6 @@ import type {
 import { describe, expect, it, vi } from 'vitest';
 
 import { createKlientSessionPluginsPort } from '#/tui/runtime/klient-session-plugins-adapter';
-import { createLegacySessionPluginsPort } from '#/tui/runtime/legacy-session-plugins-adapter';
 import type {
   PluginInfoView,
   PluginSummaryView,
@@ -98,149 +97,7 @@ const EXPECTED_RELOAD: ReloadSummaryView = {
   errors: [{ id: 'broken-plugin', message: 'Could not load plugin.' }],
 };
 
-describe('legacy session plugin adapter', () => {
-  it('list returns copied neutral summaries from the legacy Session', async () => {
-    const summary = pluginSummary();
-    const summaries = [summary];
-    const port = createLegacySessionPluginsPort(
-      legacySession({
-        listPlugins: vi.fn(async () => summaries),
-      }),
-    );
 
-    const result = await port.list();
-
-    expect(result).toEqual([EXPECTED_SUMMARY]);
-    expect(result).not.toBe(summaries);
-    expect(result[0]).not.toBe(summary);
-    expect(result[0]?.github).not.toBe(summary.github);
-    expect(result[0]?.github?.ref).not.toBe(summary.github?.ref);
-  });
-
-  it('info returns a deeply copied neutral view from the legacy Session', async () => {
-    const info = pluginInfo();
-    const port = createLegacySessionPluginsPort(
-      legacySession({
-        getPluginInfo: vi.fn(async () => info),
-      }),
-    );
-
-    const result = await port.info('example-plugin');
-
-    expect(result).toEqual(EXPECTED_INFO);
-    expect(result).not.toBe(info);
-    expect(result.manifest).not.toBe(info.manifest);
-    expect(result.manifest?.skills).not.toBe(info.manifest?.skills);
-    expect(result.mcpServers).not.toBe(info.mcpServers);
-    expect(result.mcpServers[0]?.args).not.toBe(info.mcpServers[0]?.args);
-    expect(result.diagnostics).not.toBe(info.diagnostics);
-  });
-
-  it('info forwards the plugin id to the legacy Session', async () => {
-    const getPluginInfo = vi.fn(async () => pluginInfo());
-    const port = createLegacySessionPluginsPort(
-      legacySession({ getPluginInfo }),
-    );
-
-    await port.info('example-plugin');
-
-    expect(getPluginInfo).toHaveBeenCalledWith('example-plugin');
-  });
-
-  it('install forwards the source path unchanged to the legacy Session', async () => {
-    const installPlugin = vi.fn(async () => pluginSummary());
-    const port = createLegacySessionPluginsPort(
-      legacySession({ installPlugin }),
-    );
-
-    await port.install('./plugins/example-plugin');
-
-    expect(installPlugin).toHaveBeenCalledWith('./plugins/example-plugin');
-  });
-
-  it('install returns a copied neutral summary from the legacy Session', async () => {
-    const summary = pluginSummary();
-    const port = createLegacySessionPluginsPort(
-      legacySession({
-        installPlugin: vi.fn(async () => summary),
-      }),
-    );
-
-    const result = await port.install('https://example.test/plugin.zip');
-
-    expect(result).toEqual(EXPECTED_SUMMARY);
-    expect(result).not.toBe(summary);
-    expect(result.github).not.toBe(summary.github);
-  });
-
-  it('setEnabled forwards positional plugin state to the legacy Session', async () => {
-    const setPluginEnabled = vi.fn(async () => undefined);
-    const port = createLegacySessionPluginsPort(
-      legacySession({ setPluginEnabled }),
-    );
-
-    await port.setEnabled('example-plugin', false);
-
-    expect(setPluginEnabled).toHaveBeenCalledWith('example-plugin', false);
-  });
-
-  it('setMcpServerEnabled forwards positional server state to the legacy Session', async () => {
-    const setPluginMcpServerEnabled = vi.fn(async () => undefined);
-    const port = createLegacySessionPluginsPort(
-      legacySession({ setPluginMcpServerEnabled }),
-    );
-
-    await port.setMcpServerEnabled('example-plugin', 'remote', true);
-
-    expect(setPluginMcpServerEnabled).toHaveBeenCalledWith(
-      'example-plugin',
-      'remote',
-      true,
-    );
-  });
-
-  it('remove forwards the plugin id to the legacy Session', async () => {
-    const removePlugin = vi.fn(async () => undefined);
-    const port = createLegacySessionPluginsPort(
-      legacySession({ removePlugin }),
-    );
-
-    await port.remove('example-plugin');
-
-    expect(removePlugin).toHaveBeenCalledWith('example-plugin');
-  });
-
-  it('reload returns a deeply copied neutral summary from the legacy Session', async () => {
-    const summary = reloadSummary();
-    const port = createLegacySessionPluginsPort(
-      legacySession({
-        reloadPlugins: vi.fn(async () => summary),
-      }),
-    );
-
-    const result = await port.reload();
-
-    expect(result).toEqual(EXPECTED_RELOAD);
-    expect(result).not.toBe(summary);
-    expect(result.added).not.toBe(summary.added);
-    expect(result.removed).not.toBe(summary.removed);
-    expect(result.errors).not.toBe(summary.errors);
-    expect(result.errors[0]).not.toBe(summary.errors[0]);
-  });
-
-  it('info passes a legacy Session error through unchanged', async () => {
-    const failure = new Error('legacy plugin failure');
-    const port = createLegacySessionPluginsPort(
-      legacySession({
-        getPluginInfo: vi.fn(async () => {
-          throw failure;
-        }),
-      }),
-    );
-
-    await expect(port.info('example-plugin')).rejects.toBe(failure);
-  });
-});
 
 describe('Klient session plugin adapter', () => {
   it('list returns copied neutral summaries from runtime.klient.global.plugins', async () => {
@@ -390,32 +247,6 @@ describe('Klient session plugin adapter', () => {
     await expect(port.info('example-plugin')).rejects.toBe(failure);
   });
 });
-
-type LegacySessionPluginMethods = Pick<
-  Session,
-  | 'listPlugins'
-  | 'getPluginInfo'
-  | 'installPlugin'
-  | 'setPluginEnabled'
-  | 'setPluginMcpServerEnabled'
-  | 'removePlugin'
-  | 'reloadPlugins'
->;
-
-function legacySession(
-  overrides: Partial<LegacySessionPluginMethods> = {},
-): LegacySessionPluginMethods {
-  return {
-    listPlugins: vi.fn(async () => []),
-    getPluginInfo: vi.fn(async () => pluginInfo()),
-    installPlugin: vi.fn(async () => pluginSummary()),
-    setPluginEnabled: vi.fn(async () => undefined),
-    setPluginMcpServerEnabled: vi.fn(async () => undefined),
-    removePlugin: vi.fn(async () => undefined),
-    reloadPlugins: vi.fn(async () => reloadSummary()),
-    ...overrides,
-  };
-}
 
 interface KlientPluginMethods {
   list(): Promise<readonly PluginSummary[]>;

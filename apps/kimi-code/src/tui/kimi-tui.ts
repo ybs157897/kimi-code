@@ -4,11 +4,9 @@ import { join } from 'node:path';
 import type {
   ApprovalRequest,
   ApprovalResponse,
-  KimiHarness,
   PromptPart,
   QuestionRequest,
   QuestionResult,
-  Session,
 } from '@moonshot-ai/kimi-code-sdk';
 import type { MigrationPlan } from '@moonshot-ai/migration-legacy';
 import {
@@ -129,7 +127,7 @@ import type {
   SessionCreateInput,
   SessionIdentity,
 } from './runtime/session-control-port';
-import { createLegacyTUIRuntime, type TUIRuntime } from './runtime/tui-runtime';
+import type { TUIRuntime } from './runtime/tui-runtime';
 import type { TUISessionRuntime } from './runtime/tui-session-runtime';
 import { currentTheme, getColorPalette, getBuiltInPalette, isBuiltInTheme } from './theme';
 import type { ColorToken, ResolvedTheme, ThemeName } from './theme';
@@ -312,35 +310,14 @@ const DETACH_HINT_DISPLAY_MS = 4_000;
 interface ActiveSessionBinding {
   readonly identity: SessionIdentity;
   readonly runtime: TUISessionRuntime;
-  readonly legacySession?: Session;
-}
-
-function identityFromLegacySession(session: Session): SessionIdentity {
-  const now = Date.now();
-  return {
-    id: session.id,
-    workDir: session.summary?.workDir,
-    title: session.summary?.title ?? undefined,
-    lastPrompt: session.summary?.lastPrompt,
-    createdAt: session.summary?.createdAt ?? now,
-    updatedAt: session.summary?.updatedAt ?? now,
-    archived: session.summary?.archived ?? false,
-    metadata:
-      session.summary?.metadata === undefined
-        ? undefined
-        : { ...session.summary.metadata },
-  };
 }
 
 export class KimiTUI {
-  readonly harness: KimiHarness | undefined;
   readonly runtime: TUIRuntime;
   readonly runtimeEnvironment: RuntimeEnvironmentPort;
   readonly runtimeTelemetry: RuntimeTelemetryPort;
   readonly sessionControl: SessionControlPort;
   readonly options: KimiTUIOptions;
-  /** v1 compatibility handle. Runtime-neutral code must use the active binding. */
-  session: Session | undefined;
   private activeSessionBinding: ActiveSessionBinding | undefined;
   state: TUIState;
   private readonly approvalController = new ApprovalController();
@@ -428,14 +405,12 @@ export class KimiTUI {
     this.runtimeTelemetry.track(event, properties);
   }
 
-  constructor(harness: KimiHarness | undefined, startupInput: KimiTUIStartupInput) {
-    this.harness = harness;
-    if (startupInput.runtime === undefined && harness === undefined) {
-      throw new Error('KimiTUI requires either a legacy harness or a TUI runtime.');
+  constructor(startupInput: KimiTUIStartupInput) {
+    const runtime = startupInput.runtime;
+    if (runtime === undefined) {
+      throw new Error('KimiTUI requires a TUI runtime.');
     }
-    this.runtime =
-      startupInput.runtime ??
-      createLegacyTUIRuntime(harness as KimiHarness);
+    this.runtime = runtime;
     this.runtimeEnvironment = startupInput.runtimeEnvironment ?? this.runtime.environment;
     this.runtimeTelemetry = startupInput.runtimeTelemetry ?? this.runtime.telemetry;
     this.sessionControl = startupInput.sessionControl ?? this.runtime.sessionControl;
@@ -794,10 +769,6 @@ export class KimiTUI {
       await this.sessionReplay.hydrateFromReplay(this.requireSessionRuntime());
       this.applyStartupPermissionAndPlanToAppState();
     }
-    const resumeState = this.session?.getResumeState();
-    if (resumeState?.warning !== undefined) {
-      this.showStatus(`Warning: ${resumeState.warning}`, 'warning');
-    }
     const sessionRuntime = this.activeSessionBinding?.runtime;
     if (sessionRuntime !== undefined) {
       this.sessionEventHandler.startSubscription();
@@ -923,7 +894,7 @@ export class KimiTUI {
       if (identity === undefined) {
         throw new Error('Startup session was not initialized.');
       }
-      await this.setSessionIdentity(identity, this.harness?.getSession(identity.id));
+      await this.setSessionIdentity(identity);
       const sessionRuntime = this.requireSessionRuntime();
       if (shouldReplayHistory) {
         await this.applyStartupModesToResumedSession(sessionRuntime);
@@ -1425,13 +1396,9 @@ export class KimiTUI {
     this.showError(message);
   }
 
-  sendQueuedMessage(item: QueuedMessage): void;
-  sendQueuedMessage(_session: Session, item: QueuedMessage): void;
   sendQueuedMessage(
-    itemOrSession: QueuedMessage | Session,
-    legacyItem?: QueuedMessage,
+    item: QueuedMessage,
   ): void {
-    const item = legacyItem ?? (itemOrSession as QueuedMessage);
     if (item.mode === 'bash') {
       this.runShellCommandFromInput(item.text, item.agentId);
       return;
@@ -1779,13 +1746,6 @@ export class KimiTUI {
   // Session Runtime
   // =========================================================================
 
-  requireSession(): Session {
-    if (this.session === undefined) {
-      throw new Error(NO_ACTIVE_SESSION_MESSAGE);
-    }
-    return this.session;
-  }
-
   requireSessionRuntime(): TUISessionRuntime {
     if (this.activeSessionBinding === undefined) {
       throw new Error(NO_ACTIVE_SESSION_MESSAGE);
@@ -1827,37 +1787,30 @@ export class KimiTUI {
     return this.sessionControl.sessions.create(options);
   }
 
-  async setSession(session: Session): Promise<void> {
-    await this.setSessionIdentity(identityFromLegacySession(session), session);
-  }
-
   async createAndBindSession(
     input: SessionCreateInput,
   ): Promise<TUISessionRuntime> {
     const identity = await this.sessionControl.sessions.create(input);
-    await this.setSessionIdentity(identity, this.harness?.getSession(identity.id));
+    await this.setSessionIdentity(identity);
     return this.requireSessionRuntime();
   }
 
   private async setSessionIdentity(
     identity: SessionIdentity,
-    legacySession?: Session,
   ): Promise<void> {
     const previous = this.unloadCurrentSession('switching session');
     await previous?.lifecycle.close();
     const sessionRuntime = this.runtime.bindSession(identity.id, MAIN_AGENT_ID);
-    this.session = legacySession;
     this.activeSessionBinding = {
       identity,
       runtime: sessionRuntime,
-      legacySession,
     };
     this.extensionCommandPort = sessionRuntime.extensionCommands;
     this.runtimeTelemetry.setContext({ sessionId: identity.id });
     await this.syncAdditionalDirs(sessionRuntime);
   }
 
-  async syncRuntimeState(_session?: Session): Promise<void> {
+  async syncRuntimeState(_session?: never): Promise<void> {
     const sessionRuntime = this.requireSessionRuntime();
     const [identity, status, goal, expertTeam] = await Promise.all([
       sessionRuntime.lifecycle.getIdentity(),
@@ -1869,7 +1822,6 @@ export class KimiTUI {
     this.activeSessionBinding = {
       identity,
       runtime: sessionRuntime,
-      legacySession: this.session,
     };
     this.setAppState({
       sessionId: identity.id,
@@ -1942,7 +1894,6 @@ export class KimiTUI {
     this.runtimeEventUnsubscribe = undefined;
     this.approvalController.cancelAll(reason);
     this.questionController.cancelAll(reason);
-    this.session = undefined;
     this.activeSessionBinding = undefined;
     this.extensionCommandPort = undefined;
     this.state.swarmModeEntry = undefined;
@@ -2041,27 +1992,16 @@ export class KimiTUI {
     await this.switchToSessionIdentity(
       identity,
       `Resumed session (${identity.id}).`,
-      this.harness?.getSession(identity.id),
     );
     return true;
-  }
-
-  async switchToSession(session: Session, statusMessage: string): Promise<void> {
-    await this.switchToSessionIdentity(
-      identityFromLegacySession(session),
-      statusMessage,
-      session,
-    );
   }
 
   async switchToSessionIdentity(
     identity: SessionIdentity,
     statusMessage: string,
-    legacySession?: Session,
   ): Promise<void> {
     this.resetSessionRuntime();
-    const resolvedLegacySession = legacySession ?? this.harness?.getSession(identity.id);
-    await this.setSessionIdentity(identity, resolvedLegacySession);
+    await this.setSessionIdentity(identity);
     const sessionRuntime = this.requireSessionRuntime();
     await this.syncRuntimeState();
     this.updateTerminalTitle();
@@ -2081,10 +2021,6 @@ export class KimiTUI {
     } finally {
       this.sessionEventHandler.startSubscription();
     }
-    const resumeState = resolvedLegacySession?.getResumeState();
-    if (resumeState?.warning !== undefined) {
-      this.showStatus(`Warning: ${resumeState.warning}`, 'warning');
-    }
     this.showStatus(statusMessage);
     void this.showSessionWarnings(sessionRuntime);
   }
@@ -2099,12 +2035,9 @@ export class KimiTUI {
 
     this.resetSessionRuntime();
     const sessionRuntime = this.runtime.bindSession(identity.id, MAIN_AGENT_ID);
-    const legacySession = this.harness?.getSession(identity.id);
-    this.session = legacySession;
     this.activeSessionBinding = {
       identity,
       runtime: sessionRuntime,
-      legacySession,
     };
     this.extensionCommandPort = sessionRuntime.extensionCommands;
     this.runtimeTelemetry.setContext({ sessionId: identity.id });
@@ -2119,10 +2052,6 @@ export class KimiTUI {
       /* keep the reloaded session usable even if dynamic skills fail */
     }
     this.sessionEventHandler.startSubscription();
-    const resumeState = legacySession?.getResumeState();
-    if (resumeState?.warning !== undefined) {
-      this.showStatus(`Warning: ${resumeState.warning}`, 'warning');
-    }
     this.showStatus(statusMessage);
     void this.showSessionWarnings(sessionRuntime);
   }
@@ -2143,7 +2072,7 @@ export class KimiTUI {
     }
 
     this.resetSessionRuntime();
-    await this.setSessionIdentity(identity, this.harness?.getSession(identity.id));
+    await this.setSessionIdentity(identity);
     const sessionRuntime = this.requireSessionRuntime();
     this.setAppState({ sessionId: identity.id });
     try {

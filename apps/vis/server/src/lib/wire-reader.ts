@@ -5,7 +5,7 @@ import {
   migrateWireRecord,
   resolveWireMigrations,
   type WireMigration,
-} from '@moonshot-ai/agent-core/agent/records/migration/index';
+} from '@moonshot-ai/agent-core-v2';
 
 import type { AgentRecord, WireEntry } from './agent-record-types';
 
@@ -101,7 +101,7 @@ export async function readAgentWire(path: string): Promise<WireReadResult> {
       );
       migrated = structuredClone(raw) as Record<string, unknown>;
     }
-    records.push({ lineNo, data: migrated as AgentRecord, raw });
+    records.push({ lineNo, data: migrated as unknown as AgentRecord, raw });
   }
   if (metadata === null) {
     throw new Error('Wire file is empty (no metadata)');

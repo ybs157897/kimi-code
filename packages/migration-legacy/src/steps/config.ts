@@ -1,13 +1,12 @@
 import { readFile, mkdir } from 'node:fs/promises';
 import { parse as parseToml, stringify as stringifyToml } from 'smol-toml';
+import { HookDefSchema } from '@moonshot-ai/agent-core-v2/agent/externalHooks/configSection';
 import {
-  HookDefSchema,
-  KimiConfigSchema,
-  ModelAliasSchema,
   ProviderConfigSchema,
-  transformTomlData,
-} from '@moonshot-ai/agent-core';
-import { FLAG_DEFINITIONS } from '@moonshot-ai/agent-core/flags/registry';
+  ModelRecordSchema,
+} from '@moonshot-ai/agent-core-v2/app/kosongConfig/configSection';
+import { transformPlainObject } from '@moonshot-ai/agent-core-v2/app/config/toml';
+import { getContributedFlags } from '@moonshot-ai/agent-core-v2/app/flag/flagRegistry';
 import { atomicWrite } from '../atomic-write.js';
 import { DEFAULT_CONFIG_FILE_TEXT, isTuiStubOrMissing } from '../stub-detect.js';
 import {
@@ -30,7 +29,7 @@ const BACKGROUND_FIELDS_TO_KEEP = new Set([
   'keep_alive_on_exit',
 ]);
 const REGISTERED_EXPERIMENTAL_FLAGS: ReadonlySet<string> = new Set(
-  (FLAG_DEFINITIONS as ReadonlyArray<{ readonly id: string }>).map((definition) => definition.id),
+  getContributedFlags().map((definition) => definition.id),
 );
 
 // kimi-code's tui.toml `theme` enum (mirrors apps/kimi-code TuiThemeSchema).
@@ -38,19 +37,29 @@ const REGISTERED_EXPERIMENTAL_FLAGS: ReadonlySet<string> = new Set(
 // validation, taking the migrated editor command down with it — so drop it.
 const TUI_THEMES: ReadonlySet<string> = new Set(['dark', 'light', 'auto']);
 
-function camelToSnake(s: string): string {
-  return s.replaceAll(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
-}
-
-// The config.toml top-level keys kimi-code understands, derived from the live
-// KimiConfigSchema so the set tracks kimi-code automatically. `raw` is internal
-// — never migrate it. `providers` / `models` / `hooks` are filtered per-entry,
-// not via this set.
-const SUPPORTED_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set(
-  Object.keys(KimiConfigSchema.shape)
-    .filter((k) => k !== 'raw' && k !== 'providers' && k !== 'models' && k !== 'hooks')
-    .map(camelToSnake),
-);
+// The config.toml top-level keys kimi-code understands, derived from the
+// registered v2 config sections. `raw` is internal — never migrate it.
+// `providers` / `models` / `hooks` are filtered per-entry, not via this set.
+const SUPPORTED_TOP_LEVEL_KEYS: ReadonlySet<string> = new Set([
+  'default_provider',
+  'default_model',
+  'thinking',
+  'plan_mode',
+  'default_permission_mode',
+  'default_plan_mode',
+  'permission',
+  'services',
+  'merge_all_available_skills',
+  'extra_skill_dirs',
+  'loop_control',
+  'background',
+  'subagent',
+  'mcp',
+  'image',
+  'model_catalog',
+  'experimental',
+  'telemetry',
+]);
 
 export interface ConfigStepInput {
   readonly sourceHome: string;
@@ -127,18 +136,16 @@ function filterRegisteredExperimentalFlags(
   return keptEntries.length > 0 ? Object.fromEntries(keptEntries) : undefined;
 }
 
-/** True when the kimi-cli provider entry validates against kimi-code's schema. */
+/** True when the kimi-cli provider entry validates against kimi-code's v2 schema. */
 function providerIsSupported(prov: Record<string, unknown>): boolean {
-  const transformed = transformTomlData({ providers: { x: prov } });
-  const entry = isRecord(transformed['providers']) ? transformed['providers']['x'] : undefined;
+  const entry = transformPlainObject(prov);
   return ProviderConfigSchema.safeParse(entry).success;
 }
 
-/** True when the kimi-cli model entry validates against kimi-code's schema. */
+/** True when the kimi-cli model entry validates against kimi-code's v2 schema. */
 function modelIsSupported(mod: Record<string, unknown>): boolean {
-  const transformed = transformTomlData({ models: { x: mod } });
-  const entry = isRecord(transformed['models']) ? transformed['models']['x'] : undefined;
-  return ModelAliasSchema.safeParse(entry).success;
+  const entry = transformPlainObject(mod);
+  return ModelRecordSchema.safeParse(entry).success;
 }
 
 /** Order-insensitive deep-equality key, so re-ordered tables are not conflicts. */
@@ -387,29 +394,6 @@ export async function migrateConfigStep(input: ConfigStepInput): Promise<ConfigS
   if (Object.keys(keptProviders).length > 0) migratedTop['providers'] = keptProviders;
   if (Object.keys(keptModels).length > 0) migratedTop['models'] = keptModels;
   if (keptHooks.length > 0) migratedTop['hooks'] = keptHooks;
-
-  // 4b) Drop any supported top-level key whose VALUE kimi-code's config
-  //     schema rejects (e.g. `telemetry = "false"`, `extra_skill_dirs = "/tmp"`).
-  //     Providers/models are already validated per-entry above, so schema
-  //     failures here can only come from plain top-level keys.
-  for (;;) {
-    const result = KimiConfigSchema.safeParse(transformTomlData(migratedTop));
-    if (result.success) break;
-    const badKeys = new Set<string>();
-    for (const issue of result.error.issues) {
-      const top = issue.path[0];
-      if (typeof top === 'string' && top !== 'providers' && top !== 'models') {
-        badKeys.add(camelToSnake(top));
-      }
-    }
-    if (badKeys.size === 0) break; // cannot attribute — stop rather than loop
-    for (const k of badKeys) {
-      if (k in migratedTop) {
-        delete migratedTop[k];
-        droppedKeys.push(k);
-      }
-    }
-  }
 
   // 5) Write config.toml per the target mode.
   await mkdir(input.targetHome, { recursive: true, mode: 0o700 });

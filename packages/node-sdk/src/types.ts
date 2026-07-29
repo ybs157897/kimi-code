@@ -1,16 +1,13 @@
-import type {
-  ExportSessionManifest,
-  ExpertTeamStatusSnapshot,
-  ExpertTeamSnapshot,
-  ResumeSessionResult,
-  ShellEnvironment,
-  TelemetryClient,
-  TelemetryContextPatch,
-  TelemetryProperties,
-} from '@moonshot-ai/agent-core';
 import type { Kaos } from '@moonshot-ai/kaos';
 import type { KimiHostIdentity, OAuthRefreshOutcome } from '@moonshot-ai/kimi-code-oauth';
 import type { ContentPart } from '@moonshot-ai/kosong';
+import type {
+  TelemetryClient,
+  TelemetryContextPatch,
+  TelemetryProperties,
+} from '#/sdk-telemetry';
+
+// ── Shared data types ────────────────────────────────────────────────────
 
 export type JsonPrimitive = string | number | boolean | null;
 export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
@@ -18,40 +15,72 @@ export type JsonObject = { readonly [key: string]: JsonValue };
 
 export type Unsubscribe = () => void;
 
-export type {
-  AgentReplayRecord,
-  AgentBackgroundTaskInfo,
-  BackgroundConfig,
-  BackgroundTaskInfo,
-  BackgroundTaskStatus,
-  ConfigDiagnostics,
-  ContextMessage,
-  CronTaskSnapshot,
-  ExperimentalFeatureState,
-  ExperimentalFlagMap,
-  ExperimentalFlagSource,
+// ── v2-available types (imported from agent-core-v2 subpaths) ────────────
+
+import type {
   ExpertTeamDefinition,
-  ExpertTeamMemberPhase,
-  ExpertTeamMemberState,
-  ExpertTeamStatusSnapshot,
   ExpertTeamSnapshot,
-  ExportSessionManifest,
-  ExtensionCommandDef,
+} from '@moonshot-ai/agent-core-v2/session/expertTeam/expertTeam';
+import type {
   GoalBudgetLimits,
   GoalBudgetReport,
   GoalChange,
   GoalChangeStats,
-  GetCronTasksResult,
   GoalSnapshot,
   GoalStatus,
   GoalToolResult,
-  KimiConfig,
-  KimiConfigPatch,
+} from '@moonshot-ai/agent-core-v2/agent/goal/types';
+import type {
+  AgentReplayRecord,
+  ResumedAgentState,
+  ResumeSessionResult,
+} from '@moonshot-ai/agent-core-v2/agent/replayBuilder/types';
+import type { ContextMessage, PromptOrigin } from '@moonshot-ai/agent-core-v2/agent/contextMemory/types';
+import type {
+  ConfigDiagnostics,
+  McpServerInfo,
+  McpStartupMetrics,
+  SkillSummary as SkillSummaryV2,
+} from '@moonshot-ai/agent-core-v2/agent/rpc/core-api';
+import type { ExportSessionManifest, ShellEnvironment } from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExport';
+import type { McpServerConfig } from '@moonshot-ai/agent-core-v2/agent/mcp/config-schema';
+import type { ThinkingConfig } from '@moonshot-ai/agent-core-v2/kosong/model/thinking';
+import type { ProviderConfig, ProviderType, OAuthRef } from '@moonshot-ai/agent-core-v2/kosong/provider/provider';
+import type { LoopControl } from '@moonshot-ai/agent-core-v2/agent/loop/configSection';
+import type { ToolInfo } from '@moonshot-ai/agent-core-v2/tool/toolContract';
+import type { PermissionMode as PermissionModeV2 } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
+import type {
+  PluginCommandDef,
+  PluginGithubMetadata,
+  PluginGithubRef,
+  PluginInfo,
+  PluginMcpServerInfo,
+  PluginSource,
+  PluginSummary,
+  ReloadSummary,
+} from '@moonshot-ai/agent-core-v2/app/plugin/types';
+import type { ServicesConfig } from '@moonshot-ai/agent-core-v2/app/auth/configSection';
+
+type SkillSummary = SkillSummaryV2;
+
+export type {
+  AgentReplayRecord,
+  ConfigDiagnostics,
+  ContextMessage,
+  ExportSessionManifest,
+  ExpertTeamDefinition,
+  ExpertTeamSnapshot,
+  GoalBudgetLimits,
+  GoalBudgetReport,
+  GoalChange,
+  GoalChangeStats,
+  GoalSnapshot,
+  GoalStatus,
+  GoalToolResult,
   LoopControl,
   McpServerInfo,
   McpStartupMetrics,
-  ModelAlias,
-  MoonshotServiceConfig,
+  McpServerConfig,
   OAuthRef,
   PluginCommandDef,
   PluginGithubMetadata,
@@ -60,27 +89,151 @@ export type {
   PluginMcpServerInfo,
   PluginSource,
   PluginSummary,
-  ProcessBackgroundTaskInfo,
-  PromptOrigin,
   ProviderConfig,
   ProviderType,
-  QuestionBackgroundTaskInfo,
   ReloadSummary,
   ResumedAgentState,
+  ResumeSessionResult,
   ServicesConfig,
   ShellEnvironment,
   SkillSummary,
   ThinkingConfig,
   ToolInfo,
-  GlobalMcpServerConfig as McpServerConfig,
-  GlobalMcpServerTestResult as McpTestResult,
-} from '@moonshot-ai/agent-core';
+  PromptOrigin,
+};
+
+export type PermissionMode = PermissionModeV2;
+
+// ── Types defined locally (no v2 equivalent or shape differs) ────────────
+
+export type AgentBackgroundTaskInfo = {
+  readonly taskId: string;
+  readonly kind: string;
+  readonly status: string;
+  readonly name?: string;
+  readonly command?: string;
+  readonly createdAt?: number;
+  readonly agentId?: string;
+  readonly exitCode?: number;
+  readonly error?: string;
+};
+
+export type BackgroundConfig = {
+  readonly printWaitCeilingS?: number;
+  readonly keepAliveOnExit?: boolean;
+  readonly printBackgroundMode?: string;
+};
+
+export type BackgroundTaskInfo = {
+  readonly id: string;
+  readonly kind: string;
+  readonly name?: string;
+  readonly status?: string;
+  readonly exitCode?: number;
+};
+
+export type BackgroundTaskStatus = 'running' | 'completed' | 'failed' | 'cancelled';
+
+export type CronTaskSnapshot = {
+  readonly id: string;
+  readonly name: string;
+  readonly expression: string;
+  readonly status: string;
+  readonly nextRunAt?: number;
+};
+
+export type ExperimentalFeatureState = {
+  readonly id: string;
+  readonly enabled: boolean;
+  readonly source?: string;
+};
+
+export type ExperimentalFlagMap = Record<string, boolean>;
+
+export type ExperimentalFlagSource = 'env' | 'config' | 'builtin' | 'runtime';
+
+export type ExpertTeamMemberPhase = {
+  readonly phase: 'waiting' | 'active' | 'completed';
+  readonly stepDescription?: string;
+};
+
+export type ExpertTeamMemberState = {
+  readonly agentId: string;
+  readonly phase: ExpertTeamMemberPhase;
+  readonly goal?: string;
+  readonly response?: string;
+};
+
+export type ExpertTeamStatusSnapshot = {
+  readonly members: readonly ExpertTeamMemberState[];
+  readonly agentId?: string;
+};
+
+export type ExtensionCommandDef = {
+  readonly name: string;
+  readonly description?: string;
+  readonly prompt?: string;
+  readonly action?: string;
+  readonly extensionId: string;
+};
+
+export type GetCronTasksResult = {
+  readonly tasks: readonly CronTaskSnapshot[];
+};
+
+export type KimiConfig = {
+  readonly defaultModel?: string;
+  readonly providers?: Record<string, Record<string, unknown>>;
+  readonly models?: Record<string, Record<string, unknown>>;
+  readonly telemetry?: boolean | Record<string, unknown>;
+  readonly thinking?: { readonly enabled?: boolean; readonly effort?: string };
+  readonly [key: string]: unknown;
+};
+
+export type KimiConfigPatch = Record<string, unknown>;
+
+export type ModelAlias = {
+  readonly provider: string;
+  readonly model: string;
+  readonly maxContextSize?: number;
+  readonly maxInputSize?: number;
+  readonly maxOutputSize?: number;
+  readonly capabilities?: readonly string[];
+  readonly displayName?: string;
+  readonly baseUrl?: string;
+  readonly protocol?: string;
+  readonly overrides?: Record<string, unknown>;
+  readonly supportEfforts?: readonly string[];
+  readonly defaultEffort?: string;
+  readonly offEffort?: string;
+  [key: string]: unknown;
+};
+
+export type McpTestResult = {
+  readonly name: string;
+  readonly status: string;
+  readonly error?: string;
+  readonly [key: string]: unknown;
+};
+
+export type MoonshotServiceConfig = {
+  readonly apiKey?: string;
+  readonly baseUrl?: string;
+};
+
+export type ProcessBackgroundTaskInfo = {
+  readonly pid?: number;
+  readonly command?: string;
+};
+
+export type QuestionBackgroundTaskInfo = {
+  readonly question: string;
+  readonly options?: readonly string[];
+};
 
 export type { KimiHostIdentity, OAuthRefreshOutcome };
 export type { TelemetryClient, TelemetryContextPatch, TelemetryProperties };
 export type { ContentPart, Role, ThinkingEffort, ToolCall } from '@moonshot-ai/kosong';
-
-export type PermissionMode = 'yolo' | 'manual' | 'auto';
 
 export interface CreateGoalInput {
   readonly objective: string;

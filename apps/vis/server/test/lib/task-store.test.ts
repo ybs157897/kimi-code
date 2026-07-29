@@ -109,7 +109,7 @@ describe('task-store', () => {
     expect(tasks.map((t) => t.taskId).toSorted()).toEqual(['agent-bbbbbbbb', 'bash-aaaaaaaa']);
     const bad = tasks.find((t) => t.taskId === 'agent-bbbbbbbb')!;
     expect(bad.stopReason).toBeUndefined();
-    expect(bad.kind === 'agent' ? bad.subagentType : 'n/a').toBeUndefined();
+    expect(bad.kind === 'agent' ? bad['subagentType'] : 'n/a').toBeUndefined();
   });
 
   it('returns [] when there is no tasks directory', async () => {

@@ -9,13 +9,11 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   createKimiHarness,
   KimiError,
-  type SessionSummary,
 } from '#/index';
-import { resolveGlobalLogPath } from '../../agent-core/src/logging/logger';
-import {
-  WIRE_PROTOCOL_VERSION,
-  exportSessionDirectory,
-} from '../../agent-core/src/session/export';
+import { resolveGlobalLogPath } from '../src/sdk-paths';
+import { WIRE_PROTOCOL_VERSION } from '@moonshot-ai/agent-core-v2/wire/migration/migration';
+import { exportSessionDirectory } from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExportService';
+import type { ExportSessionDirectorySummary } from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExportService';
 import { recordingTelemetry, type TelemetryRecord } from './telemetry';
 import { TEST_IDENTITY } from './test-identity';
 
@@ -86,13 +84,11 @@ function makeSummary(input: {
   readonly sessionDir: string;
   readonly workDir: string;
   readonly title?: string | undefined;
-}): SessionSummary {
+}): ExportSessionDirectorySummary {
   return {
     id: input.id,
     sessionDir: input.sessionDir,
-    workDir: input.workDir,
-    createdAt: 1,
-    updatedAt: 2,
+    workspaceDir: input.workDir,
     title: input.title,
   };
 }
@@ -229,7 +225,7 @@ describe('exportSessionDirectory', () => {
     const result = await exportSessionDirectory({
       request: { sessionId: sid, outputPath, includeGlobalLog: true, version: '1.0.0-test' },
       summary: makeSummary({ id: sid, sessionDir, workDir: tmp }),
-      homeDir,
+      globalLogPath: resolveGlobalLogPath(homeDir),
     });
 
     expect(result.manifest.globalLogPath).toBeUndefined();
@@ -289,9 +285,9 @@ describe('exportSessionDirectory', () => {
         summary: makeSummary({ id: sid, sessionDir, workDir: tmp }),
       }),
     ).rejects.toMatchObject({
-      name: 'KimiError',
+      name: 'Error2',
       code: 'session.export_not_found',
-    } satisfies Partial<KimiError>);
+    });
   });
 });
 

@@ -8,33 +8,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createKlientSessionInitPort } from '#/tui/runtime/klient-session-init-adapter';
-import { createLegacySessionInitPort } from '#/tui/runtime/legacy-session-init-adapter';
-
-describe('legacy session init adapter', () => {
-  it('calls Session.init when generateAgentsMd starts generation', async () => {
-    const init = vi.fn(async () => undefined);
-    const port = createLegacySessionInitPort({
-      init,
-      cancel: vi.fn(async () => undefined),
-    });
-
-    await port.generateAgentsMd();
-
-    expect(init).toHaveBeenCalledOnce();
-  });
-
-  it('calls Session.cancel when cancel stops legacy generation', async () => {
-    const cancel = vi.fn(async () => undefined);
-    const port = createLegacySessionInitPort({
-      init: vi.fn(async () => undefined),
-      cancel,
-    });
-
-    await port.cancel();
-
-    expect(cancel).toHaveBeenCalledOnce();
-  });
-});
 
 describe('Klient session init adapter', () => {
   it('calls session.init.generateAgentsMd when generation starts', async () => {

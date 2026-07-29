@@ -35,7 +35,7 @@ export function rehydrateWireEntries(
   baseUrl: string = '',
 ): void {
   for (const entry of entries) {
-    rehydrateRecord(entry.data as Record<string, unknown>, sessionId, agentId, baseUrl);
+    rehydrateRecord(entry.data as unknown as Record<string, unknown>, sessionId, agentId, baseUrl);
   }
 }
 

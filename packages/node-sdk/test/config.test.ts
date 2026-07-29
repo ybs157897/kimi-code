@@ -10,7 +10,7 @@ import {
   parseConfigString,
   readConfigFile,
   writeConfigFile,
-} from '../../agent-core/src/config';
+} from '../src/sdk-config';
 import { TEST_IDENTITY } from './test-identity';
 
 // node-sdk/agent-core normalize paths to forward slashes (pathe). Mirror that
@@ -125,17 +125,17 @@ max_context_size = "large"
   });
 
   it('parses the documented config shape and keeps TUI-only fields in raw', () => {
-    const config = parseConfigString(COMPLETE_TOML, 'complete.toml');
+    const config = parseConfigString(COMPLETE_TOML, 'complete.toml') as Record<string, unknown>;
 
-    expect(config.defaultModel).toBe('kimi-for-coding');
-    expect(config.thinking?.enabled).toBe(true);
-    expect(config.thinking?.effort).toBe('high');
-    expect(config.defaultPermissionMode).toBe('auto');
-    expect(config.defaultPlanMode).toBe(false);
-    expect(config.mergeAllAvailableSkills).toBe(true);
-    expect(config.extraSkillDirs).toEqual(['~/team-skills', '.agents/team-skills']);
+    expect(config['defaultModel']).toBe('kimi-for-coding');
+    expect((config['thinking'] as { enabled?: boolean } | undefined)?.enabled).toBe(true);
+    expect((config['thinking'] as { effort?: string } | undefined)?.effort).toBe('high');
+    expect(config['defaultPermissionMode']).toBe('auto');
+    expect(config['defaultPlanMode']).toBe(false);
+    expect(config['mergeAllAvailableSkills']).toBe(true);
+    expect(config['extraSkillDirs']).toEqual(['~/team-skills', '.agents/team-skills']);
 
-    const provider = config.providers['kimi-for-coding'];
+    const provider = (config['providers'] as Record<string, Record<string, unknown>> | undefined)?.['kimi-for-coding'];
     expect(provider).toMatchObject({
       type: 'kimi',
       baseUrl: 'https://api.kimi.com/coding/v1',
@@ -144,49 +144,54 @@ max_context_size = "large"
       env: { GOOGLE_CLOUD_PROJECT: 'project-1' },
     });
 
-    expect(config.models?.['kimi-for-coding']).toMatchObject({
-      provider: 'kimi-for-coding',
-      model: 'kimi-for-coding',
-      maxContextSize: 262144,
-      capabilities: ['image_in', 'thinking', 'video_in'],
-      displayName: 'Kimi for Coding',
+    expect(config['models']).toMatchObject({
+      'kimi-for-coding': {
+        provider: 'kimi-for-coding',
+        model: 'kimi-for-coding',
+        maxContextSize: 262144,
+        capabilities: ['image_in', 'thinking', 'video_in'],
+        displayName: 'Kimi for Coding',
+      },
     });
 
-    expect(config.loopControl).toEqual({
+    expect(config['loopControl']).toEqual({
       maxRetriesPerStep: 3,
       maxRalphIterations: 0,
       reservedContextSize: 50000,
       compactionTriggerRatio: 0.85,
     });
-    expect(config.background).toEqual({
+    expect(config['background']).toEqual({
       maxRunningTasks: 4,
       keepAliveOnExit: false,
       killGracePeriodMs: 2000,
       printWaitCeilingS: 3600,
     });
-    expect(config.services?.moonshotSearch?.customHeaders).toEqual({ 'X-Search': '1' });
-    expect(config.services?.moonshotFetch?.apiKey).toBe('sk-fetch');
+    const services = config['services'] as Record<string, Record<string, unknown>> | undefined;
+    expect((services?.['moonshotSearch'] as Record<string, unknown> | undefined)?.['customHeaders']).toEqual({ 'X-Search': '1' });
+    expect((services?.['moonshotFetch'] as Record<string, unknown> | undefined)?.['apiKey']).toBe('sk-fetch');
 
     expect('theme' in config).toBe(false);
-    expect(config.raw?.['theme']).toBe('dark');
-    expect(config.raw?.['skip_afk_prompt_injection']).toBe(false);
-    expect(config.raw?.['show_thinking_stream']).toBe(true);
-    expect(config.raw?.['notifications']).toEqual({ claim_stale_after_ms: 15000 });
+    expect(config['raw']).toMatchObject({
+      theme: 'dark',
+      skip_afk_prompt_injection: false,
+      show_thinking_stream: true,
+      notifications: { claim_stale_after_ms: 15000 },
+    });
   });
 
   it('writes typed fields in snake_case and preserves unknown raw sections', async () => {
     const dir = await makeTempDir();
     const configPath = join(dir, 'config.toml');
-    const config = parseConfigString(COMPLETE_TOML, configPath);
+    const config = parseConfigString(COMPLETE_TOML, configPath) as Record<string, unknown>;
 
     await writeConfigFile(configPath, {
-      ...config,
+      ...(config as Record<string, unknown>),
       defaultModel: 'kimi-for-coding',
       loopControl: {
-        ...config.loopControl,
+        ...(config['loopControl'] as Record<string, unknown>),
         maxStepsPerTurn: 42,
       },
-    });
+    } as Record<string, unknown>);
 
     const text = await readFile(configPath, 'utf-8');
     expect(text).toContain('default_model = "kimi-for-coding"');
@@ -199,9 +204,9 @@ max_context_size = "large"
     expect(text).toContain('claim_stale_after_ms = 15000');
     expect(text).toContain('theme = "dark"');
 
-    const reloaded = readConfigFile(configPath);
-    expect(reloaded.loopControl?.maxStepsPerTurn).toBe(42);
-    expect(reloaded.raw?.['theme']).toBe('dark');
+    const reloaded = readConfigFile(configPath) as Record<string, unknown>;
+    expect((reloaded['loopControl'] as Record<string, unknown> | undefined)?.['maxStepsPerTurn']).toBe(42);
+    expect((reloaded['raw'] as Record<string, unknown> | undefined)?.['theme']).toBe('dark');
   });
 
   it('accepts camelCase aliases without keeping unknown fields in typed config', () => {
@@ -232,28 +237,33 @@ maxStepsPerRun = 7
 maxRunningTasks = 2
 `);
 
-    expect(config.defaultModel).toBe('camel-model');
-    expect(config.providers['local']).toMatchObject({
+    const cfg = config as Record<string, unknown>;
+    expect(cfg['defaultModel']).toBe('camel-model');
+    expect((cfg['providers'] as Record<string, Record<string, unknown>> | undefined)?.['local']).toMatchObject({
       type: 'openai',
       baseUrl: 'https://example.test/v1',
       apiKey: 'sk-test',
     });
-    expect(config.models?.['camel-model']).toMatchObject({
+    expect((cfg['models'] as Record<string, Record<string, unknown>> | undefined)?.['camel-model']).toMatchObject({
       maxContextSize: 128000,
       displayName: 'Camel Model',
     });
-    expect(config.services?.moonshotSearch).toMatchObject({
+    const svcs = cfg['services'] as Record<string, Record<string, unknown>> | undefined;
+    expect(svcs?.['moonshotSearch']).toMatchObject({
       baseUrl: 'https://example.test/search',
       apiKey: 'sk-search',
     });
-    expect(config.loopControl?.maxStepsPerTurn).toBe(7);
-    expect(config.background?.maxRunningTasks).toBe(2);
+    expect((cfg['loopControl'] as Record<string, unknown> | undefined)?.['maxStepsPerTurn']).toBe(7);
+    expect((cfg['background'] as Record<string, unknown> | undefined)?.['maxRunningTasks']).toBe(2);
 
-    expect('unsupportedProviderField' in config.providers['local']!).toBe(false);
-    expect('customModelField' in config.models!['camel-model']!).toBe(false);
+    const providers = cfg['providers'] as Record<string, Record<string, unknown>>;
+    expect('unsupportedProviderField' in (providers['local'] as Record<string, unknown>)).toBe(false);
+    const models = cfg['models'] as Record<string, Record<string, unknown>>;
+    expect('customModelField' in (models['camel-model'] as Record<string, unknown>)).toBe(false);
 
-    const rawProviders = config.raw?.['providers'] as Record<string, Record<string, unknown>>;
-    const rawModels = config.raw?.['models'] as Record<string, Record<string, unknown>>;
+    const rawCfg = cfg['raw'] as Record<string, unknown>;
+    const rawProviders = rawCfg['providers'] as Record<string, Record<string, unknown>>;
+    const rawModels = rawCfg['models'] as Record<string, Record<string, unknown>>;
     expect(rawProviders['local']?.['unsupported_provider_field']).toBe('raw-only');
     expect(rawModels['camel-model']?.['custom_model_field']).toBe('raw-only');
   });
@@ -281,14 +291,15 @@ describe('KimiHarness config API', () => {
     });
 
     const config = await harness.getConfig({ reload: true });
-    expect(config.providers['kimi-for-coding']).toMatchObject({
+    expect(config.providers!['kimi-for-coding']).toMatchObject({
       type: 'kimi',
       baseUrl: 'https://api.kimi.com/coding/v1',
       apiKey: 'sk-updated',
       env: { GOOGLE_CLOUD_PROJECT: 'project-1' },
     });
-    expect(config.services?.moonshotSearch?.apiKey).toBe('sk-search-updated');
-    expect(config.raw?.['theme']).toBe('dark');
+    const svcs = config['services'] as Record<string, Record<string, unknown>> | undefined;
+    expect(svcs?.['moonshotSearch']?.['apiKey']).toBe('sk-search-updated');
+    expect((config['raw'] as Record<string, unknown> | undefined)?.['theme']).toBe('dark');
 
     const text = await readFile(configPath, 'utf-8');
     expect(text).toContain('theme = "dark"');
@@ -343,6 +354,17 @@ describe('KimiHarness config API', () => {
         env: 'KIMI_CODE_EXPERIMENTAL_TOOL_SELECT',
         defaultEnabled: false,
         enabled: false,
+        source: 'default',
+      },
+      {
+        id: 'expert-teams',
+        title: 'Expert teams',
+        description:
+          'Activate plugin-defined expert-team modes with a lead and declared specialist agents.',
+        surface: 'both',
+        env: 'KIMI_CODE_EXPERIMENTAL_EXPERT_TEAMS',
+        defaultEnabled: true,
+        enabled: true,
         source: 'default',
       },
     ]);

@@ -31,8 +31,88 @@
  * declare `protocol`.
  */
 
-import { effectiveModelAlias, type ProviderType } from '@moonshot-ai/agent-core';
 import type { KimiHarness, ModelAlias } from '@moonshot-ai/kimi-code-sdk';
+
+// ── Local mirrors of legacy @moonshot-ai/agent-core helpers ──────────────
+// The canonical implementations live in @moonshot-ai/agent-core-v2's IModelCatalog
+// service and @moonshot-ai/kosong/providers/anthropic-profile. These adapter-local
+// versions cover only what the ACP model picker needs.
+
+type ProviderType = string;
+
+const CLAUDE_FAMILY_RE = /\b(?:opus|sonnet|haiku|fable|mythos)\b/;
+
+/**
+ * Minimal profile for unknown Claude-marked models served over an Anthropic-
+ * compatible protocol.  Returns the latest-Opus effort list, matching the
+ * runtime behaviour of `matchUnknownClaudeProfile` in kosong.
+ */
+interface AnthropicProfile {
+  readonly canDisableThinking: boolean;
+  readonly efforts: readonly string[];
+}
+const LATEST_OPUS_PROFILE: AnthropicProfile = {
+  canDisableThinking: true,
+  efforts: ['low', 'medium', 'high', 'xhigh', 'max'],
+};
+
+function matchUnknownClaudeProfile(model: string): AnthropicProfile | undefined {
+  const normalized = model.toLowerCase();
+  if (normalized.includes('claude') || CLAUDE_FAMILY_RE.test(normalized)) {
+    return LATEST_OPUS_PROFILE;
+  }
+  return undefined;
+}
+
+/**
+ * Apply runtime overlays (overrides, Anthropic profile defaults) to a model
+ * alias.  Local mirror of the legacy `@moonshot-ai/agent-core` helper of the
+ * same name — returns a new object, never mutates the input.
+ */
+function effectiveModelAlias(
+  alias: ModelAlias,
+  providerType?: ProviderType,
+): ModelAlias {
+  const { overrides, ...base } = alias;
+  const effective = overrides === undefined
+    ? alias
+    : ({ ...base, ...overrides } as ModelAlias);
+
+  // Clamp maxInputSize <= maxContextSize
+  const clamped: ModelAlias =
+    effective.maxInputSize !== undefined &&
+    effective.maxInputSize > (effective.maxContextSize ?? 0)
+      ? ({ ...effective, maxInputSize: effective.maxContextSize } as ModelAlias)
+      : effective;
+
+  // Apply Anthropic profile for Claude-compatible models on non-Kimi providers
+  if (providerType !== 'kimi' && providerType !== undefined) {
+    const profile = matchUnknownClaudeProfile(clamped.model);
+    if (profile !== undefined) {
+      const capability = profile.canDisableThinking ? 'thinking' : 'always_thinking';
+      const capabilities = clamped.capabilities ?? [];
+      const hasCapability = capabilities.some(
+        (c) => c.trim().toLowerCase() === capability,
+      );
+      const supportEfforts: string[] = clamped.supportEfforts !== undefined
+        ? [...clamped.supportEfforts]
+        : [...profile.efforts];
+
+      return {
+        ...clamped,
+        capabilities: hasCapability ? capabilities : [...capabilities, capability],
+        supportEfforts,
+        ...(clamped.defaultEffort !== undefined
+          ? { defaultEffort: clamped.defaultEffort }
+          : supportEfforts.includes('high')
+            ? { defaultEffort: 'high' }
+            : {}),
+      } as ModelAlias;
+    }
+  }
+
+  return clamped;
+}
 
 /**
  * One catalog row per configured model alias, suitable for an ACP
@@ -50,7 +130,7 @@ export interface AcpModelEntry {
   /**
    * The model's selectable thinking-effort levels: declared
    * `support_efforts` after override/provider-profile resolution (blank
-   * entries dropped, mirroring agent-core's `effortsFor`). Empty for
+   * entries dropped, mirroring v2's `effortsFor`). Empty for
    * boolean models, where the ACP picker keeps the legacy `off`/`on`
    * pair instead of per-level rows.
    */
@@ -59,7 +139,7 @@ export interface AcpModelEntry {
    * The thinking effort to send when the client picks the legacy `'on'`
    * value: the model's declared `default_effort`, else the middle
    * `support_efforts` entry, else `'on'` for boolean models. Mirrors
-   * agent-core's `defaultThinkingEffortFor` so the ACP on-state matches
+   * v2's `defaultThinkingEffortFor` so the ACP on-state matches
    * the TUI.
    */
   readonly defaultThinkingEffort: string;
@@ -99,7 +179,7 @@ export function deriveAlwaysThinking(alias: ModelAlias, providerType?: ProviderT
 /**
  * The model's selectable thinking-effort levels: declared
  * `support_efforts` (after override/provider-profile resolution) with
- * blank entries dropped — mirrors agent-core's `effortsFor`. Empty for
+ * blank entries dropped — mirrors v2's `effortsFor`. Empty for
  * boolean models (thinking support without `support_efforts`).
  */
 export function deriveSupportEfforts(
@@ -168,7 +248,7 @@ export async function listModelsFromHarness(
  * The alias's provider type, resolved like
  * `ProviderManager.resolveProviderConfig` does: the alias's provider (falling
  * back to the configured default provider). The Anthropic fallback profile in
- * `effectiveModelAlias` only applies to non-Kimi providers, and then only to
+ * `effectiveModelAlias` (local mirror) only applies to non-Kimi providers, and then only to
  * model names that still carry a Claude marker — a custom-named Claude model
  * on a `type = "anthropic"` provider still gets an inferred effort list,
  * while managed Kimi models and clearly non-Claude names keep only their

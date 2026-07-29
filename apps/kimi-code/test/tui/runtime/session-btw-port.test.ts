@@ -9,17 +9,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { createKlientSessionBtwPort } from '#/tui/runtime/klient-session-btw-adapter';
-import { createLegacySessionBtwPort } from '#/tui/runtime/legacy-session-btw-adapter';
 
 describe('session BTW runtime port (adapter contract)', () => {
-  it('legacy start returns the child agent ID from Session.startBtw', async () => {
-    const startBtw = vi.fn(async () => 'agent-legacy-side');
-    const port = createLegacySessionBtwPort({ startBtw });
-
-    await expect(port.start()).resolves.toBe('agent-legacy-side');
-    expect(startBtw).toHaveBeenCalledOnce();
-  });
-
   it('Klient start returns the child agent ID from session.btw.start', async () => {
     const start = vi.fn(async () => 'agent-klient-side');
     const port = createKlientSessionBtwPort({ btw: { start } });

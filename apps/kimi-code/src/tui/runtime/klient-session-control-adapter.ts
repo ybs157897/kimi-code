@@ -2,8 +2,11 @@ import type { KimiV2Runtime } from '@moonshot-ai/kimi-code-sdk/v2';
 
 import {
   MAIN_AGENT_ID,
+  type AgentGoal,
+  type AgentPlan,
   type AgentPromptInput,
   type AgentPromptPart,
+  type AgentTask,
   type SessionAgentControlPort,
   type SessionControlPort,
   type SessionIdentity,
@@ -177,7 +180,7 @@ function createKlientAgentControl(agent: KlientAgent): SessionAgentControlPort {
     setPermission: async (mode) => {
       await agent.setPermission(mode);
     },
-    getPlan: () => agent.getPlan(),
+    getPlan: async () => copyPlan(await agent.getPlan()),
     setPlanMode: async (enabled) => {
       if (enabled) {
         await agent.enterPlan();
@@ -188,17 +191,23 @@ function createKlientAgentControl(agent: KlientAgent): SessionAgentControlPort {
     clearPlan: async () => {
       await agent.clearPlan();
     },
-    getGoal: () => agent.goal.get(),
-    createGoal: (input) => agent.goal.create(input),
-    pauseGoal: () => agent.goal.pause(),
-    resumeGoal: () => agent.goal.resume(),
-    cancelGoal: () => agent.goal.cancel(),
-    listTasks: (input = {}) =>
-      agent.getTasks({
+    getGoal: async () => {
+      const goal = await agent.goal.get();
+      return goal === null ? null : copyGoal(goal);
+    },
+    createGoal: async (input) => copyGoal(await agent.goal.create(input)),
+    pauseGoal: async () => copyGoal(await agent.goal.pause()),
+    resumeGoal: async () => copyGoal(await agent.goal.resume()),
+    cancelGoal: async () => copyGoal(await agent.goal.cancel()),
+    listTasks: async (input = {}) =>
+      (await agent.getTasks({
         activeOnly: input.activeOnly,
         limit: input.limit,
-      }),
-    detachTask: (taskId) => agent.detachTask({ taskId }),
+      })).map(copyTask),
+    detachTask: async (taskId) => {
+      const task = await agent.detachTask({ taskId });
+      return task === undefined ? undefined : copyTask(task);
+    },
     getTaskOutput: (taskId, tail) => agent.getTaskOutput({ taskId, tail }),
     stopTask: async (taskId, reason) => {
       await agent.stopTask({ taskId, reason });
@@ -233,5 +242,55 @@ function klientMetaIdentity(meta: KlientSessionMeta): SessionIdentity {
     updatedAt: meta.updatedAt,
     archived: meta.archived,
     metadata: meta.custom === undefined ? undefined : { ...meta.custom },
+  };
+}
+
+/**
+ * Narrow the Klient facade's wire payloads to the runtime-neutral DTOs the
+ * TUI owns. The Klient memory transport already JSON-clones payloads, but
+ * siblings (e.g. the goal-queue adapter) still select only the declared
+ * fields so the controller can never observe engine-only additions; these
+ * do the same for the agent-control surface.
+ */
+function copyPlan(plan: Awaited<ReturnType<KlientAgent['getPlan']>>): AgentPlan | null {
+  if (plan === null) return null;
+  return { id: plan.id, content: plan.content, path: plan.path };
+}
+
+function copyGoal(goal: Awaited<ReturnType<KlientAgent['goal']['create']>>): AgentGoal {
+  return {
+    goalId: goal.goalId,
+    objective: goal.objective,
+    completionCriterion: goal.completionCriterion,
+    status: goal.status,
+    turnsUsed: goal.turnsUsed,
+    tokensUsed: goal.tokensUsed,
+    wallClockMs: goal.wallClockMs,
+    budget: goal.budget,
+    terminalReason: goal.terminalReason,
+  };
+}
+
+function copyTask(
+  task: Awaited<ReturnType<KlientAgent['getTasks']>>[number],
+): AgentTask {
+  // Kind-specific fields live on separate arms of the discriminated union.
+  const kindFields =
+    task.kind === 'process'
+      ? { command: task.command, pid: task.pid, exitCode: task.exitCode }
+      : task.kind === 'agent'
+        ? { agentId: task.agentId, subagentType: task.subagentType }
+        : { questionCount: task.questionCount, toolCallId: task.toolCallId };
+  return {
+    taskId: task.taskId,
+    kind: task.kind,
+    description: task.description,
+    status: task.status,
+    detached: task.detached,
+    startedAt: task.startedAt,
+    endedAt: task.endedAt,
+    stopReason: task.stopReason,
+    timeoutMs: task.timeoutMs,
+    ...kindFields,
   };
 }

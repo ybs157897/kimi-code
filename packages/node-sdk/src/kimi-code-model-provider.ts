@@ -1,11 +1,5 @@
-import {
-  ErrorCodes,
-  KimiError,
-  resolveKimiHome,
-  type Logger,
-  type ModelProvider,
-  type ResolvedRuntimeProvider,
-} from '@moonshot-ai/agent-core';
+import { ErrorCodes, KimiError } from '#/sdk-errors';
+import { resolveKimiHome } from '#/sdk-paths';
 import {
   createKimiDefaultHeaders,
   KIMI_CODE_FLOW_CONFIG,
@@ -24,6 +18,30 @@ import type {
 import { APIStatusError, UNKNOWN_CAPABILITY } from '@moonshot-ai/kosong';
 
 import { mapOAuthTokenError } from '#/oauth-error';
+
+// Local type aliases for legacy agent-core types that this provider implements.
+// These are structurally compatible — no import from @moonshot-ai/agent-core.
+interface Logger {
+  error(message: string, payload?: Record<string, unknown> | Error): void;
+  warn(message: string, payload?: Record<string, unknown> | Error): void;
+  info(message: string, payload?: Record<string, unknown> | Error): void;
+  debug(message: string, payload?: Record<string, unknown> | Error): void;
+  createChild(ctx: Record<string, unknown>): Logger;
+}
+
+interface ModelProvider {
+  readonly defaultModel: string;
+  resolveProviderConfig(model: string): ResolvedRuntimeProvider;
+  resolveAuth(model: string, options?: { readonly log?: Logger }): <T>(request: (auth: ProviderRequestAuth) => Promise<T>) => Promise<T>;
+}
+
+interface ResolvedRuntimeProvider {
+  readonly providerName: string;
+  readonly provider: KosongProviderConfig;
+  readonly modelCapabilities: typeof UNKNOWN_CAPABILITY;
+  readonly type: string;
+  readonly protocol: string | undefined;
+}
 
 export interface KimiForCodingProviderOptions extends KimiHostIdentity {
   readonly homeDir?: string;

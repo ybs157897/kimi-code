@@ -1,51 +1,14 @@
 /**
  * Scenario: context mutations for one active session-agent pair cross the TUI
- * runtime boundary. Responsibilities: both adapters expose compact,
+ * runtime boundary. Responsibilities: the adapter exposes compact,
  * cancellation, and history undo with their documented result semantics.
- * Wiring: a small legacy Session or Klient agent facade is the only stub.
+ * Wiring: a small Klient agent facade is the only stub.
  * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/runtime/session-context-control-port.test.ts
  */
 
 import { describe, expect, it, vi } from 'vitest';
 
 import { createKlientSessionContextControlPort } from '#/tui/runtime/klient-session-context-control-adapter';
-import { createLegacySessionContextControlPort } from '#/tui/runtime/legacy-session-context-control-adapter';
-
-describe('legacy session context control adapter', () => {
-  it('returns true when compact completes through the active session', async () => {
-    const compact = vi.fn(async () => undefined);
-    const port = createLegacySessionContextControlPort(
-      legacySession({ compact }),
-    );
-
-    const result = await port.compact({ instruction: 'Keep decisions.' });
-
-    expect(result).toBe(true);
-    expect(compact).toHaveBeenCalledWith({ instruction: 'Keep decisions.' });
-  });
-
-  it('delegates cancellation when compaction is active', async () => {
-    const cancelCompaction = vi.fn(async () => undefined);
-    const port = createLegacySessionContextControlPort(
-      legacySession({ cancelCompaction }),
-    );
-
-    await port.cancelCompaction();
-
-    expect(cancelCompaction).toHaveBeenCalledOnce();
-  });
-
-  it('uses one history item when undoHistory omits the count', async () => {
-    const undoHistory = vi.fn(async () => undefined);
-    const port = createLegacySessionContextControlPort(
-      legacySession({ undoHistory }),
-    );
-
-    await port.undoHistory();
-
-    expect(undoHistory).toHaveBeenCalledWith(1);
-  });
-});
 
 describe('Klient session context control adapter', () => {
   it('returns the compact result from the selected agent when instructed', async () => {
@@ -85,21 +48,6 @@ describe('Klient session context control adapter', () => {
     expect(undoHistory).toHaveBeenCalledWith(3);
   });
 });
-
-function legacySession(
-  overrides: Partial<{
-    compact: (input?: { instruction?: string }) => Promise<void>;
-    cancelCompaction: () => Promise<void>;
-    undoHistory: (count?: number) => Promise<void>;
-  }> = {},
-) {
-  return {
-    compact: vi.fn(async () => undefined),
-    cancelCompaction: vi.fn(async () => undefined),
-    undoHistory: vi.fn(async () => undefined),
-    ...overrides,
-  };
-}
 
 function klientAgent(
   overrides: Partial<{

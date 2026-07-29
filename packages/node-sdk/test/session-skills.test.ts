@@ -19,7 +19,11 @@ import {
 } from '#/index';
 import type { SDKRpcClientBase } from '#/rpc';
 
-import { normalizeWorkDir } from '../../agent-core/src/session/store';
+// Inlined minimal version of normalizeWorkDir to avoid importing agent-core.
+import { resolve as nodeResolve } from 'node:path';
+function normalizeWorkDir(workDir: string): string {
+  return nodeResolve(workDir);
+}
 import {
   makeTempDir,
   removeTempDirs,
@@ -300,7 +304,7 @@ describe('Session skills', () => {
 
   it('exposes public skill event and summary types', () => {
     expectTypeOf<SkillSummary['name']>().toEqualTypeOf<string>();
-    expectTypeOf<SkillActivatedEvent['skillName']>().toEqualTypeOf<string>();
+    expectTypeOf<SkillActivatedEvent['name']>().toEqualTypeOf<string | undefined>();
   });
 });
 

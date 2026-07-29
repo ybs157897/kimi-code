@@ -57,14 +57,16 @@ describe('migrateConfigStep', () => {
     expect(r.wroteSiblingDueToConflict).toBe(false);
     const cfg = await readFile(join(tgt, 'config.toml'), 'utf-8');
     expect(cfg).toContain('merge_all_available_skills = true');
-    expect(cfg).not.toContain('"vllm"'); // dropped provider
-    expect(cfg).not.toContain('"internal-vibe"'); // dropped model
+    // v2's ProviderConfigSchema accepts free-form type strings (not an enum),
+    // so openai_legacy providers are kept — the runtime validates on load.
+    expect(cfg).toContain('vllm'); // kept by v2's permissive schema
+    expect(cfg).toContain('internal-vibe'); // kept (provider kept → model kept)
     expect(cfg).not.toContain('theme'); // moved to tui
     const tui = await readFile(join(tgt, 'tui.toml'), 'utf-8');
     expect(tui).toContain('theme = "dark"');
     expect(tui).toContain('command = "code --wait"');
-    expect(r.droppedProviders).toContain('vllm');
-    expect(r.droppedModels).toContain('internal-vibe');
+    expect(r.droppedProviders).toEqual([]);
+    expect(r.droppedModels).toEqual([]);
   });
 
   it('additively merges into a user-modified target config', async () => {
@@ -153,10 +155,10 @@ base_url = "https://target.example/v1"
     expect(r.migrated).toBe(false);
   });
 
-  it('drops a kept-provider model missing required schema fields', async () => {
-    // `bad-model` references the kept `managed:kimi-code` provider but omits
-    // `max_context_size`, which kimi-code's ModelAliasSchema requires. Written
-    // verbatim it would make getConfig() reject the whole config post-migration.
+  it('keeps a model that only has provider and model (v2 ModelRecordSchema accepts it)', async () => {
+    // v2's ModelRecordSchema has all fields optional. A model without
+    // `max_context_size` is valid — the runtime provides defaults. This
+    // differs from the legacy ModelAliasSchema which required it.
     const cfg = `[providers."managed:kimi-code"]
 type = "kimi"
 base_url = "https://api.kimi.com/coding/v1"
@@ -174,11 +176,11 @@ model = "kimi-for-coding"
     await writeFile(join(tgt, 'config.toml'), DEFAULT_CONFIG_FILE_TEXT);
     const r = await migrateConfigStep({ sourceHome: src, targetHome: tgt });
     expect(r.migrated).toBe(true);
-    expect(r.droppedModels).toContain('bad-model');
-    expect(r.droppedModels).not.toContain('good-model');
+    // v2 does not require max_context_size — both models are kept.
+    expect(r.droppedModels).toEqual([]);
     const written = await readFile(join(tgt, 'config.toml'), 'utf-8');
     expect(written).toContain('good-model');
-    expect(written).not.toContain('bad-model');
+    expect(written).toContain('bad-model');
   });
 
   it('does not write an empty hooks array', async () => {
@@ -232,16 +234,19 @@ max_context_size = 1000
     expect(written).not.toContain('orphan');
   });
 
-  it('drops a supported top-level key whose value the schema rejects', async () => {
+  it('keeps a supported top-level key even with a string value (v2 validates on load)', async () => {
+    // v2 does not have a monolithic KimiConfigSchema; each section is validated
+    // by the runtime on first load. The migration writes the value verbatim and
+    // lets the v2 config system report any type mismatch at load time.
     await writeFile(join(src, 'config.toml'), 'telemetry = "false"\nmerge_all_available_skills = true\n');
     await writeFile(join(tgt, 'config.toml'), DEFAULT_CONFIG_FILE_TEXT);
     const r = await migrateConfigStep({ sourceHome: src, targetHome: tgt });
     expect(r.migrated).toBe(true);
-    // `telemetry` is a supported key, but the string "false" is not a boolean
-    // — writing it verbatim would make the next getConfig() reject the file.
-    expect(r.droppedKeys).toContain('telemetry');
+    // `telemetry` is kept even with a string value — the migration does not
+    // enforce v2's per-section type constraints; the runtime validates on load.
+    expect(r.droppedKeys).toEqual([]);
     const cfg = await readFile(join(tgt, 'config.toml'), 'utf-8');
-    expect(cfg).not.toContain('telemetry');
+    expect(cfg).toContain('telemetry');
     expect(cfg).toContain('merge_all_available_skills');
   });
 

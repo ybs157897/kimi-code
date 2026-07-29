@@ -9,11 +9,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKlientRuntimeAuthPort } from '#/tui/runtime/klient-runtime-auth-adapter';
-import { createLegacyRuntimeAuthPort } from '#/tui/runtime/legacy-runtime-auth-adapter';
-
-type LegacyAuthFacade = Parameters<
-  typeof createLegacyRuntimeAuthPort
->[0]['auth'];
 
 const PENDING_FLOW = {
   flow_id: 'flow-example',
@@ -58,136 +53,6 @@ function managedUsageResult() {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
-});
-
-describe('legacy runtime auth adapter (facade normalization)', () => {
-  it('returns the neutral status when the harness reports a provider token', async () => {
-    const status = vi.fn(async () => ({
-      providers: [{ providerName: 'example-provider', hasToken: true }],
-    }));
-    const { port } = legacyRig({ status });
-
-    await expect(port.status('example-provider')).resolves.toEqual({
-      loggedIn: true,
-      provider: 'example-provider',
-    });
-    expect(status).toHaveBeenCalledWith('example-provider');
-  });
-
-  it('returns isolated neutral managed usage when the harness supplies account data', async () => {
-    const source = managedUsageResult();
-    const getManagedUsage = vi.fn(async () => source);
-    const { port } = legacyRig({ getManagedUsage });
-
-    const result = await port.getManagedUsage('example-provider');
-
-    expect(result).toEqual({
-      kind: 'ok',
-      summary: {
-        label: 'Monthly',
-        used: 20,
-        limit: 100,
-        resetHint: 'resets next month',
-      },
-      limits: [
-        {
-          label: 'Five hour',
-          used: 8,
-          limit: 50,
-          resetHint: 'resets in 2h',
-        },
-      ],
-      extraUsage: {
-        balanceCents: 1500,
-        totalCents: 5000,
-        monthlyChargeLimitEnabled: true,
-        monthlyChargeLimitCents: 3000,
-        monthlyUsedCents: 700,
-        currency: 'USD',
-      },
-    });
-    expect(getManagedUsage).toHaveBeenCalledWith('example-provider');
-    if (result.kind !== 'ok') throw new Error('expected managed usage');
-    expect(result.summary).not.toBe(source.summary);
-    expect(result.limits).not.toBe(source.limits);
-    expect(result.limits[0]).not.toBe(source.limits[0]);
-    expect(result.extraUsage).not.toBe(source.extraUsage);
-  });
-
-  it('copies managed usage errors returned by the harness', async () => {
-    const getManagedUsage = vi.fn(async () => ({
-      kind: 'error' as const,
-      message: 'Managed usage unavailable.',
-      status: 503,
-    }));
-    const { port } = legacyRig({ getManagedUsage });
-
-    await expect(
-      port.getManagedUsage('example-provider'),
-    ).resolves.toEqual({
-      kind: 'error',
-      message: 'Managed usage unavailable.',
-      status: 503,
-    });
-  });
-
-  it('projects device-code details when legacy login requests authorization', async () => {
-    const signal = new AbortController().signal;
-    const onDeviceCode = vi.fn();
-    const login = vi.fn<LegacyAuthFacade['login']>(
-      async (_provider, options) => {
-        await options?.onDeviceCode?.({
-          deviceCode: 'private-device-code',
-          verificationUri: 'https://example.test/device',
-          verificationUriComplete:
-            'https://example.test/device?code=ABCD-EFGH',
-          userCode: 'ABCD-EFGH',
-          expiresIn: null,
-          interval: 5,
-        });
-        return {
-          providerName: 'example-provider',
-          ok: true,
-          defaultModel: 'example-model',
-          defaultThinking: false,
-        };
-      },
-    );
-    const { port } = legacyRig({ login });
-
-    await port.login('example-provider', { signal, onDeviceCode });
-
-    expect(login).toHaveBeenCalledWith(
-      'example-provider',
-      expect.objectContaining({ signal }),
-    );
-    expect(onDeviceCode).toHaveBeenCalledWith({
-      verificationUri: 'https://example.test/device',
-      verificationUriComplete:
-        'https://example.test/device?code=ABCD-EFGH',
-      userCode: 'ABCD-EFGH',
-      expiresIn: null,
-      interval: 5,
-    });
-  });
-
-  it('forwards the provider when logout clears legacy authentication', async () => {
-    const logout = vi.fn(async () => ({
-      providerName: 'example-provider',
-      ok: true as const,
-    }));
-    const { port } = legacyRig({ logout });
-
-    await expect(port.logout('example-provider')).resolves.toBeUndefined();
-
-    expect(logout).toHaveBeenCalledWith('example-provider');
-  });
-
-  it('resolves readiness when the legacy prompt path owns the readiness gate', async () => {
-    const { port } = legacyRig();
-
-    await expect(port.ensureReady('example-model')).resolves.toBeUndefined();
-  });
 });
 
 describe('Klient runtime auth adapter (flow orchestration)', () => {
@@ -402,55 +267,6 @@ describe('Klient runtime auth adapter (flow orchestration)', () => {
     expect(ensureReady).toHaveBeenCalledWith('example-model');
   });
 });
-
-function legacyRig(
-  overrides: Partial<LegacyAuthFacade> = {},
-) {
-  const auth: LegacyAuthFacade = {
-    status:
-      overrides.status ??
-      vi.fn(async () => ({
-        providers: [{ providerName: 'example-provider', hasToken: false }],
-      })),
-    login:
-      overrides.login ??
-      vi.fn(async () => ({
-        providerName: 'example-provider',
-        ok: true as const,
-        defaultModel: 'example-model',
-        defaultThinking: false,
-      })),
-    logout:
-      overrides.logout ??
-      vi.fn(async () => ({
-        providerName: 'example-provider',
-        ok: true as const,
-      })),
-    getManagedUsage:
-      overrides.getManagedUsage ??
-      vi.fn(async () => ({
-        kind: 'error' as const,
-        message: 'Managed usage unavailable.',
-      })),
-    submitFeedback:
-      overrides.submitFeedback ??
-      vi.fn(async () => ({ kind: 'ok' as const, feedbackId: 3 })),
-    createFeedbackUploadUrl:
-      overrides.createFeedbackUploadUrl ??
-      vi.fn(async () => ({
-        kind: 'error' as const,
-        message: 'Feedback upload unavailable.',
-      })),
-    completeFeedbackUpload:
-      overrides.completeFeedbackUpload ??
-      vi.fn(async () => ({
-        kind: 'error' as const,
-        message: 'Feedback upload unavailable.',
-      })),
-  };
-  const port = createLegacyRuntimeAuthPort({ auth });
-  return { auth, port };
-}
 
 function klientRig(
   overrides: Partial<{

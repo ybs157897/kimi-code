@@ -1,15 +1,14 @@
 /**
  * Scenario: process-level experimental feature flags cross the TUI runtime
- * boundary. Responsibilities: both adapters map neutral state, persist only
- * explicit changes, refresh after apply, copy referenced data, and preserve
- * boundary errors. The legacy harness and Klient facade are the only stubs.
+ * boundary. Responsibilities: the adapter maps neutral state, persists only
+ * explicit changes, refreshes after apply, copies referenced data, and preserves
+ * boundary errors. The Klient facade is the only stub.
  * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/runtime/runtime-feature-flags-port.test.ts
  */
 
 import { describe, expect, it, vi } from 'vitest';
 
 import { createKlientRuntimeFeatureFlagsPort } from '#/tui/runtime/klient-runtime-feature-flags-adapter';
-import { createLegacyRuntimeFeatureFlagsPort } from '#/tui/runtime/legacy-runtime-feature-flags-adapter';
 
 const RAW_FEATURE = {
   id: 'example-feature',
@@ -35,95 +34,7 @@ const FEATURE = {
   configValue: true,
 };
 
-describe('legacy runtime feature flags adapter', () => {
-  it('maps and copies feature state when list reads the harness snapshot', async () => {
-    const rawFeature = { ...RAW_FEATURE };
-    const port = createLegacyRuntimeFeatureFlagsPort(
-      legacyHarness({
-        getExperimentalFeatures: vi.fn(async () => [rawFeature]),
-      }),
-    );
 
-    const features = await port.list();
-
-    expect(features).toEqual([FEATURE]);
-    expect(features[0]).not.toBe(rawFeature);
-  });
-
-  it('copies explicit changes into the legacy experimental config patch', async () => {
-    const setConfig = vi.fn(
-      async (_input: {
-        readonly experimental: Readonly<Record<string, boolean>>;
-      }): Promise<void> => undefined,
-    );
-    const port = createLegacyRuntimeFeatureFlagsPort(
-      legacyHarness({ setConfig }),
-    );
-    const changes = { 'example-feature': true };
-
-    await port.apply(changes);
-
-    expect(setConfig).toHaveBeenCalledExactlyOnceWith({
-      experimental: { 'example-feature': true },
-    });
-    expect(setConfig.mock.calls[0]?.[0].experimental).not.toBe(changes);
-  });
-
-  it('returns the refreshed harness snapshot after apply succeeds', async () => {
-    let persisted = false;
-    const getExperimentalFeatures = vi.fn(async () => [
-      {
-        ...RAW_FEATURE,
-        enabled: !persisted,
-        configValue: !persisted,
-      },
-    ]);
-    const port = createLegacyRuntimeFeatureFlagsPort(
-      legacyHarness({
-        getExperimentalFeatures,
-        setConfig: vi.fn(async () => {
-          persisted = true;
-        }),
-      }),
-    );
-
-    const features = await port.apply({ 'example-feature': false });
-
-    expect(getExperimentalFeatures).toHaveBeenCalledOnce();
-    expect(features).toEqual([
-      { ...FEATURE, enabled: false, configValue: false },
-    ]);
-  });
-
-  it('passes through a harness list failure', async () => {
-    const failure = new Error('legacy feature list failed');
-    const port = createLegacyRuntimeFeatureFlagsPort(
-      legacyHarness({
-        getExperimentalFeatures: vi.fn(async () => {
-          throw failure;
-        }),
-      }),
-    );
-
-    await expect(port.list()).rejects.toBe(failure);
-  });
-
-  it('passes through a harness apply failure without refreshing', async () => {
-    const failure = new Error('legacy feature apply failed');
-    const getExperimentalFeatures = vi.fn(async () => []);
-    const port = createLegacyRuntimeFeatureFlagsPort(
-      legacyHarness({
-        getExperimentalFeatures,
-        setConfig: vi.fn(async () => {
-          throw failure;
-        }),
-      }),
-    );
-
-    await expect(port.apply({ 'example-feature': true })).rejects.toBe(failure);
-    expect(getExperimentalFeatures).not.toHaveBeenCalled();
-  });
-});
 
 describe('Klient runtime feature flags adapter', () => {
   it('maps and copies feature state when list reads the Klient snapshot', async () => {
@@ -216,23 +127,6 @@ describe('Klient runtime feature flags adapter', () => {
     expect(list).not.toHaveBeenCalled();
   });
 });
-
-interface LegacyHarnessOverrides {
-  readonly getExperimentalFeatures?: () => Promise<
-    readonly (typeof RAW_FEATURE)[]
-  >;
-  readonly setConfig?: (input: {
-    readonly experimental: Readonly<Record<string, boolean>>;
-  }) => Promise<unknown>;
-}
-
-function legacyHarness(overrides: LegacyHarnessOverrides = {}) {
-  return {
-    getExperimentalFeatures:
-      overrides.getExperimentalFeatures ?? vi.fn(async () => []),
-    setConfig: overrides.setConfig ?? vi.fn(async () => undefined),
-  };
-}
 
 interface KlientFacadeOverrides {
   readonly list?: () => Promise<readonly (typeof RAW_FEATURE)[]>;

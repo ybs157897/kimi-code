@@ -1,16 +1,16 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
-
 import type {
-  AgentReplayRecord,
-  BackgroundTaskInfo,
-  ContentPart,
-  GoalSnapshot,
-  PromptOrigin,
-  ResumedAgentState,
-  Role,
-  Session,
-  ToolCall,
-} from '@moonshot-ai/kimi-code-sdk';
+  AgentGoal,
+  AgentTask,
+  AgentTaskStatus,
+} from '#/tui/runtime/session-control-port';
+import {
+  type TUIAgentReplay,
+  type TUIAgentReplayRecord,
+  type TUIReplayPromptOrigin,
+} from '#/tui/runtime/agent-events-port';
+import type { TUIContextMessageRole, TUIContentPart, TUIToolCall } from '#/tui/runtime/session-context-view-port';
+import type { TUIRuntime } from '#/tui/runtime/tui-runtime';
+import type { TUISessionRuntime } from '#/tui/runtime/tui-session-runtime';
 import { describe, expect, it, vi } from 'vitest';
 
 import { KimiTUI, type KimiTUIStartupInput, type TUIState } from '#/tui/kimi-tui';
@@ -28,21 +28,12 @@ import { ReadGroupComponent } from '#/tui/components/messages/read-group';
 
 vi.mock('#/utils/open-url', () => ({ openUrl: vi.fn() }));
 
-type GoalReplayRecord = Extract<AgentReplayRecord, { type: 'goal_updated' }>;
+type GoalReplayRecord = Extract<TUIAgentReplayRecord, { type: 'goal_updated' }>;
 
 const REPLAY_TIME = 1_700_000_000_000;
 
 function stripAnsi(text: string): string {
   return text.replaceAll(/\u001B\[[0-9;]*m/g, '');
-}
-
-interface ReplayDriver {
-  readonly harness: ReturnType<typeof makeHarness>;
-  readonly state: TUIState;
-  readonly streamingUI: StreamingUIController;
-  readonly sessionEventHandler: SessionEventHandler;
-  init(): Promise<boolean>;
-  switchToSession(session: Session, statusMessage: string): Promise<void>;
 }
 
 function makeStartupInput(): KimiTUIStartupInput {
@@ -69,19 +60,20 @@ function makeStartupInput(): KimiTUIStartupInput {
     },
     version: '0.0.0-test',
     workDir: '/tmp/proj-a',
+    runtime: makeMockRuntime(),
   };
 }
 
 function message(
-  role: Role,
-  content: readonly ContentPart[],
+  role: TUIContextMessageRole,
+  content: readonly TUIContentPart[],
   extra: {
-    readonly toolCalls?: readonly ToolCall[];
+    readonly toolCalls?: readonly TUIToolCall[];
     readonly toolCallId?: string;
-    readonly origin?: PromptOrigin;
+    readonly origin?: TUIReplayPromptOrigin;
     readonly isError?: boolean;
   } = {},
-): AgentReplayRecord {
+): TUIAgentReplayRecord {
   return {
     time: REPLAY_TIME,
     type: 'message',
@@ -96,7 +88,7 @@ function message(
   };
 }
 
-function toolCall(id: string, name: string, args: Record<string, unknown>): ToolCall {
+function toolCall(id: string, name: string, args: Record<string, unknown>): TUIToolCall {
   return {
     type: 'function',
     id,
@@ -105,7 +97,7 @@ function toolCall(id: string, name: string, args: Record<string, unknown>): Tool
   };
 }
 
-function goalSnapshot(overrides: Partial<GoalSnapshot> = {}): GoalSnapshot {
+function goalSnapshot(overrides: Partial<AgentGoal> = {}): AgentGoal {
   const status = overrides.status ?? 'active';
   return {
     goalId: 'g1',
@@ -132,7 +124,7 @@ function goalSnapshot(overrides: Partial<GoalSnapshot> = {}): GoalSnapshot {
 }
 
 function goalReplay(
-  snapshot: GoalSnapshot,
+  snapshot: AgentGoal,
   change: GoalReplayRecord['change'],
 ): GoalReplayRecord {
   return {
@@ -144,15 +136,14 @@ function goalReplay(
 }
 
 function baseAgentState(
-  replay: readonly AgentReplayRecord[],
-  overrides: Partial<ResumedAgentState> = {},
-): ResumedAgentState {
+  replay: readonly TUIAgentReplayRecord[],
+  overrides: Partial<TUIAgentReplay> = {},
+): TUIAgentReplay {
   return {
     type: 'main',
     config: {
       cwd: '/tmp/proj-a',
       modelAlias: 'k2',
-      provider: undefined,
       modelCapabilities: {
         image_in: false,
         video_in: false,
@@ -161,7 +152,7 @@ function baseAgentState(
         tool_use: true,
         max_context_tokens: 100,
       },
-      thinkingEffort: 'off',
+      thinkingLevel: 'off',
       systemPrompt: '',
     },
     context: { history: [], tokenCount: 0 },
@@ -172,118 +163,176 @@ function baseAgentState(
     usage: {},
     tools: [],
     toolStore: {},
-    background: [],
+    tasks: [],
     ...overrides,
   };
 }
 
-function makeSession(
-  replay: readonly AgentReplayRecord[],
-  overrides: Partial<ResumedAgentState> = {},
-): Session {
-  const agent = baseAgentState(replay, overrides);
+function makeMockRuntime(): TUIRuntime {
   return {
-    id: 'ses-replay',
-    model: 'k2',
-    summary: { title: null },
+    environment: {
+      homeDir: '/tmp/test',
+      getExperimentalFeatures: vi.fn(async () => []),
+      getConfigDiagnostics: vi.fn(async () => []),
+      close: vi.fn(),
+    },
+    telemetry: { track: vi.fn(), setContext: vi.fn() },
+    sessionControl: {
+      sessions: {
+        list: vi.fn(async () => []),
+        create: vi.fn(async () => ({ id: 'test', workDir: '/tmp/proj-a', createdAt: Date.now(), updatedAt: Date.now(), archived: false })),
+        resume: vi.fn(async () => undefined),
+      },
+    },
+    auth: { status: vi.fn(), login: vi.fn(), logout: vi.fn(), getManagedUsage: vi.fn(), ensureReady: vi.fn() },
+    models: { load: vi.fn(async () => ({ defaultModel: '', models: {}, providers: {} })) },
+    modelConfig: { apply: vi.fn(), removeProvider: vi.fn() },
+    featureFlags: { list: vi.fn(async () => []), apply: vi.fn() },
+    providerRefresh: { refresh: vi.fn() },
+    sessionExport: { export: vi.fn() },
+    bindSession: vi.fn(() => ({}) as never),
+  };
+}
+
+async function makeDriver(): Promise<KimiTUI> {
+  const driver = new KimiTUI(makeStartupInput());
+  vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
+  vi.spyOn(driver.state.terminal, 'setProgress').mockImplementation(() => {});
+  await (driver as unknown as { init(): Promise<boolean> }).init();
+  return driver;
+}
+
+function makeReplaySessionRuntime(
+  replay: readonly TUIAgentReplayRecord[],
+  overrides: Partial<TUIAgentReplay> = {},
+): { sessionRuntime: TUISessionRuntime; agentReplay: TUIAgentReplay } {
+  const agentReplay = baseAgentState(replay, overrides);
+  const readReplay = vi.fn(async () => agentReplay);
+
+  const agentEvents = {
+    sessionId: 'ses-replay',
+    agentId: 'main',
+    subscribe: vi.fn(() => vi.fn()),
+    readReplay,
+  };
+
+  const lifecycle = {
+    getIdentity: vi.fn(async () => ({
+      id: 'ses-replay',
+      workDir: '/tmp/proj-a',
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+      archived: false,
+    })),
+    close: vi.fn(),
+    setTitle: vi.fn(),
+    fork: vi.fn(),
+  };
+
+  const agent = {
     getStatus: vi.fn(async () => ({
       model: 'k2',
       thinkingEffort: 'off',
-      permission: 'manual',
+      permission: 'manual' as const,
       planMode: false,
       contextTokens: 0,
       maxContextTokens: 100,
       contextUsage: 0,
     })),
-    getGoal: vi.fn(async () => ({ goal: null })),
-    setApprovalHandler: vi.fn(),
-    setQuestionHandler: vi.fn(),
-    setModel: vi.fn(async () => {}),
-    setThinking: vi.fn(async () => {}),
-    setPermission: vi.fn(async () => {}),
-    setPlanMode: vi.fn(async () => {}),
-    listExpertTeams: vi.fn(async () => []),
-    getExpertTeamStatus: vi.fn(async () => null),
-    activateExpertTeam: vi.fn(async () => {
-      throw new Error('Not configured in this test.');
-    }),
-    deactivateExpertTeam: vi.fn(async () => {}),
-    onEvent: vi.fn(() => vi.fn()),
-    listMcpServers: vi.fn(async () => []),
-    listSkills: vi.fn(async () => []),
-    getResumeState: vi.fn(() => ({
-      sessionMetadata: {},
-      agents: { main: agent },
-    })),
-    close: vi.fn(async () => {}),
-  } as unknown as Session;
-}
-
-function makeHarness(initialSession: Session) {
-  const interactiveAgentScope = new AsyncLocalStorage<string>();
-  return {
-    getConfig: vi.fn(async () => ({
-      providers: {},
-      models: {
-        k2: { provider: 'test', model: 'moonshot-v1', maxContextSize: 100 },
-      },
-    })),
-    setConfig: vi.fn(async () => ({ providers: {} })),
-    getSession: vi.fn((sessionId: string) =>
-      sessionId === initialSession.id ? initialSession : undefined,
-    ),
-    createSession: vi.fn(async () => initialSession),
-    resumeSession: vi.fn(async () => initialSession),
-    forkSession: vi.fn(async () => initialSession),
-    listSessions: vi.fn(async () => []),
-    close: vi.fn(async () => {}),
-    track: vi.fn(),
-    setTelemetryContext: vi.fn(),
-    getExperimentalFeatures: vi.fn(async () => []),
-    get interactiveAgentId() {
-      return interactiveAgentScope.getStore() ?? 'main';
-    },
-    withInteractiveAgent: vi.fn((agentId: string, fn: () => unknown) => {
-      return interactiveAgentScope.run(agentId, fn);
-    }),
-    auth: {
-      status: vi.fn(),
-      login: vi.fn(),
-      logout: vi.fn(),
-      getManagedUsage: vi.fn(),
-      submitFeedback: vi.fn(async () => ({ kind: 'ok', feedbackId: 3 })),
-    },
+    getGoal: vi.fn(async () => null),
+    setModel: vi.fn(),
+    setThinking: vi.fn(),
+    setPermission: vi.fn(),
+    setPlanMode: vi.fn(),
+    prompt: vi.fn(),
+    steer: vi.fn(),
+    cancel: vi.fn(),
+    getModel: vi.fn(),
+    getThinking: vi.fn(),
+    clearPlan: vi.fn(),
+    getPlan: vi.fn(async () => null),
+    createGoal: vi.fn(),
+    pauseGoal: vi.fn(),
+    resumeGoal: vi.fn(),
+    cancelGoal: vi.fn(),
+    listTasks: vi.fn(async () => []),
+    detachTask: vi.fn(),
+    getTaskOutput: vi.fn(),
+    stopTask: vi.fn(),
+    runShellCommand: vi.fn(),
+    cancelShellCommand: vi.fn(),
   };
-}
 
-async function makeDriver(initialSession: Session): Promise<ReplayDriver> {
-  const driver = new KimiTUI(
-    makeHarness(initialSession) as never,
-    makeStartupInput(),
-  ) as unknown as ReplayDriver;
-  vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
-  vi.spyOn(driver.state.terminal, 'setProgress').mockImplementation(() => {});
-  await driver.init();
-  return driver;
+  const expertTeam = { get: vi.fn(async () => null), list: vi.fn(async () => []), activate: vi.fn(), deactivate: vi.fn() };
+  const skills = { list: vi.fn(async () => []), run: vi.fn() };
+  const warnings = { list: vi.fn(async () => []) };
+  const extensionCommands = { list: vi.fn(async () => []), activate: vi.fn() };
+  const pluginCommands = { list: vi.fn(async () => []), activate: vi.fn() };
+  const init = { hasPreviousSession: vi.fn(), restore: vi.fn() };
+  const btw = { get: vi.fn(), entries: vi.fn() };
+  const context = { addDir: vi.fn(), removeDir: vi.fn() };
+  const contextView = { get: vi.fn() };
+  const sessionEvents = { subscribe: vi.fn(() => vi.fn()), respondToApproval: vi.fn(), respondToQuestion: vi.fn() };
+  const goalQueue = { list: vi.fn(async () => []), promote: vi.fn() };
+  const mcp = { list: vi.fn(async () => []), start: vi.fn() };
+  const plugins = { list: vi.fn(async () => []), reload: vi.fn() };
+  const refresh = { reload: vi.fn() };
+  const swarm = { canActivate: vi.fn(), activate: vi.fn(), deactivate: vi.fn() };
+  const workspace = { apply: vi.fn(), getCwdTasks: vi.fn() };
+
+  const sessionRuntime: TUISessionRuntime = {
+    sessionId: 'ses-replay',
+    agentId: 'main',
+    lifecycle,
+    agent,
+    swarm,
+    expertTeam,
+    init,
+    btw,
+    context,
+    contextView,
+    sessionEvents,
+    agentEvents,
+    goalQueue,
+    mcp,
+    pluginCommands,
+    plugins,
+    refresh,
+    extensionCommands,
+    skills,
+    warnings,
+    workspace,
+  };
+
+  return { sessionRuntime, agentReplay };
 }
 
 async function replayIntoDriver(
-  replay: readonly AgentReplayRecord[],
-  overrides: Partial<ResumedAgentState> = {},
-): Promise<ReplayDriver> {
-  const initial = makeSession([]);
-  const resumed = makeSession(replay, overrides);
-  const driver = await makeDriver(initial);
-  driver.harness.getSession.mockReturnValue(resumed);
-  await driver.switchToSession(resumed, 'Resumed session (ses-replay).');
+  replay: readonly TUIAgentReplayRecord[],
+  overrides: Partial<TUIAgentReplay> = {},
+): Promise<KimiTUI> {
+  const { sessionRuntime } = makeReplaySessionRuntime(replay, overrides);
+  const startupInput = makeStartupInput();
+  startupInput.runtime = {
+    ...startupInput.runtime!,
+    bindSession: vi.fn(() => sessionRuntime),
+  };
+  const driver = new KimiTUI(startupInput);
+  vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
+  vi.spyOn(driver.state.terminal, 'setProgress').mockImplementation(() => {});
+  await (driver as unknown as { init(): Promise<boolean> }).init();
+  await driver.switchToSessionIdentity(
+    { id: 'ses-replay', workDir: '/tmp/proj-a', createdAt: Date.now(), updatedAt: Date.now(), archived: false },
+    'Resumed session (ses-replay).',
+  );
   return driver;
 }
 
 function backgroundTask(
   taskId: string,
   description: string,
-  status: BackgroundTaskInfo['status'] = 'running',
-): BackgroundTaskInfo {
+  status: AgentTaskStatus = 'running',
+): AgentTask {
   if (taskId.startsWith('agent-')) {
     return {
       taskId,
@@ -628,7 +677,7 @@ describe('KimiTUI resume message replay', () => {
   });
 
   it('groups replayed Agent calls from one assistant message using live grouping', async () => {
-    const replay: AgentReplayRecord[] = [
+    const replay: TUIAgentReplayRecord[] = [
       message('user', [{ type: 'text', text: 'run two agents' }]),
       message('assistant', [], {
         toolCalls: [
@@ -667,7 +716,7 @@ describe('KimiTUI resume message replay', () => {
   });
 
   it('groups replayed Read calls from one assistant message using live grouping', async () => {
-    const replay: AgentReplayRecord[] = [
+    const replay: TUIAgentReplayRecord[] = [
       message('user', [{ type: 'text', text: 'read files' }]),
       message('assistant', [], {
         toolCalls: [
@@ -696,7 +745,7 @@ describe('KimiTUI resume message replay', () => {
   });
 
   it('renders replayed AgentSwarm calls as compact result summaries', async () => {
-    const replay: AgentReplayRecord[] = [
+    const replay: TUIAgentReplayRecord[] = [
       message('user', [{ type: 'text', text: 'review files with a swarm' }]),
       message('assistant', [], {
         toolCalls: [
@@ -732,7 +781,7 @@ describe('KimiTUI resume message replay', () => {
   });
 
   it('does not show no-index replayed AgentSwarm failures as completed', async () => {
-    const replay: AgentReplayRecord[] = [
+    const replay: TUIAgentReplayRecord[] = [
       message('user', [{ type: 'text', text: 'review files with a swarm' }]),
       message('assistant', [], {
         toolCalls: [
@@ -779,7 +828,7 @@ describe('KimiTUI resume message replay', () => {
           { title: '', status: 'pending' },
         ],
       },
-      background: [
+      tasks: [
         backgroundTask('agent-bg1', 'Review long-running work', 'running'),
         backgroundTask('bash-bg1', 'Build package', 'completed'),
       ],
@@ -796,7 +845,7 @@ describe('KimiTUI resume message replay', () => {
 
   it('matches completed resumed background agents by agent id when task id differs', async () => {
     const driver = await replayIntoDriver([], {
-      background: [
+      tasks: [
         {
           taskId: 'task-bg1',
           kind: 'agent',
@@ -840,7 +889,7 @@ describe('KimiTUI resume message replay', () => {
   });
 
   it('keeps timed-out status when an aborted resumed background agent later fails', async () => {
-    const info: BackgroundTaskInfo = {
+    const info: AgentTask = {
       taskId: 'task-bg-timeout',
       kind: 'agent',
       agentId: 'agent-bg-timeout',
@@ -851,7 +900,7 @@ describe('KimiTUI resume message replay', () => {
       endedAt: null,
       timeoutMs: 1000,
     };
-    const driver = await replayIntoDriver([], { background: [info] });
+    const driver = await replayIntoDriver([], { tasks: [info] });
     const applyTerminalStatus = vi
       .spyOn(driver.streamingUI, 'applyBackgroundTaskTerminalStatus')
       .mockReturnValue(true);
@@ -904,7 +953,7 @@ describe('KimiTUI resume message replay', () => {
         }),
       ],
       {
-        background: [backgroundTask('bash-lost0000', 'Background timestamp logger', 'lost')],
+        tasks: [backgroundTask('bash-lost0000', 'Background timestamp logger', 'lost')],
       },
     );
 
@@ -1100,8 +1149,7 @@ describe('KimiTUI resume message replay', () => {
   });
 
   it('initializes replayed compaction blocks as expanded when tool output is already expanded', async () => {
-    const initial = makeSession([]);
-    const resumed = makeSession([
+    const { sessionRuntime } = makeReplaySessionRuntime([
       {
         time: REPLAY_TIME,
         type: 'compaction',
@@ -1113,10 +1161,20 @@ describe('KimiTUI resume message replay', () => {
         },
       },
     ]);
-    const driver = await makeDriver(initial);
-    driver.harness.getSession.mockReturnValue(resumed);
+    const startupInput = makeStartupInput();
+    startupInput.runtime = {
+      ...startupInput.runtime!,
+      bindSession: vi.fn(() => sessionRuntime),
+    };
+    const driver = new KimiTUI(startupInput);
+    vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
+    vi.spyOn(driver.state.terminal, 'setProgress').mockImplementation(() => {});
+    await (driver as unknown as { init(): Promise<boolean> }).init();
     driver.state.toolOutputExpanded = true;
-    await driver.switchToSession(resumed, 'Resumed session (ses-replay).');
+    await driver.switchToSessionIdentity(
+      { id: 'ses-replay', workDir: '/tmp/proj-a', createdAt: Date.now(), updatedAt: Date.now(), archived: false },
+      'Resumed session (ses-replay).',
+    );
 
     const transcript = stripAnsi(driver.state.transcriptContainer.render(120).join('\n'));
     expect(transcript).toContain('Compaction complete');
@@ -1242,7 +1300,7 @@ describe('KimiTUI resume message replay', () => {
   });
 
   it('trims goal sessions to the most recent goal turns and hides continuation prompts', async () => {
-    const replay: AgentReplayRecord[] = [goalReplay(goalSnapshot(), { kind: 'created' })];
+    const replay: TUIAgentReplayRecord[] = [goalReplay(goalSnapshot(), { kind: 'created' })];
     for (let i = 0; i < 25; i++) {
       replay.push(
         message('user', [{ type: 'text', text: 'Continue working toward the active goal.' }], {
@@ -1273,7 +1331,7 @@ describe('KimiTUI resume message replay', () => {
   });
 
   it('folds oversized goal rounds even though continuation boundaries are hidden', async () => {
-    const replay: AgentReplayRecord[] = [goalReplay(goalSnapshot(), { kind: 'created' })];
+    const replay: TUIAgentReplayRecord[] = [goalReplay(goalSnapshot(), { kind: 'created' })];
     // Ten continuation rounds — exactly at the replay turn limit, so nothing
     // is trimmed and only folding can bound the oversized final round.
     for (let i = 0; i < 9; i++) {

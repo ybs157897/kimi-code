@@ -13,7 +13,10 @@ import { AuthErrors } from '#/app/auth/errors';
 import { TaskErrors } from '#/agent/task/errors';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
 import { ConfigErrors } from '#/app/config/errors';
+import { ContextCommandErrors } from '#/agent/contextCommand/errors';
 import { FileErrors } from '#/app/file/fileService';
+import { McpCatalogErrors } from '#/app/mcpCatalog/errors';
+import { SessionStoreErrors } from '#/app/sessionStore/errors';
 import { FsErrors } from '#/session/sessionFs/errors';
 import { FullCompactionErrors } from '#/agent/fullCompaction/errors';
 import { GoalErrors } from '#/agent/goal/errors';
@@ -47,7 +50,10 @@ export { AuthErrors } from '#/app/auth/errors';
 export { TaskErrors } from '#/agent/task/errors';
 export { ProtocolErrors } from '#/kosong/protocol/errors';
 export { ConfigErrors } from '#/app/config/errors';
+export { ContextCommandErrors } from '#/agent/contextCommand/errors';
 export { FileErrors } from '#/app/file/fileService';
+export { McpCatalogErrors } from '#/app/mcpCatalog/errors';
+export { SessionStoreErrors } from '#/app/sessionStore/errors';
 export { FsErrors } from '#/session/sessionFs/errors';
 export { FullCompactionErrors } from '#/agent/fullCompaction/errors';
 export { GoalErrors } from '#/agent/goal/errors';
@@ -78,11 +84,13 @@ export const ErrorCodes = {
   ...TaskErrors.codes,
   ...ProtocolErrors.codes,
   ...ConfigErrors.codes,
+  ...ContextCommandErrors.codes,
   ...FileErrors.codes,
   ...FsErrors.codes,
   ...FullCompactionErrors.codes,
   ...GoalErrors.codes,
   ...LoopErrors.codes,
+  ...McpCatalogErrors.codes,
   ...McpErrors.codes,
   ...MessageLegacyErrors.codes,
   ...ModelCatalogErrors.codes,
@@ -94,6 +102,7 @@ export const ErrorCodes = {
   ...ModelsDevImportErrors.codes,
   ...SessionExportErrors.codes,
   ...SessionErrors.codes,
+  ...SessionStoreErrors.codes,
   ...SkillErrors.codes,
   ...StorageErrors.codes,
   ...TerminalErrors.codes,

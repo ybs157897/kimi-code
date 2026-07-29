@@ -21,7 +21,16 @@ import {
 } from '@agentclientprotocol/sdk';
 import type { KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
 import { log } from '@moonshot-ai/kimi-code-sdk';
-import type { McpServerConfig } from '@moonshot-ai/agent-core';
+// Minimal compatible type — mirrors the shape used for ACP MCP forwarding.
+// The canonical type lives in @moonshot-ai/agent-core-v2's McpServerConfigSchema.
+interface McpServerConfig {
+  readonly transport: string;
+  readonly url?: string;
+  readonly headers?: Record<string, string>;
+  readonly command?: string;
+  readonly args?: readonly string[];
+  readonly env?: Record<string, string>;
+}
 
 import { acpMcpServersToConfigs } from '../src/mcp';
 import { AcpServer } from '../src/server';

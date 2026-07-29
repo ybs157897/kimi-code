@@ -1,6 +1,6 @@
 /**
  * Scenario: process-level environment capabilities cross the TUI runtime
- * boundary. Responsibilities: both adapters expose the resolved home,
+ * boundary. Responsibilities: the adapter exposes the resolved home,
  * experimental features, warning strings, and runtime shutdown.
  * Run: pnpm --filter @moonshot-ai/kimi-code exec vitest run test/tui/runtime/runtime-environment-port.test.ts
  */
@@ -9,7 +9,6 @@ import type { KimiV2Runtime } from '@moonshot-ai/kimi-code-sdk/v2';
 import { describe, expect, it, vi } from 'vitest';
 
 import { createKlientRuntimeEnvironmentPort } from '#/tui/runtime/klient-runtime-environment-adapter';
-import { createLegacyRuntimeEnvironmentPort } from '#/tui/runtime/legacy-runtime-environment-adapter';
 import type { RuntimeExperimentalFeatureState } from '#/tui/runtime/runtime-environment-port';
 
 const FEATURE = {
@@ -22,48 +21,6 @@ const FEATURE = {
   enabled: true,
   source: 'env' as const,
 } satisfies RuntimeExperimentalFeatureState;
-
-describe('legacy runtime environment adapter', () => {
-  it('exposes the harness home synchronously', () => {
-    const port = createLegacyRuntimeEnvironmentPort(legacyHarness());
-
-    expect(port.homeDir).toBe('/tmp/kimi-home');
-  });
-
-  it('returns the harness experimental-feature snapshot', async () => {
-    const port = createLegacyRuntimeEnvironmentPort(
-      legacyHarness({
-        getExperimentalFeatures: vi.fn(async () => [FEATURE]),
-      }),
-    );
-
-    await expect(port.getExperimentalFeatures()).resolves.toEqual([FEATURE]);
-  });
-
-  it('projects config diagnostics to warning strings', async () => {
-    const port = createLegacyRuntimeEnvironmentPort(
-      legacyHarness({
-        getConfigDiagnostics: vi.fn(async () => ({
-          warnings: ['Invalid example setting', 'Unknown example field'],
-        })),
-      }),
-    );
-
-    await expect(port.getConfigDiagnostics()).resolves.toEqual([
-      'Invalid example setting',
-      'Unknown example field',
-    ]);
-  });
-
-  it('closes the harness', async () => {
-    const close = vi.fn(async () => undefined);
-    const port = createLegacyRuntimeEnvironmentPort(legacyHarness({ close }));
-
-    await port.close();
-
-    expect(close).toHaveBeenCalledOnce();
-  });
-});
 
 describe('Klient runtime environment adapter', () => {
   it('resolves the runtime home before exposing the port', async () => {
@@ -115,22 +72,6 @@ describe('Klient runtime environment adapter', () => {
     expect(close).toHaveBeenCalledOnce();
   });
 });
-
-function legacyHarness(
-  overrides: Partial<{
-    getExperimentalFeatures: () => Promise<readonly (typeof FEATURE)[]>;
-    getConfigDiagnostics: () => Promise<{ readonly warnings: readonly string[] }>;
-    close: () => Promise<void>;
-  }> = {},
-) {
-  return {
-    homeDir: '/tmp/kimi-home',
-    getExperimentalFeatures: vi.fn(async () => []),
-    getConfigDiagnostics: vi.fn(async () => ({ warnings: [] })),
-    close: vi.fn(async () => undefined),
-    ...overrides,
-  };
-}
 
 function klientRuntime(
   overrides: Partial<{
