@@ -9,8 +9,24 @@ import * as nodeFs from 'node:fs';
 import { open, rename, unlink } from 'node:fs/promises';
 import { dirname } from 'pathe';
 
+const isWindows = process.platform === 'win32';
+
+/** Whether `error` is a Node.js errno exception with the given `code`. */
+export function isErrno(error: unknown, code: string): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as NodeJS.ErrnoException).code === code
+  );
+}
+
+/** Shorthand for the most common errno check: file/directory not found. */
+export function isEnoent(error: unknown): boolean {
+  return isErrno(error, 'ENOENT');
+}
+
 export async function syncDir(dirPath: string): Promise<void> {
-  if (process.platform === 'win32') return;
+  if (isWindows) return;
   const dirFh = await open(dirPath, 'r');
   try {
     await dirFh.sync();
@@ -20,13 +36,39 @@ export async function syncDir(dirPath: string): Promise<void> {
 }
 
 export function syncDirSync(dirPath: string): void {
-  if (process.platform === 'win32') return;
+  if (isWindows) return;
   const fd = openSync(dirPath, 'r');
   try {
     fsyncSync(fd);
   } finally {
     closeSync(fd);
   }
+}
+
+/**
+ * On Windows, `rename()` fails with EPERM/EEXIST when the target exists.
+ * Remove the target first so the subsequent rename succeeds.
+ */
+async function unlinkTargetForWindows(filePath: string): Promise<void> {
+  if (!isWindows) return;
+  try {
+    await unlink(filePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
+}
+
+/** Best-effort cleanup of a temp file that was never renamed. */
+async function cleanupTemp(tmpPath: string): Promise<void> {
+  try {
+    await unlink(tmpPath);
+  } catch {
+    // already removed or never created — safe to ignore
+  }
+}
+
+function makeTmpPath(filePath: string): string {
+  return `${filePath}.tmp.${String(process.pid)}.${randomBytes(4).toString('hex')}`;
 }
 
 export async function writeFileAtomicDurable(
@@ -43,24 +85,12 @@ export async function writeFileAtomicDurable(
     } finally {
       await fh.close();
     }
-    if (process.platform === 'win32') {
-      try {
-        await unlink(filePath);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'ENOENT') throw error;
-      }
-    }
+    await unlinkTargetForWindows(filePath);
     await rename(tmpPath, filePath);
     renamed = true;
     await syncDir(dirname(filePath));
   } finally {
-    if (!renamed) {
-      try {
-        await unlink(tmpPath);
-      } catch {
-      }
-    }
+    if (!renamed) await cleanupTemp(tmpPath);
   }
 }
 
@@ -82,8 +112,7 @@ export async function atomicWrite(
   _syncOverride?: (fd: number) => Promise<void>,
   mode?: number,
 ): Promise<void> {
-  const hex = randomBytes(4).toString('hex');
-  const tmpPath = `${filePath}.tmp.${process.pid}.${hex}`;
+  const tmpPath = makeTmpPath(filePath);
   let renamed = false;
   try {
     const fh = await open(tmpPath, 'w', mode);
@@ -93,23 +122,11 @@ export async function atomicWrite(
     } finally {
       await fh.close();
     }
-    if (process.platform === 'win32') {
-      try {
-        await unlink(filePath);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'ENOENT') throw error;
-      }
-    }
+    await unlinkTargetForWindows(filePath);
     await rename(tmpPath, filePath);
     renamed = true;
   } finally {
-    if (!renamed) {
-      try {
-        await unlink(tmpPath);
-      } catch {
-      }
-    }
+    if (!renamed) await cleanupTemp(tmpPath);
   }
 }
 
@@ -118,8 +135,7 @@ export async function atomicWriteStream(
   source: AsyncIterable<Uint8Array>,
   mode?: number,
 ): Promise<void> {
-  const hex = randomBytes(4).toString('hex');
-  const tmpPath = `${filePath}.tmp.${process.pid}.${hex}`;
+  const tmpPath = makeTmpPath(filePath);
   let renamed = false;
   try {
     const fh = await open(tmpPath, 'w', mode);
@@ -133,22 +149,10 @@ export async function atomicWriteStream(
     } finally {
       await fh.close();
     }
-    if (process.platform === 'win32') {
-      try {
-        await unlink(filePath);
-      } catch (error) {
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code !== 'ENOENT') throw error;
-      }
-    }
+    await unlinkTargetForWindows(filePath);
     await rename(tmpPath, filePath);
     renamed = true;
   } finally {
-    if (!renamed) {
-      try {
-        await unlink(tmpPath);
-      } catch {
-      }
-    }
+    if (!renamed) await cleanupTemp(tmpPath);
   }
 }

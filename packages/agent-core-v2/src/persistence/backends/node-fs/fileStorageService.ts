@@ -29,7 +29,7 @@ import { dirname, join, normalize } from 'pathe';
 import { DisposableStore, combinedDisposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
-import { atomicWrite, atomicWriteStream, syncDir } from '#/_base/utils/fs';
+import { atomicWrite, atomicWriteStream, isEnoent, syncDir } from '#/_base/utils/fs';
 
 import type {
   IFileSystemStorageService,
@@ -40,10 +40,6 @@ import type {
 import { toStorageIoError } from '#/persistence/interface/storage';
 
 const WATCH_DEBOUNCE_MS = 150;
-
-function isEnoent(error: unknown): boolean {
-  return (error as NodeJS.ErrnoException).code === 'ENOENT';
-}
 
 export class FileStorageService implements IFileSystemStorageService {
   declare readonly _serviceBrand: undefined;
