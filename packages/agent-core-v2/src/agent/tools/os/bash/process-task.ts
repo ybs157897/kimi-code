@@ -1,5 +1,6 @@
 import type { Readable } from 'node:stream';
 
+import { errorMessage } from '#/_base/errors/errorMessage';
 import type { IProcess } from '#/session/process/processRunner';
 
 import type {
@@ -291,8 +292,4 @@ function createPrematureCloseError(): Error {
   const error = new Error('Premature close') as NodeJS.ErrnoException;
   error.code = 'ERR_STREAM_PREMATURE_CLOSE';
   return error;
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

@@ -22,6 +22,7 @@
  */
 
 import type { IAgentScopeHandle } from '#/_base/di/scope';
+import { errorMessage } from '#/_base/errors/errorMessage';
 import { isAbortError, userCancellationReason } from '#/_base/utils/abort';
 import { IAgentContextSizeService } from '#/agent/contextSize/contextSize';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -183,10 +184,6 @@ function shouldSuppressFailure(options: MirrorAgentRunOptions, error: unknown): 
   if (options.suppressRateLimitFailureEvent !== true) return false;
   if (isProviderRateLimitError(error)) return true;
   return isAbortError(error) || options.signal.aborted;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 function childContextTokens(

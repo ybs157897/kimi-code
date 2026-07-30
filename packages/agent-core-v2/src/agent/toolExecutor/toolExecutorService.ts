@@ -16,6 +16,7 @@
 
 import { toDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { errorMessage } from '#/_base/errors/errorMessage';
 import { AsyncEmitter, type Event } from '#/_base/event';
 import { defineState } from '#/_base/state/stateRegistry';
 import type { ContentPart, ToolCall } from '#/kosong/contract/message';
@@ -930,10 +931,6 @@ async function raceWithAbortGrace<Result>(
       }
     }
   }
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 registerScopedService(

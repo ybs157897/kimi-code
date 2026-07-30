@@ -1,5 +1,6 @@
 import type { TokenUsage } from '#/kosong/contract/usage';
 
+import { errorMessage } from '#/_base/errors/errorMessage';
 import { isAbortError } from '#/_base/utils/abort';
 import {
   type AgentTask,
@@ -28,10 +29,6 @@ declare module '#/agent/task/types' {
   interface AgentTaskInfoByKind {
     readonly agent: SubagentTaskInfo;
   }
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 export function createSubagentExecutor(

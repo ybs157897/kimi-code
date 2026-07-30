@@ -43,6 +43,7 @@ import { join } from 'pathe';
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 
+import { errorMessage } from '#/_base/errors/errorMessage';
 import type { ContentPart } from '#/kosong/contract/message';
 
 import { Disposable } from '#/_base/di/lifecycle';
@@ -1446,11 +1447,6 @@ function createForegroundRelease(): ForegroundRelease {
     resolve = done;
   });
   return { promise, resolve };
-}
-
-function errorMessage(error: unknown): string {
-  if (error instanceof Error) return error.message;
-  return String(error);
 }
 
 registerScopedService(

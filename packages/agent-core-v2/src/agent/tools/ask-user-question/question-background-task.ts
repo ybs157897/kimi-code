@@ -10,6 +10,7 @@
  * `AgentTaskService` terminal notifications.
  */
 
+import { errorMessage } from '#/_base/errors/errorMessage';
 import { isAbortError } from '#/_base/utils/abort';
 import {
   type AgentTask,
@@ -28,10 +29,6 @@ declare module '#/agent/task/types' {
   interface AgentTaskInfoByKind {
     readonly question: QuestionTaskInfo;
   }
-}
-
-function errorMessage(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }
 
 export class QuestionBackgroundTask implements AgentTask {

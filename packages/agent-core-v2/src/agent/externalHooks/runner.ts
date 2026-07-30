@@ -2,6 +2,7 @@ import { type SpawnOptionsWithoutStdio } from 'node:child_process';
 
 import { z } from 'zod';
 
+import { errorMessage } from '#/_base/errors/errorMessage';
 import { isRecord } from '#/_base/utils/types';
 import { type IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 
@@ -231,8 +232,4 @@ function killProcess(proc: IHostProcess): void {
     void proc.kill('SIGKILL');
   }, KILL_GRACE_MS);
   killTimer.unref();
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
