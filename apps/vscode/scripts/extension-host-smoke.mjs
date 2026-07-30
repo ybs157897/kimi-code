@@ -11,9 +11,14 @@ import { isMainModule } from "./vsix-targets.mjs";
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const appDir = resolve(scriptDir, "..");
 const defaultCachePath = join(tmpdir(), "kimi-vscode-test-cache");
+const defaultDownloadTimeoutMs = 120_000;
 
 export async function runExtensionHostSmoke(options = {}) {
   const version = options.version ?? "stable";
+  const downloadTimeoutMs = options.downloadTimeoutMs ?? defaultDownloadTimeoutMs;
+  if (!Number.isSafeInteger(downloadTimeoutMs) || downloadTimeoutMs <= 0) {
+    throw new Error(`downloadTimeoutMs must be a positive safe integer, got ${downloadTimeoutMs}`);
+  }
   const cacheRoot = resolve(options.cachePath ?? process.env.VSCODE_TEST_CACHE ?? defaultCachePath);
   const vsixPath = resolve(options.vsixPath ?? defaultVsixPath());
   await access(vsixPath);
@@ -61,7 +66,7 @@ export async function runExtensionHostSmoke(options = {}) {
       `--extensions-dir=${paths.extensions}`,
       `--user-data-dir=${paths.userData}`,
     ];
-    const downloadOptions = { version, cachePath };
+    const downloadOptions = { version, cachePath, timeout: downloadTimeoutMs };
     const install = await runVSCodeCommand(
       ["--install-extension", vsixPath, "--force", ...installProfileArgs],
       downloadOptions,

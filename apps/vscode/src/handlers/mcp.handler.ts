@@ -25,12 +25,12 @@ interface NameParams { name: string }
 
 export const mcpHandlers: Record<string, Handler<any, any>> = {
   [Methods.GetMCPServers]: async (_, ctx): Promise<MCPServerConfig[]> => {
-    return toWebviewServers(await ctx.harness.listMcpServers());
+    return toWebviewServers(await ctx.host.listMcpServers());
   },
 
   [Methods.AddMCPServer]: async (params: MCPServerConfig, ctx): Promise<MCPServerConfig[]> => {
     const server = restoreMaskedSecrets(undefined, params);
-    const servers = toWebviewServers(await ctx.harness.addMcpServer(toSdkServer(server)));
+    const servers = toWebviewServers(await ctx.host.addMcpServer(toSdkServer(server)));
     ctx.broadcast(Events.MCPServersChanged, servers);
     return servers;
   },
@@ -40,20 +40,20 @@ export const mcpHandlers: Record<string, Handler<any, any>> = {
     ctx,
   ): Promise<MCPServerConfig[]> => {
     const request = normalizeUpdateRequest(params);
-    const current = (await ctx.harness.listMcpServers()).find(
+    const current = (await ctx.host.listMcpServers()).find(
       (server) => server.name === request.originalName,
     );
     const edited = restoreMaskedSecrets(current, request.server);
     const next = mergeEditableServer(current, edited, request.replaceEditableFields);
     const servers = toWebviewServers(
-      await updateOrRenameServer(ctx.harness, request.originalName, current, next),
+      await updateOrRenameServer(ctx.host, request.originalName, current, next),
     );
     ctx.broadcast(Events.MCPServersChanged, servers);
     return servers;
   },
 
   [Methods.RemoveMCPServer]: async ({ name }: NameParams, ctx): Promise<MCPServerConfig[]> => {
-    const servers = toWebviewServers(await ctx.harness.removeMcpServer(name));
+    const servers = toWebviewServers(await ctx.host.removeMcpServer(name));
     ctx.broadcast(Events.MCPServersChanged, servers);
     return servers;
   },
@@ -67,8 +67,10 @@ export const mcpHandlers: Record<string, Handler<any, any>> = {
       },
       async () => {
         try {
-          await ctx.harness.authenticateMcpServer(name, {
-            onAuthorizationUrl: async (url) => vscode.env.openExternal(vscode.Uri.parse(url)),
+          await ctx.host.authenticateMcpServer(name, {
+            onAuthorizationUrl: async (url) => {
+              await vscode.env.openExternal(vscode.Uri.parse(url));
+            },
           });
           await vscode.window.showInformationMessage(`Kimi: OAuth completed for "${name}"`);
         } catch (error) {
@@ -90,7 +92,7 @@ export const mcpHandlers: Record<string, Handler<any, any>> = {
       },
       async () => {
         try {
-          await ctx.harness.resetMcpServerAuth(name);
+          await ctx.host.resetMcpServerAuth(name);
           await vscode.window.showInformationMessage(`Kimi: Auth reset for "${name}"`);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
@@ -104,7 +106,7 @@ export const mcpHandlers: Record<string, Handler<any, any>> = {
 
   [Methods.TestMCP]: async ({ name }: NameParams, ctx): Promise<MCPTestResult> => {
     void vscode.window.showInformationMessage(`Kimi: Testing MCP server "${name}"...`);
-    const result = toWebviewTestResult(await ctx.harness.testMcpServer(name, {
+    const result = toWebviewTestResult(await ctx.host.testMcpServer(name, {
       cwd: ctx.workDir ?? undefined,
     }));
     if (!result.success) {
@@ -263,8 +265,8 @@ function normalizeUpdateRequest(
 }
 
 async function updateOrRenameServer(
-  harness: Pick<
-    Parameters<Handler>[1]["harness"],
+  host: Pick<
+    Parameters<Handler>[1]["host"],
     "addMcpServer" | "updateMcpServer" | "removeMcpServer"
   >,
   originalName: string,
@@ -272,17 +274,17 @@ async function updateOrRenameServer(
   next: SdkMcpServerConfig,
 ): Promise<readonly SdkMcpServerConfig[]> {
   if (next.name === originalName) {
-    return harness.updateMcpServer(next);
+    return host.updateMcpServer(next);
   }
   if (current === undefined) {
     throw new Error(`MCP server "${originalName}" was not found`);
   }
 
-  await harness.addMcpServer(next);
+  await host.addMcpServer(next);
   try {
-    return await harness.removeMcpServer(originalName);
+    return await host.removeMcpServer(originalName);
   } catch (error) {
-    await harness.removeMcpServer(next.name).catch(() => undefined);
+    await host.removeMcpServer(next.name).catch(() => undefined);
     throw error;
   }
 }

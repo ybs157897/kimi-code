@@ -21,12 +21,18 @@ import { isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { Disposable } from '#/_base/di/lifecycle';
 import type { TextDecodeErrors } from '#/_base/execEnv/decodeText';
 import type { HostDirEntry, HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
-import { toHostFsError } from '#/os/interface/hostFsErrors';
+import { OsFsErrors, toHostFsError } from '#/os/interface/hostFsErrors';
 import type { IWorkspaceFileSystem } from '#/os/interface/workspaceFileSystem';
 
 function isWithinDir(candidate: string, dir: string): boolean {
   const rel = relative(dir, candidate);
   return !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+function isNotFoundError(error: unknown): boolean {
+  if (error === null || typeof error !== 'object' || !('code' in error)) return false;
+  const code = (error as { readonly code?: unknown }).code;
+  return code === 'ENOENT' || code === OsFsErrors.codes.OS_FS_NOT_FOUND;
 }
 
 export interface LocalWorkspaceFsOptions {
@@ -122,8 +128,10 @@ export class LocalWorkspaceFileSystem extends Disposable implements IWorkspaceFi
           );
         }
         return resolvedPath;
-      } catch {
-        // Prefix doesn't exist — strip the last segment and try again.
+      } catch (error) {
+        if (!isNotFoundError(error)) throw error;
+        // Only a missing prefix is eligible for upward traversal. Permission,
+        // I/O, and the explicit symlink-escape error must reach the caller.
       }
       parts.pop();
     }

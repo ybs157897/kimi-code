@@ -1,11 +1,16 @@
 /**
- * Experimental v2 print host.
+ * v2 print host.
  *
  * The runner depends on the SDK's `KimiV2Runtime` and its Klient facade.
  * Scope ownership and engine Service tokens stay behind that host boundary.
  */
 
-import type { KimiV2Runtime } from '@moonshot-ai/kimi-code-sdk/v2';
+import {
+  countKimiV2ActiveTasks,
+  drainKimiV2BackgroundTasks,
+  resolveKimiV2PrintBackgroundSettings,
+  type KimiV2Runtime,
+} from '@moonshot-ai/kimi-code-sdk/v2';
 import { resolve } from 'pathe';
 
 import { PROMPT_CLEANUP_TIMEOUT_MS } from '#/constant/app';
@@ -24,7 +29,6 @@ import {
   PromptTranscriptWriter,
   type PromptOutput,
   type PromptTurnWriter,
-  writeExperimentalVersion,
   writeResumeHint,
 } from '../prompt-render';
 import {
@@ -51,15 +55,6 @@ export {
 } from './print-background-policy';
 
 const MAIN_AGENT_ID = 'main';
-const TASK_POLL_MS = 100;
-const DEFAULT_PRINT_WAIT_CEILING_S = 315_360_000;
-
-interface TaskConfig {
-  readonly keepAliveOnExit?: boolean;
-  readonly printBackgroundMode?: 'exit' | 'drain' | 'steer';
-  readonly printWaitCeilingS?: number;
-  readonly printMaxTurns?: number;
-}
 
 interface TurnEnded {
   readonly type: 'turn.ended';
@@ -89,18 +84,22 @@ export async function runV2Print(
     'print',
   );
   let removeTerminationCleanup: (() => void) | undefined;
+  let restoreSessionPermission = async (): Promise<void> => {};
   let cleanupPromise: Promise<void> | undefined;
   const cleanup = async (): Promise<void> => {
     const pending = (cleanupPromise ??= (async () => {
       removeTerminationCleanup?.();
-      await runtime.close();
+      try {
+        await restoreSessionPermission();
+      } finally {
+        await runtime.close();
+      }
     })());
     await raceWithTimeout(pending, PROMPT_CLEANUP_TIMEOUT_MS);
   };
   removeTerminationCleanup = installPromptTerminationCleanup(promptProcess, cleanup);
 
   try {
-    writeExperimentalVersion(version, outputFormat, stdout, stderr);
     await writeConfigWarnings(runtime, stderr);
     const defaultModel =
       (await runtime.klient.global.config.get<string | undefined>('defaultModel')) ?? undefined;
@@ -114,6 +113,7 @@ export async function runV2Print(
       defaultModel,
       stderr,
     );
+    restoreSessionPermission = resolvedSession.restorePermission;
     runtime.telemetry.setContext({
       sessionId: resolvedSession.sessionId,
       model: resolvedSession.model,
@@ -174,6 +174,11 @@ async function writeConfigWarnings(
 interface ResolvedSession {
   readonly sessionId: string;
   readonly model: string;
+  readonly restorePermission: () => Promise<void>;
+}
+
+interface PreviousSession {
+  readonly id: string;
 }
 
 async function resolveSession(
@@ -205,8 +210,7 @@ async function resolveSession(
     }
     sessionId = target.id;
   } else if (opts.continue) {
-    const page = await klient.global.sessions.list({});
-    const previous = page.items.find((summary) => summary.cwd === workDir);
+    const previous = await findPreviousSession(runtime, workDir);
     if (previous !== undefined && (await klient.session(previous.id).restore())) {
       sessionId = previous.id;
     } else {
@@ -230,7 +234,11 @@ async function resolveSession(
   const agent = klient.session(sessionId).agent(MAIN_AGENT_ID);
   if (createdModel !== undefined) {
     await agent.setPermission('auto');
-    return { sessionId, model: createdModel };
+    return {
+      sessionId,
+      model: createdModel,
+      restorePermission: async () => {},
+    };
   }
 
   const profile = await agent.profile.get();
@@ -246,8 +254,41 @@ async function resolveSession(
     }
   }
   const model = requireConfiguredModel(currentModel, defaultModel);
-  await agent.setPermission('auto');
-  return { sessionId, model };
+  const previousPermission = await agent.getPermission();
+  if (previousPermission !== 'auto') {
+    await agent.setPermission('auto');
+  }
+  return {
+    sessionId,
+    model,
+    restorePermission: async () => {
+      if (previousPermission !== 'auto') {
+        await agent.setPermission(previousPermission);
+      }
+    },
+  };
+}
+
+async function findPreviousSession(
+  runtime: KimiV2Runtime,
+  workDir: string,
+): Promise<PreviousSession | undefined> {
+  const normalizedWorkDir = resolve(workDir);
+  const visitedCursors = new Set<string>();
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await runtime.klient.global.sessions.list({
+      cursor,
+      limit: 100,
+    });
+    const previous = page.items.find(
+      (summary) => summary.cwd !== undefined && resolve(summary.cwd) === normalizedWorkDir,
+    );
+    if (previous !== undefined) return previous;
+    cursor = page.nextCursor;
+    if (cursor === undefined || visitedCursors.has(cursor)) return undefined;
+    visitedCursors.add(cursor);
+  }
 }
 
 async function runKlientGoal(
@@ -376,22 +417,17 @@ async function finishBackgroundWork(
   endings: TurnEndingQueue,
   stderr: PromptOutput,
 ): Promise<void> {
-  const current = await runtime.klient.global.config.get<TaskConfig | undefined>('task');
-  const legacy = await runtime.klient.global.config.get<TaskConfig | undefined>('background');
-  const config = { ...legacy, ...current };
-  const mode =
-    config.printBackgroundMode ?? (config.keepAliveOnExit === true ? 'drain' : 'steer');
-  const ceilingS = config.printWaitCeilingS ?? DEFAULT_PRINT_WAIT_CEILING_S;
-  const maxTurns = config.printMaxTurns ?? 100_000;
+  const settings = await resolveKimiV2PrintBackgroundSettings(runtime);
   const session = runtime.klient.session(sessionId);
   const agent = session.agent(MAIN_AGENT_ID);
   try {
     await applyPrintBackgroundPolicy({
-      mode,
-      ceilingS,
-      maxTurns,
-      countPending: () => countActiveTasks(runtime, sessionId),
-      drain: () => drainBackgroundWork(runtime, sessionId, ceilingS),
+      mode: settings.mode,
+      ceilingS: settings.ceilingS,
+      maxTurns: settings.maxTurns,
+      countPending: () => countKimiV2ActiveTasks(runtime, sessionId),
+      drain: () =>
+        drainKimiV2BackgroundTasks(runtime, sessionId, settings.ceilingS),
       turnEndings: {
         next: async (remainingMs, skipTurnId) => {
           const ending = await endings.takeNext(skipTurnId, remainingMs);
@@ -414,36 +450,6 @@ async function finishBackgroundWork(
       }\n`,
     );
   }
-}
-
-async function drainBackgroundWork(
-  runtime: KimiV2Runtime,
-  sessionId: string,
-  ceilingS: number,
-): Promise<void> {
-  const deadline = Date.now() + ceilingS * 1000;
-  while (Date.now() < deadline) {
-    if ((await countActiveTasks(runtime, sessionId)) === 0) {
-      if ((await runtime.klient.session(sessionId).status()) !== 'running') return;
-    }
-    await delay(TASK_POLL_MS);
-  }
-}
-
-async function countActiveTasks(runtime: KimiV2Runtime, sessionId: string): Promise<number> {
-  const session = runtime.klient.session(sessionId);
-  const agents = await session.agents();
-  const agentIds = new Set([MAIN_AGENT_ID, ...Object.keys(agents)]);
-  let total = 0;
-  for (const agentId of agentIds) {
-    try {
-      total += (await session.agent(agentId).getTasks({ activeOnly: true })).length;
-    } catch {
-      // Metadata outlives Agent scopes. A dead agent contributes no live tasks,
-      // matching SessionFacade.status().
-    }
-  }
-  return total;
 }
 
 interface TurnEndingQueue {
@@ -508,10 +514,4 @@ function formatTurnFailure(ending: TurnEnded): string {
   }
   if (ending.reason === 'blocked') return 'Prompt hook blocked the request.';
   return `Prompt turn ended with reason: ${ending.reason}`;
-}
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => {
-    setTimeout(resolve, ms);
-  });
 }

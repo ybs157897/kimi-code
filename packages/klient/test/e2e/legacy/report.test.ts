@@ -16,6 +16,7 @@ import {
 } from '../harness/report.js';
 import { DaemonClient } from '../harness/client.js';
 import { HttpClient } from '../harness/http.js';
+import { serverWsProtocols, withServerAuth } from '../harness/auth.js';
 import { WsClient } from '../harness/ws.js';
 import { createCaseLogger } from './log';
 
@@ -34,6 +35,41 @@ function tmpReportDir(): string {
 }
 
 describe('server-e2e report', () => {
+  it('scopes the configured server token to matching HTTP and WebSocket origins', () => {
+    const previousServerUrl = process.env['KIMI_SERVER_URL'];
+    const previousServerToken = process.env['KIMI_SERVER_TOKEN'];
+    process.env['KIMI_SERVER_URL'] = 'http://127.0.0.1:58627';
+    process.env['KIMI_SERVER_TOKEN'] = 'test-server-token';
+
+    try {
+      const authenticated = withServerAuth(
+        'http://127.0.0.1:58627/api/v1/meta',
+        { headers: { accept: 'application/json' } },
+      );
+      expect(new Headers(authenticated?.headers).get('authorization')).toBe(
+        'Bearer test-server-token',
+      );
+      expect(serverWsProtocols('ws://127.0.0.1:58627/api/v1/ws')).toEqual([
+        'kimi-code.bearer.test-server-token',
+      ]);
+
+      const otherOrigin = withServerAuth('https://example.test/api/v1/meta', undefined);
+      expect(new Headers(otherOrigin?.headers).has('authorization')).toBe(false);
+      expect(serverWsProtocols('wss://example.test/api/v1/ws')).toBeUndefined();
+    } finally {
+      if (previousServerUrl === undefined) {
+        delete process.env['KIMI_SERVER_URL'];
+      } else {
+        process.env['KIMI_SERVER_URL'] = previousServerUrl;
+      }
+      if (previousServerToken === undefined) {
+        delete process.env['KIMI_SERVER_TOKEN'];
+      } else {
+        process.env['KIMI_SERVER_TOKEN'] = previousServerToken;
+      }
+    }
+  });
+
   it('renders HTTP and WS trace events into a readable HTML timeline', () => {
     const reportDir = tmpReportDir();
     resetReportDir(reportDir);

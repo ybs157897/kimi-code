@@ -10,7 +10,7 @@
 
 import { z } from 'zod';
 
-import { noResult } from '../helpers.js';
+import { maybe, noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
 import type { ServiceContract } from '../types.js';
 
@@ -22,7 +22,7 @@ export const mcpCatalogEntrySchema = z.object({
 
 export const mcpCatalogContract = {
   list: { input: z.tuple([]), output: z.array(mcpCatalogEntrySchema) },
-  get: { input: z.tuple([z.string()]), output: mcpCatalogEntrySchema.nullable() },
+  get: { input: z.tuple([z.string()]), output: maybe(mcpCatalogEntrySchema) },
   add: { input: z.tuple([z.string(), mcpServerConfigSchema]), output: mcpCatalogEntrySchema },
   update: { input: z.tuple([z.string(), mcpServerConfigSchema]), output: mcpCatalogEntrySchema },
   rename: { input: z.tuple([z.string(), z.string()]), output: mcpCatalogEntrySchema },
@@ -58,6 +58,17 @@ export const mcpProbeResultSchema = z.object({
   error: z.string().optional(),
 });
 
+export const mcpProbeOptionsSchema = z.object({
+  cwd: z.string().optional(),
+});
+
 export const mcpProbeContract = {
-  probe: { input: z.tuple([z.string(), mcpServerConfigSchema]), output: mcpProbeResultSchema },
+  probe: {
+    input: z.tuple([
+      z.string(),
+      mcpServerConfigSchema,
+      mcpProbeOptionsSchema.optional(),
+    ]),
+    output: mcpProbeResultSchema,
+  },
 } satisfies ServiceContract;

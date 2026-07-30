@@ -1,13 +1,10 @@
 /**
- * Minimal harness/session surface consumed by `kimi -p` (print mode).
+ * Minimal harness/session surface used to verify the SDK root compatibility
+ * facade.
  *
- * `run-prompt.ts` only needs a small subset of the SDK `KimiHarness` / `Session`
- * API. Coding the print-mode driver against these narrow interfaces — instead of
- * the concrete SDK classes — lets the same driver run on either the v1 engine
- * (`createKimiHarness`, the default) or the experimental agent-core-v2 engine
- * (`createPromptHarnessV2`, gated by `KIMI_CODE_EXPERIMENTAL_FLAG`). Both the
- * v1 `KimiHarness` / `Session` and the v2 harness structurally satisfy these
- * interfaces, so no adapter wrappers are needed on the v1 path.
+ * Production print mode runs directly through the v2 Runtime + Klient host.
+ * `runPromptWithCompatibilityFacade` retains this narrow driver so the public
+ * SDK facade can be exercised independently without coupling it to CLI routing.
  */
 
 import type {

@@ -2,7 +2,7 @@ import { promises as fsp } from 'node:fs';
 import os from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   LifecycleScope,
@@ -16,14 +16,21 @@ import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import {
   ISessionSnapshotStore,
 } from '#/app/sessionStore/sessionSnapshotStore';
+import { ISessionLegacyIndexStore } from '#/app/sessionStore/sessionLegacyIndexStore';
+import { SessionLegacyIndexStoreService } from '#/app/sessionStore/sessionLegacyIndexStoreService';
 import { SessionSnapshotStoreService } from '#/app/sessionStore/sessionSnapshotStoreService';
+import { ErrorCodes } from '#/errors';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IQueryStore } from '#/persistence/interface/queryStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import {
+  IFileSystemStorageService,
+  StorageError,
+  StorageErrors,
+} from '#/persistence/interface/storage';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
 import { stubBootstrap } from '../bootstrap/stubs';
@@ -52,6 +59,13 @@ describe('SessionSnapshotStoreService', () => {
       ScopeActivation.OnDemand,
       'sessionStore',
     );
+    registerScopedService(
+      LifecycleScope.App,
+      ISessionLegacyIndexStore,
+      SessionLegacyIndexStoreService,
+      ScopeActivation.OnDemand,
+      'sessionStore',
+    );
     homeDir = await fsp.mkdtemp(join(os.tmpdir(), 'ss-store-'));
   });
 
@@ -61,24 +75,29 @@ describe('SessionSnapshotStoreService', () => {
     await fsp.rm(homeDir, { recursive: true, force: true });
   });
 
-  function build(): ISessionSnapshotStore {
+  function build(
+    queryStore: IQueryStore = stubQueryStore(),
+    legacyIndex?: ISessionLegacyIndexStore,
+    hostFs: IHostFileSystem = nodeHostFs(),
+  ): ISessionSnapshotStore {
     const fileStorage = new FileStorageService(homeDir);
     const appendLog = new AppendLogStore(fileStorage);
     const docs = new JsonAtomicDocumentStore(fileStorage);
 
     const host = createScopedTestHost([
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
-      stubPair(IHostFileSystem, nodeHostFs()),
+      stubPair(IHostFileSystem, hostFs),
       stubPair(IFileSystemStorageService, fileStorage),
       stubPair(IAppendLogStore, appendLog),
       stubPair(IAtomicDocumentStore, docs),
-      stubPair(IQueryStore, stubQueryStore()),
+      stubPair(IQueryStore, queryStore),
       stubPair(ISessionIndex, {
         _serviceBrand: undefined,
         list: async () => ({ items: [] }),
         get: async () => undefined,
         countActive: async () => 0,
       }),
+      ...(legacyIndex === undefined ? [] : [stubPair(ISessionLegacyIndexStore, legacyIndex)]),
     ]);
     disposeHost = () => {
       host.dispose();
@@ -110,7 +129,7 @@ describe('SessionSnapshotStoreService', () => {
     // Target wire should exist.
     const targetWire = await readWireLog(WorkspaceA, TargetSession, AgentId);
     expect(targetWire.length).toBeGreaterThanOrEqual(3); // metadata + message + forked
-    expect(targetWire[targetWire.length - 1]!['type']).toBe('forked');
+    expect(targetWire.at(-1)?.['type']).toBe('forked');
   });
 
   it('full fork returns agentIds empty when source has no agents dir', async () => {
@@ -126,6 +145,41 @@ describe('SessionSnapshotStoreService', () => {
     });
 
     expect(result.agentIds).toEqual([]);
+  });
+
+  it('rejects a missing source without creating the target', async () => {
+    const svc = build();
+
+    await expect(
+      svc.fork({
+        sourceWorkspaceId: WorkspaceA,
+        sourceSessionId: SourceSession,
+        targetWorkspaceId: WorkspaceA,
+        targetSessionId: TargetSession,
+      }),
+    ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
+    await expect(
+      fsp.access(join(homeDir, 'sessions', WorkspaceA, TargetSession)),
+    ).rejects.toThrow();
+  });
+
+  it('does not overwrite or roll back a pre-existing target', async () => {
+    const svc = build();
+    await seedSessionDir(WorkspaceA, SourceSession);
+    const targetDir = join(homeDir, 'sessions', WorkspaceA, TargetSession);
+    const sentinel = join(targetDir, 'sentinel.txt');
+    await fsp.mkdir(targetDir, { recursive: true });
+    await fsp.writeFile(sentinel, 'keep');
+
+    await expect(
+      svc.fork({
+        sourceWorkspaceId: WorkspaceA,
+        sourceSessionId: SourceSession,
+        targetWorkspaceId: WorkspaceA,
+        targetSessionId: TargetSession,
+      }),
+    ).rejects.toMatchObject({ code: ErrorCodes.SESSION_ALREADY_EXISTS });
+    await expect(fsp.readFile(sentinel, 'utf8')).resolves.toBe('keep');
   });
 
   // ---- fork with userVisibleTurnIndex ----
@@ -159,6 +213,178 @@ describe('SessionSnapshotStoreService', () => {
     const types = targetWire.map((r) => r['type']);
     expect(types).toContain('context.append_message');
     expect(types).not.toContain('next');
+    expect(result.lastPrompt).toBe('hi');
+  });
+
+  it('indexed fork uses the main cutoff to retain only subagents that existed at that time', async () => {
+    const svc = build();
+    await seedSessionDir(WorkspaceA, SourceSession, 'main', [
+      wireLogRecord({ type: 'metadata', created_at: 1 }),
+      wireLogRecord({ type: 'turn.prompt', time: 2, origin: { kind: 'user' }, input: 'hi' }),
+      wireLogRecord({
+        type: 'context.append_message',
+        time: 3,
+        message: { role: 'user', content: 'hi' },
+      }),
+      wireLogRecord({
+        type: 'context.append_message',
+        time: 4,
+        message: { role: 'assistant', content: 'hello' },
+      }),
+      wireLogRecord({ type: 'turn.prompt', time: 8, origin: { kind: 'user' }, input: 'next' }),
+      wireLogRecord({
+        type: 'context.append_message',
+        time: 9,
+        message: { role: 'user', content: 'next' },
+      }),
+    ]);
+    await seedSessionDir(WorkspaceA, SourceSession, 'early', [
+      wireLogRecord({ type: 'metadata', created_at: 2 }),
+      wireLogRecord({
+        type: 'context.append_message',
+        time: 4,
+        message: { role: 'assistant', content: 'work' },
+      }),
+      wireLogRecord({
+        type: 'context.append_message',
+        time: 7,
+        message: { role: 'assistant', content: 'late work' },
+      }),
+    ]);
+    await seedSessionDir(WorkspaceA, SourceSession, 'late', [
+      wireLogRecord({ type: 'metadata', created_at: 7 }),
+    ]);
+    await seedMeta(WorkspaceA, SourceSession, {
+      agents: {
+        main: {},
+        early: { parentAgentId: 'main' },
+        late: { parentAgentId: 'main' },
+      },
+    });
+
+    const result = await svc.fork({
+      sourceWorkspaceId: WorkspaceA,
+      sourceSessionId: SourceSession,
+      targetWorkspaceId: WorkspaceA,
+      targetSessionId: TargetSession,
+      userVisibleTurnIndex: 0,
+    });
+
+    expect(result.agentIds).toEqual(['main', 'early']);
+    const earlyWire = await readWireLog(WorkspaceA, TargetSession, 'early');
+    expect(earlyWire.map((record) => record['time'])).not.toContain(7);
+    expect(earlyWire.at(-1)?.['type']).toBe('forked');
+    await expect(
+      fsp.access(
+        join(homeDir, 'sessions', WorkspaceA, TargetSession, 'agents', 'late'),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('indexed fork drops a retained child when its parent was created after the cutoff', async () => {
+    const svc = build();
+    await seedSessionDir(WorkspaceA, SourceSession, 'main', [
+      wireLogRecord({ type: 'metadata', created_at: 1 }),
+      wireLogRecord({
+        type: 'context.append_message',
+        time: 3,
+        message: { role: 'user', content: 'hi' },
+      }),
+    ]);
+    await seedSessionDir(WorkspaceA, SourceSession, 'parent', [
+      wireLogRecord({ type: 'metadata', created_at: 8 }),
+    ]);
+    await seedSessionDir(WorkspaceA, SourceSession, 'child', [
+      wireLogRecord({ type: 'metadata', created_at: 2 }),
+    ]);
+    await seedMeta(WorkspaceA, SourceSession, {
+      agents: {
+        main: {},
+        parent: { parentAgentId: 'main' },
+        child: { parentAgentId: 'parent' },
+      },
+    });
+
+    const result = await svc.fork({
+      sourceWorkspaceId: WorkspaceA,
+      sourceSessionId: SourceSession,
+      targetWorkspaceId: WorkspaceA,
+      targetSessionId: TargetSession,
+      userVisibleTurnIndex: 0,
+    });
+
+    expect(result.agentIds).toEqual(['main']);
+    await expect(
+      fsp.access(
+        join(homeDir, 'sessions', WorkspaceA, TargetSession, 'agents', 'child'),
+      ),
+    ).rejects.toThrow();
+  });
+
+  it('indexed fork removes copied task and cron runtime state from retained agents', async () => {
+    const svc = build();
+    await seedSessionDir(WorkspaceA, SourceSession, 'main', [
+      wireLogRecord({ type: 'metadata', created_at: 1 }),
+      wireLogRecord({
+        type: 'context.append_message',
+        time: 3,
+        message: { role: 'user', content: 'hi' },
+      }),
+    ]);
+    await seedMeta(WorkspaceA, SourceSession, { agents: { main: {} } });
+    const sourceAgentDir = join(
+      homeDir,
+      'sessions',
+      WorkspaceA,
+      SourceSession,
+      'agents',
+      'main',
+    );
+    await fsp.mkdir(join(sourceAgentDir, 'tasks'), { recursive: true });
+    await fsp.writeFile(join(sourceAgentDir, 'tasks', 'task.json'), '{}');
+    await fsp.mkdir(join(sourceAgentDir, 'cron'), { recursive: true });
+    await fsp.writeFile(join(sourceAgentDir, 'cron', 'task.json'), '{}');
+
+    await svc.fork({
+      sourceWorkspaceId: WorkspaceA,
+      sourceSessionId: SourceSession,
+      targetWorkspaceId: WorkspaceA,
+      targetSessionId: TargetSession,
+      userVisibleTurnIndex: 0,
+    });
+
+    const targetAgentDir = join(
+      homeDir,
+      'sessions',
+      WorkspaceA,
+      TargetSession,
+      'agents',
+      'main',
+    );
+    await expect(fsp.access(join(targetAgentDir, 'tasks'))).rejects.toThrow();
+    await expect(fsp.access(join(targetAgentDir, 'cron'))).rejects.toThrow();
+  });
+
+  it('indexed fork removes the partial target when the selected turn does not exist', async () => {
+    const svc = build();
+    await seedSessionDir(WorkspaceA, SourceSession, AgentId, [
+      wireLogRecord({ type: 'metadata', created_at: 1 }),
+    ]);
+    await seedMeta(WorkspaceA, SourceSession, { agents: { [AgentId]: {} } });
+
+    await expect(
+      svc.fork({
+        sourceWorkspaceId: WorkspaceA,
+        sourceSessionId: SourceSession,
+        targetWorkspaceId: WorkspaceA,
+        targetSessionId: TargetSession,
+        userVisibleTurnIndex: 0,
+      }),
+    ).rejects.toThrow(/Turn 0 was not found/);
+
+    await expect(
+      fsp.access(join(homeDir, 'sessions', WorkspaceA, TargetSession)),
+    ).rejects.toThrow();
   });
 
   it('indexed fork with invalid turnIndex throws', async () => {
@@ -497,11 +723,116 @@ describe('SessionSnapshotStoreService', () => {
     await expect(fsp.access(sessionDir)).rejects.toThrow();
   });
 
+  it('delete removes every historical legacy index record for the session', async () => {
+    const legacyPath = join(homeDir, 'session_index.jsonl');
+    await fsp.writeFile(
+      legacyPath,
+      [
+        JSON.stringify({ sessionId: SourceSession, sessionDir: '/old', workDir: WorkDir }),
+        JSON.stringify({ sessionId: 'session_other', sessionDir: '/other', workDir: '/other' }),
+        JSON.stringify({ sessionId: SourceSession, sessionDir: '/new', workDir: WorkDir }),
+        '',
+      ].join('\n'),
+    );
+    const svc = build();
+
+    await svc.delete({ workspaceId: WorkspaceA, sessionId: SourceSession });
+
+    const remaining = (await fsp.readFile(legacyPath, 'utf8'))
+      .trim()
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { sessionId: string });
+    expect(remaining).toEqual([
+      { sessionId: 'session_other', sessionDir: '/other', workDir: '/other' },
+    ]);
+  });
+
   it('delete on non-existent session succeeds (idempotent)', async () => {
     const svc = build();
     await expect(
       svc.delete({ workspaceId: WorkspaceA, sessionId: 'nonexistent' }),
     ).resolves.toBeUndefined();
+  });
+
+  it('keeps the durable session intact when query-store deletion is locked', async () => {
+    const locked = new StorageError(
+      StorageErrors.codes.STORAGE_LOCKED,
+      'locked by test',
+    );
+    const svc = build({
+      ...stubQueryStore(),
+      delete: () => Promise.reject(locked),
+    });
+    const sessionDir = join(homeDir, 'sessions', WorkspaceA, SourceSession);
+    await fsp.mkdir(sessionDir, { recursive: true });
+
+    await expect(
+      svc.delete({ workspaceId: WorkspaceA, sessionId: SourceSession }),
+    ).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_LOCKED });
+    await expect(fsp.access(sessionDir)).resolves.toBeUndefined();
+  });
+
+  it('keeps the durable session intact when legacy-index cleanup fails', async () => {
+    const failed = new StorageError(
+      StorageErrors.codes.STORAGE_IO_FAILED,
+      'legacy index write failed',
+    );
+    const queryDelete = vi.fn(() => Promise.resolve());
+    const svc = build(
+      { ...stubQueryStore(), delete: queryDelete },
+      {
+        _serviceBrand: undefined,
+        append: () => Promise.resolve(),
+        remove: () => Promise.reject(failed),
+      },
+    );
+    const sessionDir = join(homeDir, 'sessions', WorkspaceA, SourceSession);
+    await fsp.mkdir(sessionDir, { recursive: true });
+
+    await expect(
+      svc.delete({ workspaceId: WorkspaceA, sessionId: SourceSession }),
+    ).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_IO_FAILED });
+    expect(queryDelete).toHaveBeenCalledOnce();
+    await expect(fsp.access(sessionDir)).resolves.toBeUndefined();
+  });
+
+  it('cleans both indexes before attempting the durable directory removal', async () => {
+    const calls: string[] = [];
+    const failed = new StorageError(
+      StorageErrors.codes.STORAGE_IO_FAILED,
+      'directory removal failed',
+    );
+    const svc = build(
+      {
+        ...stubQueryStore(),
+        delete: async () => {
+          calls.push('query');
+        },
+      },
+      {
+        _serviceBrand: undefined,
+        append: () => Promise.resolve(),
+        remove: async () => {
+          calls.push('legacy');
+        },
+      },
+      {
+        ...nodeHostFs(),
+        remove: async () => {
+          calls.push('directory');
+          throw failed;
+        },
+      },
+    );
+    const sessionDir = join(homeDir, 'sessions', WorkspaceA, SourceSession);
+    await fsp.mkdir(sessionDir, { recursive: true });
+
+    await expect(
+      svc.delete({ workspaceId: WorkspaceA, sessionId: SourceSession }),
+    ).rejects.toMatchObject({ code: StorageErrors.codes.STORAGE_IO_FAILED });
+    expect(calls).toEqual(['query', 'legacy', 'directory']);
+    await expect(fsp.access(sessionDir)).resolves.toBeUndefined();
   });
 
   // ---- helpers ----

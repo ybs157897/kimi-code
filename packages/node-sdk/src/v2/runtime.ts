@@ -7,17 +7,31 @@ import {
   IBootstrapService,
   IConfigService,
   IHostFileSystem,
+  ILogService,
+  ISessionExportService,
+  ISessionContext,
   ISessionLifecycleService,
   ITelemetryService,
   logSeed,
   parseAgentFileText,
+  persistOriginalImage,
   resolveAgentPath,
   resolveLoggingConfig,
+  sessionMediaOriginalsDir,
   skillCatalogRuntimeOptionsSeed,
   type TelemetryContextPatch,
+  type ExportSessionPayload,
+  type ExportSessionResult,
+  type LogLevel,
+  type LogPayload,
 } from '@moonshot-ai/agent-core-v2';
 import type { Klient } from '@moonshot-ai/klient';
 import { createKlient } from '@moonshot-ai/klient/memory';
+import type {
+  CreateSessionOptions as HostedCreateSessionOptions,
+  ResumeSessionOptions as HostedResumeSessionOptions,
+  SessionHostContext,
+} from '@moonshot-ai/agent-core-v2/app/sessionLifecycle/sessionLifecycle';
 
 export interface KimiV2RuntimeOptions {
   readonly homeDir: string;
@@ -72,6 +86,59 @@ export interface KimiV2AgentFiles {
   }): Promise<string>;
 }
 
+export interface KimiV2LocalMedia {
+  /**
+   * Persist pre-compression image bytes through the runtime-owned host
+   * filesystem. A live session id places the file in that session's
+   * media-originals directory; otherwise the shared cache is used.
+   */
+  persistOriginalImage(input: {
+    readonly bytes: Uint8Array;
+    readonly mimeType: string;
+    readonly sessionId?: string;
+  }): Promise<string | null>;
+}
+
+export interface KimiV2HostedSession {
+  readonly id: string;
+}
+
+/**
+ * In-process lifecycle seam for hosts that supply non-serializable session
+ * resources such as an editor-backed workspace filesystem.
+ *
+ * These overrides deliberately bypass Klient's wire contract and are never
+ * accepted by the serializable global.sessions facade.
+ */
+export interface KimiV2HostedSessions {
+  create(
+    input: HostedCreateSessionOptions,
+    host?: SessionHostContext,
+  ): Promise<KimiV2HostedSession>;
+  resume(
+    sessionId: string,
+    input?: HostedResumeSessionOptions,
+    host?: SessionHostContext,
+  ): Promise<KimiV2HostedSession | undefined>;
+}
+
+export interface KimiV2Diagnostics {
+  readonly globalLogPath: string;
+  write(
+    level: Exclude<LogLevel, 'off'>,
+    message: string,
+    payload?: LogPayload,
+  ): boolean;
+  flush(): Promise<void>;
+}
+
+export interface KimiV2HostedSessionExport {
+  export(
+    input: ExportSessionPayload,
+    options?: { readonly globalLogPath?: string },
+  ): Promise<ExportSessionResult>;
+}
+
 /**
  * Minimal v2 host composition root.
  *
@@ -84,7 +151,97 @@ export interface KimiV2Runtime {
   readonly klient: Klient;
   readonly telemetry: KimiV2Telemetry;
   readonly agentFiles: KimiV2AgentFiles;
+  readonly localMedia: KimiV2LocalMedia;
+  readonly hostedSessions: KimiV2HostedSessions;
+  readonly diagnostics: KimiV2Diagnostics;
+  readonly hostedSessionExport: KimiV2HostedSessionExport;
   close(): Promise<void>;
+}
+
+export type KimiV2PrintBackgroundMode = 'exit' | 'drain' | 'steer';
+
+export interface KimiV2PrintBackgroundSettings {
+  readonly mode: KimiV2PrintBackgroundMode;
+  readonly ceilingS: number;
+  readonly maxTurns: number;
+}
+
+const PRINT_BACKGROUND_TASK_POLL_MS = 100;
+const DEFAULT_PRINT_WAIT_CEILING_S = 315_360_000;
+const DEFAULT_PRINT_MAX_TURNS = 100_000;
+
+export async function resolveKimiV2PrintBackgroundSettings(
+  runtime: KimiV2Runtime,
+): Promise<KimiV2PrintBackgroundSettings> {
+  const current = await runtime.klient.global.config.get<{
+    readonly keepAliveOnExit?: boolean;
+    readonly printBackgroundMode?: KimiV2PrintBackgroundMode;
+    readonly printWaitCeilingS?: number;
+    readonly printMaxTurns?: number;
+  } | undefined>('task');
+  const legacy = await runtime.klient.global.config.get<typeof current>('background');
+  const config = { ...legacy, ...current };
+  return {
+    mode:
+      config.printBackgroundMode ??
+      (config.keepAliveOnExit === true ? 'drain' : 'steer'),
+    ceilingS: config.printWaitCeilingS ?? DEFAULT_PRINT_WAIT_CEILING_S,
+    maxTurns: config.printMaxTurns ?? DEFAULT_PRINT_MAX_TURNS,
+  };
+}
+
+export async function countKimiV2ActiveTasks(
+  runtime: KimiV2Runtime,
+  sessionId: string,
+): Promise<number> {
+  const session = runtime.klient.session(sessionId);
+  const agents = await session.agents();
+  const agentIds = new Set(['main', ...Object.keys(agents)]);
+  let total = 0;
+  for (const agentId of agentIds) {
+    try {
+      total += (await session.agent(agentId).getTasks({ activeOnly: true })).length;
+    } catch {}
+  }
+  return total;
+}
+
+export async function drainKimiV2BackgroundTasks(
+  runtime: KimiV2Runtime,
+  sessionId: string,
+  ceilingS: number,
+): Promise<void> {
+  const deadline = Date.now() + ceilingS * 1000;
+  while (Date.now() < deadline) {
+    if ((await countKimiV2ActiveTasks(runtime, sessionId)) === 0) {
+      if ((await runtime.klient.session(sessionId).status()) !== 'running') return;
+    }
+    await delay(PRINT_BACKGROUND_TASK_POLL_MS);
+  }
+}
+
+export async function waitForKimiV2PrintBackgroundTasks(
+  runtime: KimiV2Runtime,
+  sessionId: string,
+): Promise<void> {
+  const settings = await resolveKimiV2PrintBackgroundSettings(runtime);
+  if (settings.mode !== 'drain') return;
+  await drainKimiV2BackgroundTasks(runtime, sessionId, settings.ceilingS);
+}
+
+export async function handleKimiV2CompletedPrintTurn(
+  runtime: KimiV2Runtime,
+  sessionId: string,
+): Promise<'finish' | 'continue'> {
+  const settings = await resolveKimiV2PrintBackgroundSettings(runtime);
+  if (settings.mode === 'exit') return 'finish';
+  if (settings.mode === 'drain') {
+    await drainKimiV2BackgroundTasks(runtime, sessionId, settings.ceilingS);
+    return 'finish';
+  }
+  return (await countKimiV2ActiveTasks(runtime, sessionId)) > 0
+    ? 'continue'
+    : 'finish';
 }
 
 export async function createKimiV2Runtime(
@@ -153,6 +310,7 @@ export async function createKimiV2Runtime(
 
   const bootstrapService = app.accessor.get(IBootstrapService);
   const hostFs = app.accessor.get(IHostFileSystem);
+  const sessions = app.accessor.get(ISessionLifecycleService);
   const agentFiles: KimiV2AgentFiles = {
     async resolveProfileName(input): Promise<string> {
       const path = resolveAgentPath(
@@ -183,6 +341,63 @@ export async function createKimiV2Runtime(
       }
     },
   };
+  const localMedia: KimiV2LocalMedia = {
+    async persistOriginalImage(input): Promise<string | null> {
+      const session =
+        input.sessionId === undefined || input.sessionId.length === 0
+          ? undefined
+          : sessions.get(input.sessionId);
+      const dir =
+        session === undefined
+          ? undefined
+          : sessionMediaOriginalsDir(
+              session.accessor.get(ISessionContext).sessionDir,
+            );
+      return persistOriginalImage(input.bytes, input.mimeType, {
+        dir,
+        hostFs,
+      });
+    },
+  };
+  const hostedSessions: KimiV2HostedSessions = {
+    async create(input, host): Promise<KimiV2HostedSession> {
+      const session = await sessions.create(input, host);
+      return { id: session.id };
+    },
+    async resume(sessionId, input, host): Promise<KimiV2HostedSession | undefined> {
+      const session = await sessions.resume(sessionId, input, host);
+      return session === undefined ? undefined : { id: session.id };
+    },
+  };
+  const appLog = app.accessor.get(ILogService);
+  const diagnostics: KimiV2Diagnostics = {
+    globalLogPath: logging.globalLogPath,
+    write(level, message, payload): boolean {
+      const sessionId = logSessionId(payload);
+      if (sessionId === undefined) {
+        appLog[level](message, payload);
+        return true;
+      }
+      const session = sessions.get(sessionId);
+      if (session === undefined) return false;
+      session.accessor.get(ILogService)[level](message, payload);
+      return true;
+    },
+    async flush(): Promise<void> {
+      await Promise.all([
+        appLog.flush(),
+        ...sessions.list().map((session) => session.accessor.get(ILogService).flush()),
+      ]);
+    },
+  };
+  const sessionExport = app.accessor.get(ISessionExportService);
+  const hostedSessionExport: KimiV2HostedSessionExport = {
+    export(input, options): Promise<ExportSessionResult> {
+      return sessionExport.export(input, {
+        globalLogPath: options?.globalLogPath,
+      });
+    },
+  };
 
   const klient = createKlient({ scope: app });
   let closed = false;
@@ -190,11 +405,14 @@ export async function createKimiV2Runtime(
     klient,
     telemetry,
     agentFiles,
+    localMedia,
+    hostedSessions,
+    diagnostics,
+    hostedSessionExport,
     async close(): Promise<void> {
       if (closed) return;
       closed = true;
       try {
-        const sessions = app.accessor.get(ISessionLifecycleService);
         for (const session of sessions.list()) {
           await sessions.close(session.id);
         }
@@ -213,10 +431,24 @@ export async function createKimiV2Runtime(
   };
 }
 
+function logSessionId(payload: LogPayload): string | undefined {
+  if (payload === null || typeof payload !== 'object' || payload instanceof Error) {
+    return undefined;
+  }
+  const sessionId = (payload as Readonly<Record<string, unknown>>)['sessionId'];
+  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined;
+}
+
 function readTelemetryEnabled(config: IConfigService): boolean {
   try {
     return config.get('telemetry') !== false;
   } catch {
     return true;
   }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolveDelay) => {
+    setTimeout(resolveDelay, ms);
+  });
 }

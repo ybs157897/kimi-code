@@ -35,6 +35,8 @@
  * disables the read model for the rest of the process lifetime. (The minidb
  * backend is a multi-process `ClusterDb` and no longer produces that error;
  * the wiring stays as defense in depth.)
+ * Durable hard-delete tombstones are resolved through `sessionStore` before
+ * either backend can return a stale session.
  *
  * This is the local-deployment backend of `ISessionIndex`; a server deployment
  * would substitute a database-backed `DbSessionIndex`. Bound at App scope.
@@ -44,6 +46,7 @@ import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
+import { ISessionDeletionStore } from '#/app/sessionStore/sessionDeletionStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IQueryStore, type Page } from '#/persistence/interface/queryStore';
 import { IFileSystemStorageService, isStorageError, StorageErrors } from '#/persistence/interface/storage';
@@ -106,17 +109,20 @@ export class FileSessionIndex implements ISessionIndex {
     @IQueryStore private readonly queryStore: IQueryStore,
     @IFlagService private readonly flags: IFlagService,
     @ILogService private readonly log: ILogService,
+    @ISessionDeletionStore private readonly deletions: ISessionDeletionStore,
   ) {}
 
   async list(query: SessionListQuery): Promise<Page<SessionSummary>> {
-    if (!this.readModelEnabled()) return this.listLegacy(query);
+    const tombstones = await this.tombstonedSessionIds();
+    if (!this.readModelEnabled()) return this.listLegacy(query, tombstones);
     return this.withReadModelFallback(
-      () => this.listFromReadModel(query),
-      () => this.listLegacy(query),
+      () => this.listFromReadModel(query, tombstones),
+      () => this.listLegacy(query, tombstones),
     );
   }
 
   async get(id: string): Promise<SessionSummary | undefined> {
+    if ((await this.deletions.get(id)) !== undefined) return undefined;
     if (!this.readModelEnabled()) return this.getLegacy(id);
     return this.withReadModelFallback(
       () => this.getFromReadModel(id),
@@ -125,10 +131,11 @@ export class FileSessionIndex implements ISessionIndex {
   }
 
   async countActive(workspaceIds: readonly string[]): Promise<number> {
-    if (!this.readModelEnabled()) return this.countActiveLegacy(workspaceIds);
+    const tombstones = await this.tombstonedSessionIds();
+    if (!this.readModelEnabled()) return this.countActiveLegacy(workspaceIds, tombstones);
     return this.withReadModelFallback(
-      () => this.countActiveFromReadModel(workspaceIds),
-      () => this.countActiveLegacy(workspaceIds),
+      () => this.countActiveFromReadModel(workspaceIds, tombstones),
+      () => this.countActiveLegacy(workspaceIds, tombstones),
     );
   }
 
@@ -146,10 +153,15 @@ export class FileSessionIndex implements ISessionIndex {
     }
   }
 
-  private async listFromReadModel(query: SessionListQuery): Promise<Page<SessionSummary>> {
+  private async listFromReadModel(
+    query: SessionListQuery,
+    tombstones: ReadonlySet<string>,
+  ): Promise<Page<SessionSummary>> {
     await this.ensureIndexes();
     if (query.sessionId !== undefined) {
-      const summary = await this.getFromReadModel(query.sessionId);
+      const summary = tombstones.has(query.sessionId)
+        ? undefined
+        : await this.getFromReadModel(query.sessionId);
       const items =
         summary !== undefined && (!summary.archived || query.includeArchived === true)
           ? [summary]
@@ -161,6 +173,7 @@ export class FileSessionIndex implements ISessionIndex {
     const items: SessionSummary[] = [];
     for (const workspaceId of workspaceIds) {
       for (const sessionId of await this.listSessionIds(workspaceId)) {
+        if (tombstones.has(sessionId)) continue;
         const summary = await this.getCachedSummary(workspaceId, sessionId);
         if (summary === undefined) continue;
         if (summary.archived && query.includeArchived !== true) continue;
@@ -182,10 +195,14 @@ export class FileSessionIndex implements ISessionIndex {
     return undefined;
   }
 
-  private async countActiveFromReadModel(workspaceIds: readonly string[]): Promise<number> {
+  private async countActiveFromReadModel(
+    workspaceIds: readonly string[],
+    tombstones: ReadonlySet<string>,
+  ): Promise<number> {
     let count = 0;
     for (const workspaceId of workspaceIds) {
       for (const sessionId of await this.listSessionIds(workspaceId)) {
+        if (tombstones.has(sessionId)) continue;
         const summary = await this.getCachedSummary(workspaceId, sessionId);
         if (summary !== undefined && !summary.archived) count += 1;
       }
@@ -226,9 +243,14 @@ export class FileSessionIndex implements ISessionIndex {
     return summary;
   }
 
-  private async listLegacy(query: SessionListQuery): Promise<Page<SessionSummary>> {
+  private async listLegacy(
+    query: SessionListQuery,
+    tombstones: ReadonlySet<string>,
+  ): Promise<Page<SessionSummary>> {
     if (query.sessionId !== undefined) {
-      const summary = await this.getLegacy(query.sessionId);
+      const summary = tombstones.has(query.sessionId)
+        ? undefined
+        : await this.getLegacy(query.sessionId);
       const items =
         summary !== undefined && (!summary.archived || query.includeArchived === true)
           ? [summary]
@@ -240,6 +262,7 @@ export class FileSessionIndex implements ISessionIndex {
     const items: SessionSummary[] = [];
     for (const workspaceId of workspaceIds) {
       for (const sessionId of await this.listSessionIds(workspaceId)) {
+        if (tombstones.has(sessionId)) continue;
         const summary = await this.readSummary(workspaceId, sessionId);
         if (summary === undefined) continue;
         if (summary.archived && query.includeArchived !== true) continue;
@@ -260,10 +283,14 @@ export class FileSessionIndex implements ISessionIndex {
     return undefined;
   }
 
-  private async countActiveLegacy(workspaceIds: readonly string[]): Promise<number> {
+  private async countActiveLegacy(
+    workspaceIds: readonly string[],
+    tombstones: ReadonlySet<string>,
+  ): Promise<number> {
     let count = 0;
     for (const workspaceId of workspaceIds) {
       for (const sessionId of await this.listSessionIds(workspaceId)) {
+        if (tombstones.has(sessionId)) continue;
         const summary = await this.readSummary(workspaceId, sessionId);
         if (summary !== undefined && !summary.archived) count += 1;
       }
@@ -294,6 +321,10 @@ export class FileSessionIndex implements ISessionIndex {
   private async hasSession(workspaceId: string, sessionId: string): Promise<boolean> {
     const ids = await this.listSessionIds(workspaceId);
     return ids.includes(sessionId);
+  }
+
+  private async tombstonedSessionIds(): Promise<ReadonlySet<string>> {
+    return new Set((await this.deletions.list()).map((intent) => intent.sessionId));
   }
 
   private async readSummary(

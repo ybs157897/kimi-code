@@ -55,6 +55,7 @@ export interface ExportSessionResult {
 
 export interface ExportSessionOptions {
   readonly webLog?: string;
+  readonly globalLogPath?: string;
   readonly signal?: AbortSignal;
   readonly maxArchiveBytes?: number;
 }

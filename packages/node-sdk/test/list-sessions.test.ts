@@ -11,8 +11,7 @@ import { basename, dirname, join, resolve as nodeResolve } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { createKimiHarness } from '#/index';
-import type { KimiError } from '#/index';
+import { createKimiHarness, KimiError } from '#/index';
 
 import { encodeWorkDirKey } from '@moonshot-ai/agent-core-v2/_base/utils/workdir-slug';
 import { TEST_IDENTITY } from './test-identity';
@@ -48,7 +47,7 @@ class TestSessionStore {
       id: opts.id,
       sessionDir,
       workDir: normalizeWorkDir(opts.workDir),
-      title: undefined as undefined,
+      title: undefined,
       createdAt: 1,
       updatedAt: 2,
     };
@@ -123,20 +122,54 @@ class TestSessionStore {
     await cp(source.sessionDir, targetDir, { recursive: true });
 
     const state = await readState(source.sessionDir);
+    const custom = {
+      ...(state?.['custom'] as Record<string, unknown> | undefined),
+      ...opts.metadata,
+    };
+    delete custom['goal'];
+    const agents = Object.fromEntries(
+      Object.entries(
+        (state?.['agents'] as Record<string, Record<string, unknown>> | undefined) ?? {},
+      ).map(([agentId, agent]) => [
+        agentId,
+        {
+          ...agent,
+          homedir: normalizeWorkDir(join(targetDir, 'agents', agentId)),
+        },
+      ]),
+    );
     await writeFile(join(targetDir, 'state.json'), JSON.stringify({
       ...state,
       title: opts.title ?? state?.['title'],
       isCustomTitle: opts.title !== undefined,
       forkedFrom: opts.sourceId,
-      custom: { ...((state?.['custom'] as Record<string, unknown>) ?? {}), ...(opts.metadata ?? {}) },
+      agents,
+      custom,
     }) + '\n');
+    await rm(join(targetDir, 'upcoming-goals.json'), { force: true });
+    await Promise.all(
+      Object.keys(agents).map((agentId) =>
+        writeFile(
+          join(targetDir, 'agents', agentId, 'wire.jsonl'),
+          `${JSON.stringify({ type: 'context.clear' })}\n${JSON.stringify({
+            type: 'forked',
+            time: Date.now(),
+          })}\n`,
+          'utf-8',
+        ),
+      ),
+    );
 
     return { id: opts.targetId, sessionDir: targetDir, workDir: source.workDir, title: opts.title };
   }
 
   async get(id: string): Promise<{ id: string; sessionDir: string; workDir: string; title?: string; metadata?: Record<string, unknown> } | undefined> {
     const sessions = await this.list();
-    return sessions.find(s => s.id === id);
+    const session = sessions.find(s => s.id === id);
+    if (session !== undefined) return session;
+    throw new KimiError('session.not_found', `Session "${id}" does not exist`, {
+      details: { sessionId: id },
+    });
   }
 }
 

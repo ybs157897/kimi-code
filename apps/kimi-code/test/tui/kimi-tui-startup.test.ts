@@ -17,19 +17,13 @@ import type { ExtensionCommandPort } from '#/tui/runtime/extension-command-port'
 import type { RuntimeEnvironmentPort } from '#/tui/runtime/runtime-environment-port';
 import type { RuntimeModelCatalogPort } from '#/tui/runtime/runtime-model-catalog-port';
 import type { RuntimeSessionExportPort } from '#/tui/runtime/runtime-session-export-port';
-import type {
-  RuntimeTelemetryPort,
-  RuntimeTelemetryProperties,
-} from '#/tui/runtime/runtime-telemetry-port';
+import type { RuntimeTelemetryPort, RuntimeTelemetryProperties } from '#/tui/runtime/runtime-telemetry-port';
 import type { AgentEventsPort } from '#/tui/runtime/agent-events-port';
 import type { SessionScopedEventsPort } from '#/tui/runtime/session-events-port';
-import type { SessionControlPort } from '#/tui/runtime/session-control-port';
+import type { AgentRuntimeStatus, SessionControlPort, SessionIdentity } from '#/tui/runtime/session-control-port';
 import type { SessionMcpPort } from '#/tui/runtime/session-mcp-port';
 import type { SessionSkillsPort } from '#/tui/runtime/session-skills-port';
-import type {
-  SessionWarningsPort,
-  SessionWarningView,
-} from '#/tui/runtime/session-warnings-port';
+import type { SessionWarningsPort, SessionWarningView } from '#/tui/runtime/session-warnings-port';
 import type { SessionWorkspacePort } from '#/tui/runtime/session-workspace-port';
 import type { TUIRuntime } from '#/tui/runtime/tui-runtime';
 import type { TUISessionRuntime } from '#/tui/runtime/tui-session-runtime';
@@ -46,7 +40,11 @@ import {
 
 vi.mock('#/tui/commands/prompts', async (importOriginal) => {
   const actual = await importOriginal<typeof import('#/tui/commands/prompts')>();
-  return { ...actual, promptPlatformSelection: vi.fn(), promptLogoutProviderSelection: vi.fn() };
+  return {
+    ...actual,
+    promptPlatformSelection: vi.fn(),
+    promptLogoutProviderSelection: vi.fn(),
+  };
 });
 vi.mock('#/utils/clipboard/clipboard-text', () => ({
   copyTextToClipboard: vi.fn(async () => {}),
@@ -78,6 +76,8 @@ interface StartupDriver {
   refreshSkillCommands(): Promise<void>;
   getStartupMcpMs(): Promise<number>;
   requireSessionRuntime(): TUISessionRuntime;
+  reloadCurrentSessionView(statusMessage: string): Promise<void>;
+  closeSession(reason: string): Promise<void>;
   stop(exitCode?: number): Promise<void>;
   track(event: string, properties?: RuntimeTelemetryProperties): void;
 }
@@ -113,6 +113,7 @@ const MIGRATION_PLAN: MigrationPlan = {
 function makeStartupInput(
   cliOptions: Partial<KimiTUIStartupInput['cliOptions']> = {},
   tuiConfig: Partial<KimiTUIStartupInput['tuiConfig']> = {},
+  runtimeInput: Parameters<typeof makeTUIRuntime>[0] = {},
 ): KimiTUIStartupInput {
   return {
     cliOptions: {
@@ -139,42 +140,70 @@ function makeStartupInput(
     },
     version: '0.0.0-test',
     workDir: '/tmp/proj-a',
-    runtime: makeTUIRuntime().runtime,
+    runtime: makeTUIRuntime(runtimeInput).runtime,
   };
 }
 
-function makeSession(overrides: Record<string, unknown> = {}) {
+interface SessionFixture {
+  readonly identity: SessionIdentity;
+  readonly getStatus: TUISessionRuntime['agent']['getStatus'];
+  readonly setModel: TUISessionRuntime['agent']['setModel'];
+  readonly setThinking: TUISessionRuntime['agent']['setThinking'];
+  readonly setPermission: TUISessionRuntime['agent']['setPermission'];
+  readonly setPlanMode: TUISessionRuntime['agent']['setPlanMode'];
+  readonly getGoal: TUISessionRuntime['agent']['getGoal'];
+  readonly getSessionWarnings: SessionWarningsPort['list'];
+  readonly getResumeState: () => unknown;
+  readonly close: TUISessionRuntime['lifecycle']['close'];
+}
+
+interface SessionFixtureOverrides {
+  readonly id?: string;
+  readonly workDir?: string;
+  readonly title?: string;
+  readonly getStatus?: ReturnType<typeof vi.fn>;
+  readonly setModel?: SessionFixture['setModel'];
+  readonly setThinking?: SessionFixture['setThinking'];
+  readonly setPermission?: SessionFixture['setPermission'];
+  readonly setPlanMode?: SessionFixture['setPlanMode'];
+  readonly getGoal?: SessionFixture['getGoal'];
+  readonly getSessionWarnings?: SessionFixture['getSessionWarnings'];
+  readonly getResumeState?: SessionFixture['getResumeState'];
+  readonly close?: SessionFixture['close'];
+}
+
+function makeSession(overrides: SessionFixtureOverrides = {}): SessionFixture {
+  const id = overrides.id ?? 'ses-1';
   return {
-    id: 'ses-1',
-    model: 'k2',
-    summary: { title: 'Session title' },
-    getStatus: vi.fn(async () => ({
-      model: 'k2',
-      thinkingEffort: 'off',
-      permission: 'manual',
-      planMode: false,
-      contextTokens: 10,
-      maxContextTokens: 100,
-      contextUsage: 0.1,
-    })),
-    setApprovalHandler: vi.fn(),
-    setQuestionHandler: vi.fn(),
-    setModel: vi.fn(async () => {}),
-    setThinking: vi.fn(async () => {}),
-    setPermission: vi.fn(async () => {}),
-    setPlanMode: vi.fn(async () => {}),
-    getGoal: vi.fn(async () => ({ goal: null })),
-    getSessionWarnings: vi.fn(async () => []),
-    onEvent: vi.fn(() => () => {}),
-    getResumeState: vi.fn(() => null),
-    listMcpServers: vi.fn(async () => []),
-    listSkills: vi.fn(async () => []),
-    listExpertTeams: vi.fn(async () => []),
-    getExpertTeamStatus: vi.fn(async () => null),
-    activateExpertTeam: vi.fn(),
-    deactivateExpertTeam: vi.fn(async () => {}),
-    close: vi.fn(async () => {}),
-    ...overrides,
+    identity: {
+      id,
+      workDir: overrides.workDir ?? '/tmp/proj-a',
+      title: overrides.title ?? 'Session title',
+      createdAt: 1,
+      updatedAt: 1,
+      archived: false,
+    },
+    getStatus:
+      (overrides.getStatus as SessionFixture['getStatus'] | undefined) ??
+      vi.fn(
+        async (): Promise<AgentRuntimeStatus> => ({
+          model: 'k2',
+          thinkingEffort: 'off',
+          permission: 'manual',
+          planMode: false,
+          contextTokens: 10,
+          maxContextTokens: 100,
+          contextUsage: 0.1,
+        }),
+      ),
+    setModel: overrides.setModel ?? vi.fn(async () => {}),
+    setThinking: overrides.setThinking ?? vi.fn(async () => {}),
+    setPermission: overrides.setPermission ?? vi.fn(async () => {}),
+    setPlanMode: overrides.setPlanMode ?? vi.fn(async () => {}),
+    getGoal: overrides.getGoal ?? vi.fn(async () => null),
+    getSessionWarnings: overrides.getSessionWarnings ?? vi.fn(async () => []),
+    getResumeState: overrides.getResumeState ?? vi.fn(() => undefined),
+    close: overrides.close ?? vi.fn(async () => {}),
   };
 }
 
@@ -238,6 +267,27 @@ function loginRequiredError(): Error & { readonly code: string } {
   });
 }
 
+function makeManagedModels(): RuntimeModelCatalogPort {
+  return {
+    load: vi.fn(async () => ({
+      defaultModel: 'k2',
+      models: {
+        k2: {
+          provider: 'managed:kimi-code',
+          model: 'moonshot-v1',
+          maxContextSize: 100,
+        },
+      },
+      providers: {
+        'managed:kimi-code': {
+          type: 'kimi',
+          status: 'connected' as const,
+          hasApiKey: true,
+        },
+      },
+    })),
+  };
+}
 
 function makeTUIRuntime(
   input: {
@@ -253,6 +303,12 @@ function makeTUIRuntime(
     skills?: SessionSkillsPort;
     warnings?: SessionWarningsPort;
     workspace?: SessionWorkspacePort;
+    sessions?: readonly SessionFixture[];
+    listSessions?: SessionControlPort['sessions']['list'];
+    createSession?: SessionControlPort['sessions']['create'];
+    resumeSession?: SessionControlPort['sessions']['resume'];
+    auth?: Partial<TUIRuntime['auth']>;
+    modelConfig?: TUIRuntime['modelConfig'];
   } = {},
 ) {
   const environment =
@@ -269,7 +325,7 @@ function makeTUIRuntime(
       track: vi.fn(),
       setContext: vi.fn(),
     } satisfies RuntimeTelemetryPort);
-  const sessionIdentity = (id: string) => ({
+  const sessionIdentity = (id: string): SessionIdentity => ({
     id,
     workDir: '/tmp/proj-a',
     title: 'Session title',
@@ -277,47 +333,76 @@ function makeTUIRuntime(
     updatedAt: 1,
     archived: false,
   });
-  const agent = {
-    getStatus: vi.fn(async () => ({
-      model: 'k2',
-      thinkingEffort: 'off',
-      permission: 'manual' as const,
-      planMode: false,
-      contextTokens: 10,
-      maxContextTokens: 100,
-      contextUsage: 0.1,
-    })),
-    getGoal: vi.fn(async () => null),
-    setModel: vi.fn(async () => {}),
-    setThinking: vi.fn(async () => {}),
-    setPermission: vi.fn(async () => {}),
-    setPlanMode: vi.fn(async () => {}),
-  } as unknown as TUISessionRuntime['agent'];
-  const sessionControl =
+  const defaultSession = makeSession();
+  const sessionFixtures = input.sessions ?? [defaultSession];
+  const fixtureById = new Map(sessionFixtures.map((fixture) => [fixture.identity.id, fixture]));
+  const fixtureFor = (sessionId: string): SessionFixture => fixtureById.get(sessionId) ?? defaultSession;
+  const makeAgent = (fixture: SessionFixture): TUISessionRuntime['agent'] =>
+    ({
+      prompt: vi.fn(async () => {}),
+      steer: vi.fn(async () => {}),
+      cancel: vi.fn(async () => {}),
+      runShellCommand: vi.fn(async () => ({ stdout: '', stderr: '' })),
+      cancelShellCommand: vi.fn(async () => {}),
+      getStatus: fixture.getStatus,
+      getModel: vi.fn(async () => (await fixture.getStatus()).model),
+      setModel: fixture.setModel,
+      getThinking: vi.fn(async () => (await fixture.getStatus()).thinkingEffort),
+      setThinking: fixture.setThinking,
+      setPermission: fixture.setPermission,
+      getPlan: vi.fn(async () => null),
+      setPlanMode: fixture.setPlanMode,
+      clearPlan: vi.fn(async () => {}),
+      getGoal: fixture.getGoal,
+      createGoal: vi.fn(),
+      pauseGoal: vi.fn(),
+      resumeGoal: vi.fn(),
+      cancelGoal: vi.fn(),
+      listTasks: vi.fn(async () => []),
+      detachTask: vi.fn(async () => undefined),
+      getTaskOutput: vi.fn(async () => ''),
+      stopTask: vi.fn(async () => {}),
+    } as TUISessionRuntime['agent']);
+  const sessionControl: SessionControlPort =
     input.sessionControl ??
     ({
       sessions: {
-        list: vi.fn(async () => []),
-        create: vi.fn(async () => sessionIdentity('ses-1')),
-        resume: vi.fn(async ({ id }: { id: string }) => sessionIdentity(id)),
+        list:
+          input.listSessions ??
+          vi.fn(async (query = {}) =>
+            sessionFixtures
+              .map((fixture) => fixture.identity)
+              .filter(
+                (identity) =>
+                  (query.sessionId === undefined || identity.id === query.sessionId) &&
+                  (query.workDir === undefined || identity.workDir === query.workDir),
+              ),
+          ),
+        create: input.createSession ?? vi.fn(async () => sessionFixtures[0]?.identity ?? sessionIdentity('ses-1')),
+        resume: input.resumeSession ?? vi.fn(async ({ id }) => fixtureById.get(id)?.identity),
       },
-      session: vi.fn((sessionId: string) => ({
-        getIdentity: vi.fn(async () => sessionIdentity(sessionId)),
-        close: vi.fn(async () => {}),
-        setTitle: vi.fn(async () => {}),
-        fork: vi.fn(async () => sessionIdentity(`${sessionId}-fork`)),
-      })),
-      agent: vi.fn(() => agent),
+      session: vi.fn((sessionId: string) => {
+        const fixture = fixtureFor(sessionId);
+        return {
+          getIdentity: vi.fn(async () => (fixtureById.has(sessionId) ? fixture.identity : sessionIdentity(sessionId))),
+          close: fixture.close,
+          setTitle: vi.fn(async () => {}),
+          fork: vi.fn(async () => sessionIdentity(`${sessionId}-fork`)),
+        };
+      }),
+      agent: vi.fn((sessionId: string) => makeAgent(fixtureFor(sessionId))),
     } satisfies SessionControlPort);
   const models =
     input.models ??
     ({
       load: vi.fn(async () => ({ models: {}, providers: {} })),
     } satisfies RuntimeModelCatalogPort);
-  const modelConfig = {
-    apply: vi.fn(async () => {}),
-    removeProvider: vi.fn(async () => {}),
-  };
+  const modelConfig =
+    input.modelConfig ??
+    ({
+      apply: vi.fn(async () => {}),
+      removeProvider: vi.fn(async () => {}),
+    } satisfies TUIRuntime['modelConfig']);
   const sessionExport =
     input.sessionExport ??
     ({
@@ -348,13 +433,13 @@ function makeTUIRuntime(
       respondToApproval: vi.fn(async () => {}),
       respondToQuestion: vi.fn(async () => {}),
     } satisfies SessionScopedEventsPort);
-  const agentEvents =
+  const defaultAgentEvents =
     input.agentEvents ??
     ({
       sessionId: 'ses-1',
       agentId: 'main',
       subscribe: vi.fn(() => vi.fn()),
-      readReplay: vi.fn(async () => undefined),
+      readReplay: vi.fn(async () => defaultSession.getResumeState() as never),
     } satisfies AgentEventsPort);
   const mcp =
     input.mcp ??
@@ -386,39 +471,46 @@ function makeTUIRuntime(
         persisted: true,
       })),
     } satisfies SessionWorkspacePort);
-  const lifecycle = sessionControl.session('ses-1');
   const expertTeam = {
     list: vi.fn(async () => []),
     get: vi.fn(async () => null),
     activate: vi.fn(),
     deactivate: vi.fn(async () => {}),
   } as unknown as TUISessionRuntime['expertTeam'];
-  const sessionRuntime = {
-    sessionId: 'ses-1',
-    agentId: 'main',
-    lifecycle,
-    agent,
-    expertTeam,
-    sessionEvents,
-    agentEvents,
-    mcp,
-    extensionCommands,
-    skills,
-    warnings,
-    workspace,
-  } as TUISessionRuntime;
-  const bindSession = vi.fn((sessionId: string, agentId = 'main') =>
-    sessionId === sessionRuntime.sessionId
-      ? sessionRuntime
-      : ({
-          ...sessionRuntime,
-          sessionId,
-          agentId,
-          lifecycle: sessionControl.session(sessionId),
-          agent: sessionControl.agent(sessionId, agentId),
-          agentEvents: { ...agentEvents, sessionId, agentId },
-        } as TUISessionRuntime),
-  );
+  const runtimeByKey = new Map<string, TUISessionRuntime>();
+  const makeSessionRuntime = (sessionId: string, agentId = 'main'): TUISessionRuntime => {
+    const key = `${sessionId}:${agentId}`;
+    const cached = runtimeByKey.get(key);
+    if (cached !== undefined) return cached;
+    const fixture = fixtureFor(sessionId);
+    const boundAgentEvents = {
+      ...defaultAgentEvents,
+      sessionId,
+      agentId,
+      readReplay: vi.fn(async () => fixture.getResumeState() as never),
+    };
+    const boundWarnings = {
+      list: fixture.getSessionWarnings,
+    } satisfies SessionWarningsPort;
+    const runtime = {
+      sessionId,
+      agentId,
+      lifecycle: sessionControl.session(sessionId),
+      agent: sessionControl.agent(sessionId, agentId),
+      expertTeam,
+      sessionEvents,
+      agentEvents: boundAgentEvents,
+      mcp,
+      extensionCommands,
+      skills,
+      warnings: input.warnings ?? boundWarnings,
+      workspace,
+    } as unknown as TUISessionRuntime;
+    runtimeByKey.set(key, runtime);
+    return runtime;
+  };
+  const sessionRuntime = makeSessionRuntime(defaultSession.identity.id);
+  const bindSession = vi.fn(makeSessionRuntime);
   const runtime = {
     auth: {
       status: vi.fn(async () => ({ loggedIn: false })),
@@ -429,7 +521,10 @@ function makeTUIRuntime(
         kind: 'error' as const,
         message: 'Not configured in this test.',
       })),
-      submitFeedback: vi.fn(async () => ({ kind: 'ok' as const, feedbackId: 3 })),
+      submitFeedback: vi.fn(async () => ({
+        kind: 'ok' as const,
+        feedbackId: 3,
+      })),
       createFeedbackUploadUrl: vi.fn(async () => ({
         kind: 'error' as const,
         message: 'Not configured in this test.',
@@ -438,8 +533,13 @@ function makeTUIRuntime(
         kind: 'error' as const,
         message: 'Not configured in this test.',
       })),
+      ...input.auth,
     },
     environment,
+    localMedia: {
+      getImageMaxEdgePx: vi.fn(async () => undefined),
+      persistOriginalImage: vi.fn(async () => null),
+    },
     featureFlags: {
       list: vi.fn(async () => []),
       apply: vi.fn(async () => []),
@@ -462,7 +562,7 @@ function makeTUIRuntime(
     models,
     sessionRuntime,
     sessionEvents,
-    agentEvents,
+    agentEvents: defaultAgentEvents,
     mcp,
     extensionCommands,
     skills,
@@ -515,6 +615,7 @@ describe('KimiTUI startup', () => {
     const { runtime } = makeTUIRuntime();
     const runtimeEnvironment = {
       homeDir: '/tmp/override-home',
+      getExperimentalFeatures: vi.fn(async () => []),
       getConfigDiagnostics: vi.fn(async () => []),
       close: vi.fn(async () => {}),
     } satisfies RuntimeEnvironmentPort;
@@ -596,7 +697,6 @@ describe('KimiTUI startup', () => {
 
   it('reads startup MCP duration through the active session runtime', async () => {
     const legacyMetrics = vi.fn(async () => ({ durationMs: 999 }));
-    const session = makeSession({ getMcpStartupMetrics: legacyMetrics });
     const mcp = {
       list: vi.fn(async () => []),
       reconnect: vi.fn(async () => {}),
@@ -711,7 +811,7 @@ describe('KimiTUI startup', () => {
     expect(showStatus).toHaveBeenCalledWith('Warning: Runtime failure', 'error');
   });
 
-  it('shows legacy warnings through the default session runtime composition', async () => {
+  it('shows warnings through the default session runtime composition', async () => {
     const getSessionWarnings = vi.fn(async () => [
       {
         code: 'legacy.notice',
@@ -720,7 +820,7 @@ describe('KimiTUI startup', () => {
       },
     ]);
     const session = makeSession({ getSessionWarnings });
-    const driver = makeDriver(makeStartupInput()) as unknown as FinishStartupDriver;
+    const driver = makeDriver(makeStartupInput({}, {}, { sessions: [session] })) as unknown as FinishStartupDriver;
     const showStatus = vi.spyOn(driver as any, 'showStatus');
 
     await driver.init();
@@ -754,9 +854,7 @@ describe('KimiTUI startup', () => {
     const showStatus = vi.spyOn(driver as any, 'showStatus');
     await driver.init();
 
-    await expect(
-      driver.reloadCurrentSessionView('Session reloaded.'),
-    ).resolves.toBeUndefined();
+    await expect(driver.reloadCurrentSessionView('Session reloaded.')).resolves.toBeUndefined();
     await vi.waitFor(() => {
       expect(warnings.list).toHaveBeenCalledOnce();
     });
@@ -768,9 +866,7 @@ describe('KimiTUI startup', () => {
 
   it('reads extension commands from the active session runtime', async () => {
     const session = makeSession();
-    const list = vi.fn(async () => [
-      { extensionId: 'review', name: 'check', description: 'Review changes' },
-    ]);
+    const list = vi.fn(async () => [{ extensionId: 'review', name: 'check', description: 'Review changes' }]);
     const extensionCommands = {
       list,
       reload: vi.fn(async () => {}),
@@ -800,14 +896,13 @@ describe('KimiTUI startup', () => {
     await expect(driver.init()).resolves.toBe(false);
     await driver.closeSession('test close');
 
-    expect(() => driver.requireSessionRuntime()).toThrow(
-      'No active session. Send /login to login.',
-    );
+    expect(() => driver.requireSessionRuntime()).toThrow('No active session. Send /login to login.');
   });
 
   it('reads process capabilities from an injected runtime environment', async () => {
     const runtimeEnvironment = {
       homeDir: '/tmp/runtime-home',
+      getExperimentalFeatures: vi.fn(async () => []),
       getConfigDiagnostics: vi.fn(async () => []),
       close: vi.fn(async () => {}),
     } satisfies RuntimeEnvironmentPort;
@@ -833,7 +928,9 @@ describe('KimiTUI startup', () => {
 
     driver.track('startup_test', { source: 'test' });
 
-    expect(runtimeTelemetry.track).toHaveBeenCalledWith('startup_test', { source: 'test' });
+    expect(runtimeTelemetry.track).toHaveBeenCalledWith('startup_test', {
+      source: 'test',
+    });
   });
 
   it('publishes each session context transition through injected runtime telemetry', async () => {
@@ -849,19 +946,13 @@ describe('KimiTUI startup', () => {
 
     await expect(driver.init()).resolves.toBe(false);
 
-    expect(runtimeTelemetry.setContext.mock.calls).toEqual([
-      [{ sessionId: null }],
-      [{ sessionId: 'ses-1' }],
-    ]);
+    expect(runtimeTelemetry.setContext.mock.calls).toEqual([[{ sessionId: null }], [{ sessionId: 'ses-1' }]]);
 
     runtimeTelemetry.setContext.mockClear();
     await driver.reloadCurrentSessionView('Session reloaded.');
     await driver.closeSession('test close');
 
-    expect(runtimeTelemetry.setContext.mock.calls).toEqual([
-      [{ sessionId: 'ses-1' }],
-      [{ sessionId: null }],
-    ]);
+    expect(runtimeTelemetry.setContext.mock.calls).toEqual([[{ sessionId: 'ses-1' }], [{ sessionId: null }]]);
   });
 
   it('creates a fresh session from startup flags and syncs runtime state', async () => {
@@ -876,12 +967,10 @@ describe('KimiTUI startup', () => {
         contextUsage: 0.125,
       })),
     });
-    const driver = makeDriver(makeStartupInput({ yolo: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ yolo: true, plan: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(false);
 
-    expect(session.setApprovalHandler).not.toHaveBeenCalled();
-    expect(session.setQuestionHandler).not.toHaveBeenCalled();
     expect(driver.state.startupState).toBe('ready');
     expect(driver.state.appState).toMatchObject({
       sessionId: 'ses-1',
@@ -897,7 +986,7 @@ describe('KimiTUI startup', () => {
 
   it('resumes the latest session for --continue and marks history for replay', async () => {
     const session = makeSession({ id: 'ses-latest' });
-    const driver = makeDriver(makeStartupInput({ continue: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -922,7 +1011,7 @@ describe('KimiTUI startup', () => {
         permission = mode;
       }),
     });
-    const driver = makeDriver(makeStartupInput({ continue: true, auto: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, auto: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -947,7 +1036,7 @@ describe('KimiTUI startup', () => {
         permission = mode;
       }),
     });
-    const driver = makeDriver(makeStartupInput({ continue: true, yolo: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, yolo: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -972,7 +1061,7 @@ describe('KimiTUI startup', () => {
         planMode = enabled;
       }),
     });
-    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -996,7 +1085,7 @@ describe('KimiTUI startup', () => {
         throw new Error('Already in plan mode');
       }),
     });
-    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1018,7 +1107,7 @@ describe('KimiTUI startup', () => {
       })),
       setPermission: vi.fn(async () => {}),
     });
-    const driver = makeDriver(makeStartupInput({ continue: true, auto: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, auto: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1040,7 +1129,7 @@ describe('KimiTUI startup', () => {
       })),
       setPlanMode: vi.fn(async () => {}),
     });
-    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1053,7 +1142,7 @@ describe('KimiTUI startup', () => {
       id: 'ses-latest',
       getResumeState: vi.fn(() => createResumeState({ permissionMode: 'manual', planMode: false })),
     });
-    const driver = makeDriver(makeStartupInput({ continue: true, auto: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, auto: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
     await (
@@ -1070,7 +1159,7 @@ describe('KimiTUI startup', () => {
       id: 'ses-latest',
       getResumeState: vi.fn(() => createResumeState({ permissionMode: 'manual', planMode: false })),
     });
-    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true, plan: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
     await (
@@ -1099,7 +1188,7 @@ describe('KimiTUI startup', () => {
         permission = mode;
       }),
     });
-    const driver = makeDriver(makeStartupInput({ session: 'ses-target', auto: true }));
+    const driver = makeDriver(makeStartupInput({ session: 'ses-target', auto: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1108,12 +1197,15 @@ describe('KimiTUI startup', () => {
   });
 
   it('syncs a persisted goal when resuming a session', async () => {
-    const goal = goalSnapshot({ status: 'blocked', terminalReason: 'needs input' });
+    const goal = goalSnapshot({
+      status: 'blocked',
+      terminalReason: 'needs input',
+    });
     const session = makeSession({
       id: 'ses-latest',
-      getGoal: vi.fn(async () => ({ goal })),
+      getGoal: vi.fn(async () => goal),
     });
-    const driver = makeDriver(makeStartupInput({ continue: true }));
+    const driver = makeDriver(makeStartupInput({ continue: true }, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1124,9 +1216,9 @@ describe('KimiTUI startup', () => {
   it('syncs goal state regardless of the goal flag', async () => {
     const goal = goalSnapshot();
     const session = makeSession({
-      getGoal: vi.fn(async () => ({ goal })),
+      getGoal: vi.fn(async () => goal),
     });
-    const driver = makeDriver(makeStartupInput());
+    const driver = makeDriver(makeStartupInput({}, {}, { sessions: [session] }));
 
     await expect(driver.init()).resolves.toBe(false);
 
@@ -1137,9 +1229,9 @@ describe('KimiTUI startup', () => {
   it('clears goal state when closing the current session', async () => {
     const goal = goalSnapshot();
     const session = makeSession({
-      getGoal: vi.fn(async () => ({ goal })),
+      getGoal: vi.fn(async () => goal),
     });
-    const driver = makeDriver(makeStartupInput()) as unknown as StartupDriver;
+    const driver = makeDriver(makeStartupInput({}, {}, { sessions: [session] })) as unknown as StartupDriver;
 
     await expect(driver.init()).resolves.toBe(false);
     expect(driver.state.appState.goal).toEqual(goal);
@@ -1171,7 +1263,9 @@ describe('KimiTUI startup', () => {
         contextUsage: 0.1,
       })),
     });
-    const driver = makeDriver(makeStartupInput({ continue: true, model: 'kimi-code/k2.5' }));
+    const driver = makeDriver(
+      makeStartupInput({ continue: true, model: 'kimi-code/k2.5' }, {}, { sessions: [session] }),
+    );
 
     await expect(driver.init()).resolves.toBe(true);
 
@@ -1187,7 +1281,7 @@ describe('KimiTUI startup', () => {
     expect(driver.state.startupState).toBe('picker');
   });
 
-  it('applies --auto after picking a session from bare --session', async () => {
+  it('applies --plan after picking a session from bare --session', async () => {
     let permission = 'manual';
     const session = makeSession({
       id: 'ses-picked',
@@ -1204,79 +1298,78 @@ describe('KimiTUI startup', () => {
         permission = mode;
       }),
     });
-    const driver = makeDriver(makeStartupInput({ session: '', plan: true }));
+    const driver = makeDriver(makeStartupInput({ session: '', plan: true }, {}, { sessions: [session] }));
 
     await (driver as unknown as { initMainTui(): Promise<boolean> }).initMainTui();
     expect(driver.state.startupState).toBe('picker');
     await (driver as unknown as { bootstrapFromPicker(): Promise<void> }).bootstrapFromPicker();
 
-    const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
+    const picker = driver.state.editorContainer.children[0] as {
+      handleInput(data: string): void;
+    };
     picker.handleInput('\r');
     await new Promise((resolve) => setImmediate(resolve));
 
-    expect(session.setPlanMode).not.toHaveBeenCalled();
+    expect(session.setPlanMode).toHaveBeenCalledWith(true);
     expect(driver.state.appState.planMode).toBe(true);
   });
 
   it('toggles the sessions picker from current cwd to all sessions with Ctrl+A', async () => {
-    const currentWorkDirSession = {
+    const currentWorkDirSession = makeSession({
       id: 'ses-cwd',
       title: 'Current cwd session',
-      workDir: '/tmp/proj-a',
-      updatedAt: Date.now(),
-    };
-    const otherWorkDirSession = {
+    }).identity;
+    const otherWorkDirSession = makeSession({
       id: 'ses-other-cwd',
       title: 'Other cwd session',
       workDir: '/tmp/proj-b',
-      updatedAt: Date.now() - 1000,
-    };
+    }).identity;
     const listSessions = vi.fn(async (input: { workDir?: string } = {}) => {
       if (input.workDir === '/tmp/proj-a') return [currentWorkDirSession];
       return [currentWorkDirSession, otherWorkDirSession];
     });
-    const driver = makeDriver(makeStartupInput());
+    const driver = makeDriver(makeStartupInput({}, {}, { listSessions }));
     await expect(driver.init()).resolves.toBe(false);
 
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
-    const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
+    const picker = driver.state.editorContainer.children[0] as {
+      handleInput(data: string): void;
+    };
     picker.handleInput('\u0001');
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(listSessions).toHaveBeenNthCalledWith(1, { workDir: '/tmp/proj-a' });
     expect(listSessions).toHaveBeenNthCalledWith(2, {});
     expect(driver.state.sessionsScope).toBe('all');
-    expect(driver.state.sessions.map((session) => session.id)).toEqual([
-      'ses-cwd',
-      'ses-other-cwd',
-    ]);
+    expect(driver.state.sessions.map((session) => session.id)).toEqual(['ses-cwd', 'ses-other-cwd']);
   });
 
   it('toggles the sessions picker from all sessions back to current cwd with Ctrl+A', async () => {
-    const currentWorkDirSession = {
+    const currentWorkDirSession = makeSession({
       id: 'ses-cwd',
       title: 'Current cwd session',
-      workDir: '/tmp/proj-a',
-      updatedAt: Date.now(),
-    };
-    const otherWorkDirSession = {
+    }).identity;
+    const otherWorkDirSession = makeSession({
       id: 'ses-other-cwd',
       title: 'Other cwd session',
       workDir: '/tmp/proj-b',
-      updatedAt: Date.now() - 1000,
-    };
+    }).identity;
     const listSessions = vi.fn(async (input: { workDir?: string } = {}) => {
       if (input.workDir === '/tmp/proj-a') return [currentWorkDirSession];
       return [currentWorkDirSession, otherWorkDirSession];
     });
-    const driver = makeDriver(makeStartupInput());
+    const driver = makeDriver(makeStartupInput({}, {}, { listSessions }));
     await expect(driver.init()).resolves.toBe(false);
 
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
-    const firstPicker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
+    const firstPicker = driver.state.editorContainer.children[0] as {
+      handleInput(data: string): void;
+    };
     firstPicker.handleInput('\u0001');
     await new Promise((resolve) => setImmediate(resolve));
-    const allPicker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
+    const allPicker = driver.state.editorContainer.children[0] as {
+      handleInput(data: string): void;
+    };
     allPicker.handleInput('\u0001');
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -1286,26 +1379,23 @@ describe('KimiTUI startup', () => {
   });
 
   it('does not remount the session picker after it is closed while a scope toggle is pending', async () => {
-    const currentWorkDirSession = {
+    const currentWorkDirSession = makeSession({
       id: 'ses-cwd',
       title: 'Current cwd session',
-      workDir: '/tmp/proj-a',
-      updatedAt: Date.now(),
-    };
-    const otherWorkDirSession = {
+    }).identity;
+    const otherWorkDirSession = makeSession({
       id: 'ses-other-cwd',
       title: 'Other cwd session',
       workDir: '/tmp/proj-b',
-      updatedAt: Date.now() - 1000,
-    };
-    let resolveAllSessions: ((value: unknown[]) => void) | undefined;
+    }).identity;
+    let resolveAllSessions: ((value: SessionIdentity[]) => void) | undefined;
     const listSessions = vi.fn((input: { workDir?: string } = {}) => {
       if (input.workDir === '/tmp/proj-a') return Promise.resolve([currentWorkDirSession]);
-      return new Promise<unknown[]>((resolve) => {
+      return new Promise<SessionIdentity[]>((resolve) => {
         resolveAllSessions = resolve;
       });
     });
-    const driver = makeDriver(makeStartupInput());
+    const driver = makeDriver(makeStartupInput({}, {}, { listSessions }));
     const mountSessionPicker = vi.spyOn(
       driver as unknown as { mountSessionPicker(options: unknown): void },
       'mountSessionPicker',
@@ -1315,7 +1405,9 @@ describe('KimiTUI startup', () => {
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
     expect(mountSessionPicker).toHaveBeenCalledTimes(1);
 
-    const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
+    const picker = driver.state.editorContainer.children[0] as {
+      handleInput(data: string): void;
+    };
     picker.handleInput('\u0001');
     (driver as unknown as { hideSessionPicker(): void }).hideSessionPicker();
     resolveAllSessions?.([currentWorkDirSession, otherWorkDirSession]);
@@ -1326,23 +1418,20 @@ describe('KimiTUI startup', () => {
   });
 
   it('clears the sessions picker search query when toggling scope with Ctrl+A', async () => {
-    const currentWorkDirSession = {
+    const currentWorkDirSession = makeSession({
       id: 'ses-cwd',
       title: 'Current cwd session',
-      workDir: '/tmp/proj-a',
-      updatedAt: Date.now(),
-    };
-    const otherWorkDirSession = {
+    }).identity;
+    const otherWorkDirSession = makeSession({
       id: 'ses-other-cwd',
       title: 'Other cwd session',
       workDir: '/tmp/proj-b',
-      updatedAt: Date.now() - 1000,
-    };
+    }).identity;
     const listSessions = vi.fn(async (input: { workDir?: string } = {}) => {
       if (input.workDir === '/tmp/proj-a') return [currentWorkDirSession];
       return [currentWorkDirSession, otherWorkDirSession];
     });
-    const driver = makeDriver(makeStartupInput());
+    const driver = makeDriver(makeStartupInput({}, {}, { listSessions }));
     await expect(driver.init()).resolves.toBe(false);
 
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
@@ -1371,25 +1460,35 @@ describe('KimiTUI startup', () => {
   });
 
   it('does not resume a session from a different cwd and shows a cd hint', async () => {
-    const currentWorkDirSession = {
+    const currentWorkDirSession = makeSession({
       id: 'ses-cwd',
       title: 'Current cwd session',
-      workDir: '/tmp/proj-a',
-      updatedAt: Date.now(),
-    };
-    const otherWorkDirSession = {
+    });
+    const otherWorkDirSession = makeSession({
       id: 'ses-other-cwd',
       title: 'Other cwd session',
       workDir: '/tmp/proj-b',
-      updatedAt: Date.now() - 1000,
-    };
-    const resumeSession = vi.fn(async () => makeSession({ id: 'ses-other-cwd' }));
-    const driver = makeDriver(makeStartupInput());
+    });
+    const listSessions = vi.fn(async () => [currentWorkDirSession.identity, otherWorkDirSession.identity]);
+    const resumeSession = vi.fn(async () => otherWorkDirSession.identity);
+    const driver = makeDriver(
+      makeStartupInput(
+        {},
+        {},
+        {
+          sessions: [currentWorkDirSession, otherWorkDirSession],
+          listSessions,
+          resumeSession,
+        },
+      ),
+    );
     await expect(driver.init()).resolves.toBe(false);
     copyTextToClipboardMock.mockClear();
 
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
-    const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
+    const picker = driver.state.editorContainer.children[0] as {
+      handleInput(data: string): void;
+    };
     picker.handleInput('\u001B[B');
     picker.handleInput('\r');
     await new Promise((resolve) => setImmediate(resolve));
@@ -1406,58 +1505,80 @@ describe('KimiTUI startup', () => {
   });
 
   it('copies a shell-safe resume command for another cwd with metacharacters', async () => {
-    const currentWorkDirSession = {
+    const currentWorkDirSession = makeSession({
       id: 'ses-cwd',
       title: 'Current cwd session',
-      workDir: '/tmp/proj-a',
-      updatedAt: Date.now(),
-    };
-    const otherWorkDirSession = {
+    });
+    const otherWorkDirSession = makeSession({
       id: 'ses-other-cwd',
       title: 'Other cwd session',
       workDir: '/tmp/proj$(touch /tmp/pwned)',
-      updatedAt: Date.now() - 1000,
-    };
-    const resumeSession = vi.fn(async () => makeSession({ id: 'ses-other-cwd' }));
-    const driver = makeDriver(makeStartupInput());
+    });
+    const listSessions = vi.fn(async () => [currentWorkDirSession.identity, otherWorkDirSession.identity]);
+    const resumeSession = vi.fn(async () => otherWorkDirSession.identity);
+    const driver = makeDriver(
+      makeStartupInput(
+        {},
+        {},
+        {
+          sessions: [currentWorkDirSession, otherWorkDirSession],
+          listSessions,
+          resumeSession,
+        },
+      ),
+    );
     await expect(driver.init()).resolves.toBe(false);
     copyTextToClipboardMock.mockClear();
 
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
-    const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
+    const picker = driver.state.editorContainer.children[0] as {
+      handleInput(data: string): void;
+    };
     picker.handleInput('\u001B[B');
     picker.handleInput('\r');
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(resumeSession).not.toHaveBeenCalled();
-    const expectedResumeCmd = `cd ${quoteShellArg('/tmp/proj$(touch /tmp/pwned)')} && kimi --resume ${quoteShellArg('ses-other-cwd')}`;
+    const expectedResumeCmd = `cd ${quoteShellArg('/tmp/proj$(touch /tmp/pwned)')} && kimi --resume ${quoteShellArg(
+      'ses-other-cwd',
+    )}`;
     expect(copyTextToClipboardMock).toHaveBeenCalledWith(expectedResumeCmd);
     const transcript = driver.state.transcriptContainer.render(160).join('\n');
     expect(transcript).toContain(`To resume, run: ${expectedResumeCmd}`);
   });
 
   it('exits after picking another cwd from the startup picker', async () => {
-    const currentWorkDirSession = {
+    const currentWorkDirSession = makeSession({
       id: 'ses-cwd',
       title: 'Current cwd session',
-      workDir: '/tmp/proj-a',
-      updatedAt: Date.now(),
-    };
-    const otherWorkDirSession = {
+    });
+    const otherWorkDirSession = makeSession({
       id: 'ses-other-cwd',
       title: 'Other cwd session',
       workDir: '/tmp/proj-b',
-      updatedAt: Date.now() - 1000,
-    };
-    const resumeSession = vi.fn(async () => makeSession({ id: 'ses-other-cwd' }));
-    const driver = makeDriver(makeStartupInput({ session: '' }));
+    });
+    const listSessions = vi.fn(async () => [currentWorkDirSession.identity, otherWorkDirSession.identity]);
+    const resumeSession = vi.fn(async () => otherWorkDirSession.identity);
+    const driver = makeDriver(
+      makeStartupInput(
+        { session: '' },
+        {},
+        {
+          sessions: [currentWorkDirSession, otherWorkDirSession],
+          listSessions,
+          resumeSession,
+        },
+      ),
+    );
     const stop = vi.spyOn(driver, 'stop').mockResolvedValue(undefined);
     copyTextToClipboardMock.mockClear();
 
     await expect((driver as unknown as MigrateExitDriver).initMainTui()).resolves.toBe(false);
     await (driver as unknown as { bootstrapFromPicker(): Promise<void> }).bootstrapFromPicker();
 
-    const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
+    const picker = driver.state.editorContainer.children[0] as {
+      handleInput(data: string): void;
+    };
     picker.handleInput('\u001B[B');
     picker.handleInput('\r');
     await new Promise((resolve) => setImmediate(resolve));
@@ -1478,11 +1599,16 @@ describe('KimiTUI startup', () => {
         throw new Error('Already in plan mode');
       }),
     });
-    const driver = makeDriver(makeStartupInput({ auto: true, plan: true }));
+    const listSessions = vi.fn(async () => [picked.identity]);
+    const driver = makeDriver(
+      makeStartupInput({ auto: true, plan: true }, {}, { sessions: [initial, picked], listSessions }),
+    );
     await expect(driver.init()).resolves.toBe(false);
 
     await (driver as unknown as { showSessionPicker(): Promise<void> }).showSessionPicker();
-    const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
+    const picker = driver.state.editorContainer.children[0] as {
+      handleInput(data: string): void;
+    };
     picker.handleInput('\r');
     await new Promise((resolve) => setImmediate(resolve));
 
@@ -1495,13 +1621,15 @@ describe('KimiTUI startup', () => {
 
   it('clears startup picker exit confirmation before resuming a selected session', async () => {
     const session = makeSession({ id: 'ses-picked' });
-    const driver = makeDriver(makeStartupInput({ session: '' }));
+    const driver = makeDriver(makeStartupInput({ session: '' }, {}, { sessions: [session] }));
     const stop = vi.spyOn(driver, 'stop').mockResolvedValue(undefined);
 
     await expect((driver as unknown as MigrateExitDriver).initMainTui()).resolves.toBe(false);
     await (driver as unknown as { bootstrapFromPicker(): Promise<void> }).bootstrapFromPicker();
 
-    const picker = driver.state.editorContainer.children[0] as { handleInput(data: string): void };
+    const picker = driver.state.editorContainer.children[0] as {
+      handleInput(data: string): void;
+    };
     picker.handleInput('\u0003');
     picker.handleInput('\r');
     await new Promise((resolve) => setImmediate(resolve));
@@ -1560,14 +1688,29 @@ describe('KimiTUI startup', () => {
     expect(write).toHaveBeenCalledWith(DISABLE_TERMINAL_THEME_REPORTING);
   });
 
-  it("only shows provider refresh status for added models", async () => {
+  it('only shows provider refresh status for added models', async () => {
     const driver = makeDriver(makeStartupInput());
-    const showStatus = vi.spyOn(driver as any, "showStatus").mockImplementation(() => {});
-    vi.spyOn((driver as any).authFlow, "refreshProviderModels").mockResolvedValue({
+    const showStatus = vi.spyOn(driver as any, 'showStatus').mockImplementation(() => {});
+    vi.spyOn((driver as any).authFlow, 'refreshProviderModels').mockResolvedValue({
       changed: [
-        { providerId: "new-models", providerName: "New Models", added: 2, removed: 0 },
-        { providerId: "removed-models", providerName: "Removed Models", added: 0, removed: 3 },
-        { providerId: "metadata-only", providerName: "Metadata Only", added: 0, removed: 0 },
+        {
+          providerId: 'new-models',
+          providerName: 'New Models',
+          added: 2,
+          removed: 0,
+        },
+        {
+          providerId: 'removed-models',
+          providerName: 'Removed Models',
+          added: 0,
+          removed: 3,
+        },
+        {
+          providerId: 'metadata-only',
+          providerName: 'Metadata Only',
+          added: 0,
+          removed: 0,
+        },
       ],
       unchanged: [],
       failed: [],
@@ -1576,11 +1719,12 @@ describe('KimiTUI startup', () => {
     await (driver as any).refreshProviderModelsInBackground();
 
     expect(showStatus).toHaveBeenCalledTimes(1);
-    expect(showStatus).toHaveBeenCalledWith("New Models · +2 models.");
+    expect(showStatus).toHaveBeenCalledWith('New Models · +2 models.');
   });
 
-  it("starts TUI without a session when fresh startup needs OAuth login", async () => {
-    const driver = makeDriver(makeStartupInput());
+  it('starts TUI without a session when fresh startup needs OAuth login', async () => {
+    const createSession = vi.fn<SessionControlPort['sessions']['create']>().mockRejectedValue(loginRequiredError());
+    const driver = makeDriver(makeStartupInput({}, {}, { createSession }));
 
     await expect(driver.init()).resolves.toBe(false);
 
@@ -1610,10 +1754,16 @@ describe('KimiTUI startup', () => {
       })),
     });
     const createSession = vi
-      .fn()
+      .fn<SessionControlPort['sessions']['create']>()
       .mockRejectedValueOnce(loginRequiredError())
-      .mockResolvedValueOnce(session);
-    const driver = makeDriver(makeStartupInput({ yolo: true, plan: true }));
+      .mockResolvedValueOnce(session.identity);
+    const driver = makeDriver(
+      makeStartupInput(
+        { yolo: true, plan: true },
+        {},
+        { sessions: [session], createSession, models: makeManagedModels() },
+      ),
+    );
 
     await expect(driver.init()).resolves.toBe(false);
 
@@ -1635,9 +1785,10 @@ describe('KimiTUI startup', () => {
     expect(createSession).toHaveBeenNthCalledWith(2, {
       workDir: '/tmp/proj-a',
       model: 'k2',
-      thinking: 'off',
+      thinking: undefined,
       permission: 'yolo',
       planMode: true,
+      additionalDirs: undefined,
     });
     expect(driver.state.appState).toMatchObject({
       sessionId: 'ses-1',
@@ -1660,10 +1811,12 @@ describe('KimiTUI startup', () => {
       })),
     });
     const createSession = vi
-      .fn()
+      .fn<SessionControlPort['sessions']['create']>()
       .mockRejectedValueOnce(loginRequiredError())
-      .mockResolvedValueOnce(session);
-    const driver = makeDriver(makeStartupInput());
+      .mockResolvedValueOnce(session.identity);
+    const driver = makeDriver(
+      makeStartupInput({}, {}, { sessions: [session], createSession, models: makeManagedModels() }),
+    );
 
     await expect(driver.init()).resolves.toBe(false);
     vi.mocked(promptPlatformSelection).mockResolvedValue('kimi-code');
@@ -1672,9 +1825,10 @@ describe('KimiTUI startup', () => {
     expect(createSession).toHaveBeenNthCalledWith(2, {
       workDir: '/tmp/proj-a',
       model: 'k2',
-      thinking: 'off',
+      thinking: undefined,
       permission: undefined,
       planMode: undefined,
+      additionalDirs: undefined,
     });
     expect(driver.state.appState).toMatchObject({
       permissionMode: 'auto',
@@ -1747,7 +1901,20 @@ describe('KimiTUI startup', () => {
     const warn = vi.spyOn(log, 'warn').mockImplementation(() => {});
     const session = makeSession();
     const loginError = new Error('Failed to list Kimi Code models (HTTP 402).');
-    const driver = makeDriver(makeStartupInput());
+    const driver = makeDriver(
+      makeStartupInput(
+        {},
+        {},
+        {
+          sessions: [session],
+          auth: {
+            login: vi.fn(async () => {
+              throw loginError;
+            }),
+          },
+        },
+      ),
+    );
 
     try {
       await expect(driver.init()).resolves.toBe(false);
@@ -1826,7 +1993,43 @@ describe('KimiTUI startup', () => {
   it('keeps the active session when logging out a different provider', async () => {
     const session = makeSession();
     const removeProvider = vi.fn(async () => {});
-    const driver = makeDriver(makeStartupInput());
+    const models = {
+      load: vi.fn(async () => ({
+        models: {
+          k2: {
+            provider: 'managed:kimi-code',
+            model: 'moonshot-v1',
+            maxContextSize: 100,
+          },
+        },
+        providers: {
+          'managed:kimi-code': {
+            type: 'kimi',
+            status: 'connected' as const,
+            hasApiKey: true,
+          },
+          openai: {
+            type: 'openai',
+            status: 'connected' as const,
+            hasApiKey: true,
+          },
+        },
+      })),
+    } satisfies RuntimeModelCatalogPort;
+    const driver = makeDriver(
+      makeStartupInput(
+        {},
+        {},
+        {
+          sessions: [session],
+          models,
+          modelConfig: {
+            apply: vi.fn(async () => {}),
+            removeProvider,
+          },
+        },
+      ),
+    );
 
     await expect(driver.init()).resolves.toBe(false);
 
@@ -1849,11 +2052,12 @@ describe('KimiTUI startup', () => {
 
     vi.mocked(promptLogoutProviderSelection).mockResolvedValue('managed:kimi-code');
     await handleLogoutCommand(driver as any);
-
   });
 
   it('starts TUI without replaying when --continue needs OAuth login', async () => {
-    const driver = makeDriver(makeStartupInput({ continue: true }));
+    const session = makeSession({ id: 'ses-latest' });
+    const resumeSession = vi.fn<SessionControlPort['sessions']['resume']>().mockRejectedValue(loginRequiredError());
+    const driver = makeDriver(makeStartupInput({ continue: true }, {}, { sessions: [session], resumeSession }));
 
     await expect(driver.init()).resolves.toBe(false);
 
@@ -1862,7 +2066,9 @@ describe('KimiTUI startup', () => {
   });
 
   it('starts TUI without replaying when an explicit resume needs OAuth login', async () => {
-    const driver = makeDriver(makeStartupInput({ session: 'ses-target' }));
+    const session = makeSession({ id: 'ses-target' });
+    const resumeSession = vi.fn<SessionControlPort['sessions']['resume']>().mockRejectedValue(loginRequiredError());
+    const driver = makeDriver(makeStartupInput({ session: 'ses-target' }, {}, { sessions: [session], resumeSession }));
 
     await expect(driver.init()).resolves.toBe(false);
 
@@ -1881,7 +2087,9 @@ describe('KimiTUI startup', () => {
     vi.spyOn(driver.state.ui, 'stop').mockImplementation(() => {});
     vi.spyOn(driver.state.terminal, 'write').mockImplementation(() => {});
     // The migration screen would await user input; resolve it immediately.
-    vi.spyOn(driver, 'runMigrationScreen').mockResolvedValue({ decision: 'later' });
+    vi.spyOn(driver, 'runMigrationScreen').mockResolvedValue({
+      decision: 'later',
+    });
     const onExit = vi.fn(async () => {});
     driver.onExit = onExit;
 
@@ -1905,7 +2113,9 @@ describe('KimiTUI startup', () => {
     vi.spyOn(driver.state.terminal, 'write').mockImplementation(() => {});
     // The migration screen resolves "later"; startup then continues into
     // initMainTui(), which fails (e.g. a session-resume error).
-    vi.spyOn(driver, 'runMigrationScreen').mockResolvedValue({ decision: 'later' });
+    vi.spyOn(driver, 'runMigrationScreen').mockResolvedValue({
+      decision: 'later',
+    });
     vi.spyOn(driver, 'initMainTui').mockRejectedValue(new Error('resume boom'));
 
     await expect(driver.start()).rejects.toThrow('resume boom');
@@ -1916,7 +2126,10 @@ describe('KimiTUI startup', () => {
   });
 
   it('keeps non-login startup session errors fatal', async () => {
-    const driver = makeDriver(makeStartupInput());
+    const createSession = vi
+      .fn<SessionControlPort['sessions']['create']>()
+      .mockRejectedValue(new Error('provider config is invalid'));
+    const driver = makeDriver(makeStartupInput({}, {}, { createSession }));
 
     await expect(driver.init()).rejects.toThrow('provider config is invalid');
   });
@@ -1933,7 +2146,9 @@ describe('KimiTUI startup', () => {
 
   it('mounts the footer once startup reaches the main TUI', async () => {
     const session = makeSession({ id: 'ses-target' });
-    const driver = makeDriver(makeStartupInput({ session: 'ses-target' })) as unknown as MigrateExitDriver;
+    const driver = makeDriver(
+      makeStartupInput({ session: 'ses-target' }, {}, { sessions: [session] }),
+    ) as unknown as MigrateExitDriver;
     // Not mounted until init() succeeds.
     expect(uiContainsFooter(driver)).toBe(false);
 
@@ -1952,13 +2167,13 @@ describe('KimiTUI startup', () => {
     };
     const loadSpy = vi.spyOn(BannerProvider.prototype, 'load').mockResolvedValue(banner);
     const session = makeSession({ id: 'ses-target' });
-    const driver = makeDriver(makeStartupInput({ session: 'ses-target' })) as unknown as MigrateExitDriver;
+    const driver = makeDriver(
+      makeStartupInput({ session: 'ses-target' }, {}, { sessions: [session] }),
+    ) as unknown as MigrateExitDriver;
     await driver.initMainTui();
 
     await vi.waitFor(() => {
-      expect(
-        driver.state.transcriptContainer.children.some((child) => child instanceof BannerComponent),
-      ).toBe(true);
+      expect(driver.state.transcriptContainer.children.some((child) => child instanceof BannerComponent)).toBe(true);
     });
 
     // The banner is rendered directly below the welcome panel so it appears
@@ -1990,13 +2205,13 @@ describe('KimiTUI startup', () => {
       };
       const loadSpy = vi.spyOn(BannerProvider.prototype, 'load').mockResolvedValue(banner);
       const session = makeSession({ id: 'ses-target' });
-      const driver = makeDriver(makeStartupInput({ session: 'ses-target' })) as unknown as MigrateExitDriver;
+      const driver = makeDriver(
+        makeStartupInput({ session: 'ses-target' }, {}, { sessions: [session] }),
+      ) as unknown as MigrateExitDriver;
       await driver.initMainTui();
 
       await vi.waitFor(() => {
-        expect(
-          driver.state.transcriptContainer.children.some((child) => child instanceof BannerComponent),
-        ).toBe(true);
+        expect(driver.state.transcriptContainer.children.some((child) => child instanceof BannerComponent)).toBe(true);
       });
 
       // writeBannerDisplayState runs after renderBanner; on Windows the atomic
@@ -2040,13 +2255,13 @@ describe('KimiTUI startup', () => {
       };
       const loadSpy = vi.spyOn(BannerProvider.prototype, 'load').mockResolvedValue(banner);
       const session = makeSession({ id: 'ses-target' });
-      const driver = makeDriver(makeStartupInput({ session: 'ses-target' })) as unknown as MigrateExitDriver;
+      const driver = makeDriver(
+        makeStartupInput({ session: 'ses-target' }, {}, { sessions: [session] }),
+      ) as unknown as MigrateExitDriver;
       await driver.initMainTui();
 
       await vi.waitFor(() => {
-        expect(
-          driver.state.transcriptContainer.children.some((child) => child instanceof BannerComponent),
-        ).toBe(true);
+        expect(driver.state.transcriptContainer.children.some((child) => child instanceof BannerComponent)).toBe(true);
       });
 
       await expect(readBannerDisplayState()).resolves.toEqual({
@@ -2062,10 +2277,11 @@ describe('KimiTUI startup', () => {
   });
 
   it('resumes a startup session when Windows workdir uses backslashes', async () => {
-    const session = makeSession({ id: 'ses-target' });
+    const workDir = String.raw`C:\Users\kimi\project`;
+    const session = makeSession({ id: 'ses-target', workDir });
     const driver = makeDriver({
-      ...makeStartupInput({ session: 'ses-target' }),
-      workDir: String.raw`C:\Users\kimi\project`,
+      ...makeStartupInput({ session: 'ses-target' }, {}, { sessions: [session] }),
+      workDir,
     });
 
     await expect(driver.init()).resolves.toBe(true);

@@ -38,9 +38,10 @@ async function daemonReachable(): Promise<boolean> {
 }
 
 const reachable = await daemonReachable();
-const describeLive = reachable ? describe : describe.skip;
+const credentialFree = process.env['KIMI_SERVER_E2E_CREDENTIAL_FREE'] === '1';
+const describeLiveWithModel = reachable && !credentialFree ? describe : describe.skip;
 
-describeLive('legacy: image file prompts', () => {
+describeLiveWithModel('legacy: image file prompts (live server and model required)', () => {
   it('missing/non-image files rejected, PNG accepted, prompt abortable', async () => {
     const log = createCaseLogger('legacy: image file prompts');
     const client = new DaemonClient({ baseUrl: BASE_URL });

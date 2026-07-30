@@ -16,13 +16,8 @@
  * counterpart: it scans the same roots a new session in that workspace cwd
  * would, so clients can populate the composer skill menu before a session
  * exists. The workspace id is resolved to its root via
- * `IWorkspaceService.get` (`40410` when unknown); the root is then scanned by
- * composing the same five sources the per-session catalog merges — builtin /
- * user / extra / project(workDir) / plugin — through the shared `ISkillDiscovery`,
- * `skillRoots` and `InMemorySkillCatalog` primitives, so the result matches the
- * session listing for the same cwd. The composition is intentionally edge-side:
- * `InMemorySkillCatalog` is not a scoped service and the `skillRoots` helpers
- * are exported for exactly this purpose.
+ * `IWorkspaceService.get` (`40410` when unknown), then the App-scoped
+ * `IWorkspaceSkillCatalogService` owns the session-less ordered merge.
  *
  * **Activation gate**: by convention the session endpoints are only valid for
  * an *activated* session — one that is live in `ISessionLifecycleService`. When
@@ -35,8 +30,8 @@
  * **Scope split**: v1 resolves a single `ISkillService` for every verb. v2
  * splits the domain, so the route borrows different scoped services per verb:
  *   - session list → `ISessionSkillCatalog` (Session scope) — `catalog.listSkills()`.
- *   - workspace list → no session: resolves `IWorkspaceService` (App scope)
- *     for the root, then composes the skill scan at the edge (see above).
+ *   - workspace list → `IWorkspaceSkillCatalogService` (App scope), after the
+ *     edge resolves the workspace id to a root.
  *   - activate     → `IAgentSkillService` (Agent scope, on the `main` agent) —
  *                    renders the skill prompt and starts a turn with a
  *                    `skill_activation` origin. The returned `Turn` handle is
@@ -46,7 +41,7 @@
  *                    (`applyPromptMetadataUpdate`) so a first `/<skill>`
  *                    message titles the session, matching the native RPC path.
  *
- * **Model projection**: `SkillDefinition` (v2) → protocol `SkillDescriptor`,
+ * **Model projection**: `SkillSummary` (v2) → protocol `SkillDescriptor`,
  * byte-for-byte with v1's `toProtocolSkill`
  * (`packages/agent-core/src/services/skill/skill.ts`): only
  * `name`/`description`/`path`/`source` plus optional `type` and
@@ -69,35 +64,21 @@
  */
 
 import {
-  BUILTIN_SKILLS,
   ErrorCodes,
-  EXTRA_SKILL_DIRS_SECTION,
   IAgentSkillService,
-  IBootstrapService,
-  IConfigService,
   IEventService,
-  IPluginService,
   ISessionIndex,
   ISessionLifecycleService,
   ISessionMetadata,
   ISessionSkillCatalog,
-  ISkillCatalogRuntimeOptions,
-  ISkillDiscovery,
+  IWorkspaceSkillCatalogService,
   IWorkspaceService,
-  InMemorySkillCatalog,
   isError2,
-  MERGE_ALL_AVAILABLE_SKILLS_SECTION,
-  SKILL_SOURCE_PRIORITY,
   applyPromptMetadataUpdate,
-  configuredRoots,
-  projectRoots,
   promptMetadataTextFromSkill,
-  userRoots,
   type ISessionScopeHandle,
   type Scope,
-  type SkillDefinition,
-  type ExtraSkillDirsConfig,
-  type MergeAllAvailableSkillsConfig,
+  type SkillSummary,
 } from '@moonshot-ai/agent-core-v2';
 import { z } from 'zod';
 
@@ -195,8 +176,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
         return;
       }
       const catalog = resolved.handle.accessor.get(ISessionSkillCatalog);
-      await catalog.ready;
-      const skills = catalog.catalog.listSkills().map(toProtocolSkill);
+      const skills = (await catalog.listSkills()).map(toProtocolSkill);
       reply.send(okEnvelope({ skills }, req.id));
     },
   );
@@ -233,7 +213,9 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
         );
         return;
       }
-      const skills = (await listWorkspaceSkillsForRoot(core, ws.root)).map(toProtocolSkill);
+      const skills = (
+        await core.accessor.get(IWorkspaceSkillCatalogService).list(ws.root)
+      ).map(toProtocolSkill);
       reply.send(okEnvelope({ skills }, req.id));
     },
   );
@@ -303,8 +285,8 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
         );
         requestLog(req)?.info({ session_id, skill_name: parsed.id }, 'skill activated');
         reply.send(okEnvelope({ activated: true, skill_name: parsed.id }, req.id));
-      } catch (err) {
-        sendMappedError(reply, req.id, err);
+      } catch (error) {
+        sendMappedError(reply, req.id, error);
       }
     },
   );
@@ -316,86 +298,18 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
 }
 
 // ---------------------------------------------------------------------------
-// Workspace skill scan — session-less composition of the four skill sources
-// (see header). Mirrors `SessionSkillCatalogService`'s ordered merge so the
-// listing matches a session created in the same cwd.
+// Projection — v2 `SkillSummary` → protocol `SkillDescriptor` (see header).
 // ---------------------------------------------------------------------------
 
-/**
- * Scan the skills a new session rooted at `workDir` would see, without creating
- * a session. Resolves the same five sources the per-session catalog merges —
- * builtin / user / extra / project(`workDir`) / plugin — through the shared
- * `ISkillDiscovery` and `skillRoots` primitives, then folds them into an
- * `InMemorySkillCatalog` by the documented source priorities (lower priority
- * first; `replace: true` lets higher-priority sources win name collisions). The
- * priority numbers come from `SKILL_SOURCE_PRIORITY`; the resulting name set is
- * priority-invariant, but matching them keeps descriptor resolution identical to
- * the session catalog.
- */
-async function listWorkspaceSkillsForRoot(
-  core: Scope,
-  workDir: string,
-): Promise<readonly SkillDefinition[]> {
-  const discovery = core.accessor.get(ISkillDiscovery);
-  const bootstrap = core.accessor.get(IBootstrapService);
-  const plugins = core.accessor.get(IPluginService);
-  const config = core.accessor.get(IConfigService);
-  await config.ready;
-  const runtimeOptions = core.accessor.get(ISkillCatalogRuntimeOptions);
-  const extraSkillDirs = config.get<ExtraSkillDirsConfig>(EXTRA_SKILL_DIRS_SECTION) ?? [];
-  const mergeAllAvailableSkills =
-    config.get<MergeAllAvailableSkillsConfig>(MERGE_ALL_AVAILABLE_SKILLS_SECTION) ?? true;
-  const explicitDirs = runtimeOptions.explicitDirs ?? [];
-  const useExplicitDirs = explicitDirs.length > 0;
-  const rootOptions = { mergeAllAvailableSkills };
-
-  const [userRootList, projectRootList, explicitRootList, extraRootList, pluginRootList] = await Promise.all([
-    useExplicitDirs ? Promise.resolve([]) : userRoots(bootstrap.homeDir, bootstrap.osHomeDir, rootOptions),
-    useExplicitDirs ? Promise.resolve([]) : projectRoots(workDir, rootOptions),
-    useExplicitDirs
-      ? configuredRoots(explicitDirs, workDir, bootstrap.osHomeDir, 'user')
-      : Promise.resolve([]),
-    configuredRoots(extraSkillDirs, workDir, bootstrap.osHomeDir, 'extra'),
-    plugins.pluginSkillRoots(),
-  ]);
-  const [user, project, explicit, extra, plugin] = await Promise.all([
-    discovery.discover(userRootList),
-    discovery.discover(projectRootList),
-    discovery.discover(explicitRootList),
-    discovery.discover(extraRootList),
-    discovery.discover(pluginRootList),
-  ]);
-
-  const catalog = new InMemorySkillCatalog();
-  const ordered = [
-    { skills: BUILTIN_SKILLS, priority: SKILL_SOURCE_PRIORITY.builtin },
-    { skills: plugin.skills, priority: SKILL_SOURCE_PRIORITY.plugin },
-    { skills: extra.skills, priority: SKILL_SOURCE_PRIORITY.extra },
-    { skills: user.skills, priority: SKILL_SOURCE_PRIORITY.user },
-    { skills: explicit.skills, priority: SKILL_SOURCE_PRIORITY.user },
-    { skills: project.skills, priority: SKILL_SOURCE_PRIORITY.workspace },
-  ].toSorted((a, b) => a.priority - b.priority);
-  for (const { skills } of ordered) {
-    for (const skill of skills) catalog.register(skill, { replace: true });
-  }
-  return catalog.listSkills();
-}
-
-// ---------------------------------------------------------------------------
-// Projection — v2 `SkillDefinition` → protocol `SkillDescriptor` (see header).
-// ---------------------------------------------------------------------------
-
-type SkillElement = ReturnType<ISessionSkillCatalog['catalog']['listSkills']>[number];
-
-function toProtocolSkill(skill: SkillElement): SkillDescriptor {
+function toProtocolSkill(skill: SkillSummary): SkillDescriptor {
   const base: SkillDescriptor = {
     name: skill.name,
     description: skill.description,
     path: skill.path,
     source: skill.source,
   };
-  const type = skill.metadata.type;
-  const disableModelInvocation = skill.metadata.disableModelInvocation;
+  const type = skill.type;
+  const disableModelInvocation = skill.disableModelInvocation;
   return {
     ...base,
     ...(type !== undefined ? { type } : {}),

@@ -1,5 +1,11 @@
 /**
- * Tests for `IMcpCatalogService` — user-level MCP catalog CRUD.
+ * Scenario: user-level MCP catalog CRUD and persistence compatibility.
+ *
+ * Exercises the real `IMcpCatalogService` against an isolated home directory,
+ * including remote OAuth marker round-trips and preservation of unknown root
+ * fields. Logging and bootstrap are the only stubbed boundaries. Run with
+ * `pnpm --filter @moonshot-ai/agent-core-v2 exec vitest run
+ * test/app/mcpCatalog/mcpCatalog.test.ts`.
  */
 
 import { mkdir, rm, writeFile } from 'node:fs/promises';
@@ -156,10 +162,43 @@ describe('McpCatalogService', () => {
     expect(entries).toEqual([]);
   });
 
+  it('round-trips OAuth compatibility markers for remote transports', async () => {
+    const svc = ix.get(IMcpCatalogService);
+    const httpConfig = {
+      transport: 'http' as const,
+      url: 'https://http.example.test/mcp',
+      auth: 'oauth' as const,
+    };
+    const sseConfig = {
+      transport: 'sse' as const,
+      url: 'https://sse.example.test/events',
+      auth: 'oauth' as const,
+    };
+
+    await svc.add('oauth-http', httpConfig);
+    await svc.add('oauth-sse', sseConfig);
+
+    await expect(svc.get('oauth-http')).resolves.toEqual({
+      name: 'oauth-http',
+      config: httpConfig,
+      source: 'user',
+    });
+    await expect(svc.get('oauth-sse')).resolves.toEqual({
+      name: 'oauth-sse',
+      config: sseConfig,
+      source: 'user',
+    });
+  });
+
   it('preserves unknown top-level fields when writing', async () => {
-    // Pre-populate the mcp.json with an extra field
     const userJson = JSON.stringify({
-      mcpServers: { existing: { transport: 'stdio', command: 'echo' } },
+      mcpServers: {
+        existing: {
+          transport: 'http',
+          url: 'https://existing.example.test/mcp',
+          auth: 'oauth',
+        },
+      },
       $custom: 'keep-me',
       _comment: 'do not lose',
     });
@@ -168,12 +207,15 @@ describe('McpCatalogService', () => {
     const svc = ix.get(IMcpCatalogService);
     await svc.add('new-one', { transport: 'stdio' as const, command: 'new' });
 
-    // Read the raw file to verify extra fields survived
     const { readFile } = await import('node:fs/promises');
     const raw = JSON.parse(await readFile(join(homeDir, 'mcp.json'), 'utf-8'));
     expect(raw['$custom']).toBe('keep-me');
     expect(raw['_comment']).toBe('do not lose');
-    expect(raw.mcpServers['existing']).toBeDefined();
+    expect(raw.mcpServers['existing']).toEqual({
+      transport: 'http',
+      url: 'https://existing.example.test/mcp',
+      auth: 'oauth',
+    });
     expect(raw.mcpServers['new-one']).toBeDefined();
   });
 });

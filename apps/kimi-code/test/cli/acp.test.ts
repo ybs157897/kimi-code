@@ -10,14 +10,31 @@
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@moonshot-ai/acp-adapter', () => ({
-  ACP_BUILTIN_SLASH_COMMANDS: [],
-  runAcpServer: vi.fn(async () => undefined),
-}));
-
-import { runAcpServer } from '@moonshot-ai/acp-adapter';
+import { runAcpServer, V2AcpHost } from '@moonshot-ai/acp-adapter';
+import { createKimiV2Runtime } from '@moonshot-ai/kimi-code-sdk/v2';
 
 import { registerAcpCommand } from '#/cli/sub/acp';
+
+const mocks = vi.hoisted(() => {
+  const runtime = { kind: 'v2-runtime' };
+  return {
+    runtime,
+    createKimiV2Runtime: vi.fn(async () => runtime),
+    runAcpServer: vi.fn(async () => undefined),
+  };
+});
+
+vi.mock('@moonshot-ai/acp-adapter', () => ({
+  ACP_BUILTIN_SLASH_COMMANDS: [],
+  runAcpServer: mocks.runAcpServer,
+  V2AcpHost: class {
+    constructor(readonly runtime: unknown) {}
+  },
+}));
+
+vi.mock('@moonshot-ai/kimi-code-sdk/v2', () => ({
+  createKimiV2Runtime: mocks.createKimiV2Runtime,
+}));
 
 class ExitCalled extends Error {
   constructor(public code: number | string | null | undefined) {
@@ -31,6 +48,7 @@ describe('kimi acp', () => {
 
   beforeEach(() => {
     vi.mocked(runAcpServer).mockClear();
+    vi.mocked(createKimiV2Runtime).mockClear();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number | string | null) => {
       throw new ExitCalled(code);
     }) as never);
@@ -51,15 +69,17 @@ describe('kimi acp', () => {
     expect(acp?.description()).toMatch(/Agent Client Protocol/);
   });
 
-  it('invokes runAcpServer with a constructed harness and exits 0 on success', async () => {
+  it('creates the v2 runtime and invokes runAcpServer with a V2AcpHost', async () => {
     const program = new Command('kimi').exitOverride();
     registerAcpCommand(program);
 
     await expect(program.parseAsync(['node', 'kimi', 'acp'])).rejects.toThrow(ExitCalled);
 
     expect(runAcpServer).toHaveBeenCalledTimes(1);
-    const harnessArg = vi.mocked(runAcpServer).mock.calls[0]?.[0];
-    expect(harnessArg).toBeDefined();
+    const hostArg = vi.mocked(runAcpServer).mock.calls[0]?.[0];
+    expect(createKimiV2Runtime).toHaveBeenCalledTimes(1);
+    expect(hostArg).toBeInstanceOf(V2AcpHost);
+    expect(hostArg).toMatchObject({ runtime: mocks.runtime });
     const optsArg = vi.mocked(runAcpServer).mock.calls[0]?.[1];
     expect(optsArg).toEqual(
       expect.objectContaining({
@@ -130,19 +150,27 @@ describe('kimi acp', () => {
   });
 
   it('exits without starting the ACP server when --login is passed', async () => {
-    // Stub the harness module so runLoginFlow doesn't hit a real OAuth
-    // endpoint: harness.auth.login resolves immediately and triggers exit 0.
+    // Stub the auth facade so runLoginFlow doesn't hit a real OAuth
+    // endpoint: auth.login resolves immediately and triggers exit 0.
     // `importOriginal` preserves the other named exports (`ErrorCodes`, etc.)
     // that constant/app.ts depends on at module load.
-    const loginStub = vi.fn(async () => ({ providerName: 'kimi-code' }));
+    const loginStub = vi.fn(async (..._args: unknown[]) => ({
+      providerName: 'kimi-code',
+      ok: true as const,
+      defaultModel: 'k2',
+      defaultThinking: true,
+    }));
     vi.doMock(import('@moonshot-ai/kimi-code-sdk'), async (importOriginal) => {
       const actual = await importOriginal();
       return {
         ...actual,
-        createKimiHarness: () =>
-          ({
-            auth: { login: loginStub },
-          }) as unknown as ReturnType<typeof actual.createKimiHarness>,
+        KimiAuthFacade: class extends actual.KimiAuthFacade {
+          override login(
+            ...args: Parameters<InstanceType<typeof actual.KimiAuthFacade>['login']>
+          ): ReturnType<InstanceType<typeof actual.KimiAuthFacade>['login']> {
+            return loginStub(...args);
+          }
+        },
       };
     });
     vi.resetModules();

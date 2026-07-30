@@ -18,7 +18,6 @@ import { resolve } from 'pathe';
 
 import { CLI_SHUTDOWN_TIMEOUT_MS, PROMPT_CLEANUP_TIMEOUT_MS } from '#/constant/app';
 
-import { isKimiV2Enabled } from './experimental-v2';
 import { resolveOutputFormat } from './options';
 import type { CLIOptions, PromptOutputFormat } from './options';
 import {
@@ -99,15 +98,20 @@ export async function runPrompt(
   version: string,
   io: PromptRunIO = {},
 ): Promise<void> {
-  if (isKimiV2Enabled()) {
-    // The experimental engine runs through the SDK v2 runtime + Klient host
-    // boundary. Load it lazily so the v2 module graph stays off the default v1
-    // path.
-    const { runV2Print } = await import('./v2/run-v2-print');
-    await runV2Print(opts, version, io);
-    return;
-  }
+  const { runV2Print } = await import('./v2/run-v2-print');
+  await runV2Print(opts, version, io);
+}
 
+/**
+ * Exercise the SDK root compatibility facade independently from the CLI's v2
+ * production entry. This remains exported while the facade is a supported API
+ * so its contract can be tested without routing production traffic through it.
+ */
+export async function runPromptWithCompatibilityFacade(
+  opts: CLIOptions,
+  version: string,
+  io: PromptRunIO = {},
+): Promise<void> {
   const startedAt = Date.now();
   const stdout = io.stdout ?? process.stdout;
   const stderr = io.stderr ?? process.stderr;
@@ -224,8 +228,6 @@ export async function runPrompt(
 async function createPromptHarness(
   options: Parameters<typeof createKimiHarness>[0],
 ): Promise<PromptHarness> {
-  // The v2 engine is dispatched earlier in `runPrompt` (see the
-  // `isKimiV2Enabled()` branch) and never reaches here; this is the v1 path.
   return createKimiHarness(options);
 }
 
@@ -523,7 +525,7 @@ function runPromptTurn(
         if (settled || activeTurnId !== undefined) return;
         // A task whose expression has no future fire can never trigger a
         // turn; don't hold the run open for it.
-        if (tasks.some((task) => task.nextFireAt !== null)) {
+        if (tasks.some((task) => task.nextRunAt !== undefined)) {
           holdEventLoop();
           return;
         }
@@ -620,15 +622,34 @@ function runPromptTurn(
         case 'compaction.completed':
         case 'compaction.started':
         case 'cron.fired':
+        case 'event.config.changed':
+        case 'event.model_catalog.changed':
+        case 'event.session.created':
+        case 'event.session.status_changed':
+        case 'event.session.work_changed':
+        case 'event.workspace.created':
+        case 'event.workspace.deleted':
+        case 'event.workspace.updated':
+        case 'expert_team.updated':
         case 'goal.updated':
         case 'mcp.server.status':
+        case 'plugin_command.activated':
+        case 'prompt.aborted':
+        case 'prompt.completed':
+        case 'prompt.steered':
+        case 'prompt.submitted':
         case 'session.meta.updated':
+        case 'shell.completed':
+        case 'shell.output':
+        case 'shell.started':
         case 'skill.activated':
         case 'subagent.completed':
         case 'subagent.failed':
         case 'subagent.spawned':
         case 'subagent.started':
         case 'subagent.suspended':
+        case 'task.started':
+        case 'task.terminated':
         case 'tool.list.updated':
         case 'turn.step.completed':
         case 'warning':

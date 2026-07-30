@@ -59,6 +59,7 @@ import type {
 import { ulid } from 'ulid';
 import { WebSocket as WsWebSocket } from 'ws';
 
+import { resolveServerToken } from './auth.js';
 import { HttpClient } from './http.js';
 import { installReverseRpcHandler } from './reverse-rpc.js';
 import { DEFAULT_FRAME_TIMEOUT_MS, waitForSessionBusy } from './wait.js';
@@ -78,6 +79,8 @@ export interface DaemonClientOptions {
   reportDir?: string;
   /** Default 5s. Applies to handshake + subscribe acks. */
   controlAckTimeoutMs?: number;
+  /** Defaults to `KIMI_SERVER_TOKEN` when `baseUrl` matches `KIMI_SERVER_URL`. */
+  token?: string;
 }
 
 export interface SubmitAndWaitOptions {
@@ -168,6 +171,7 @@ export class DaemonClient {
   ) => void;
   private readonly _reportDir: string | undefined;
   private readonly _controlAckTimeoutMs: number;
+  private readonly _token: string | undefined;
   private _ws: WsClient | null = null;
   private _serverHello: ServerHelloMessage['payload'] | null = null;
   private readonly _subscribed = new Set<string>();
@@ -181,11 +185,13 @@ export class DaemonClient {
     this._logger = opts.logger ?? noopLogger;
     this._reportDir = opts.reportDir;
     this._controlAckTimeoutMs = opts.controlAckTimeoutMs ?? DEFAULT_CONTROL_ACK_TIMEOUT_MS;
+    this._token = resolveServerToken(this.baseUrl, opts.token);
     this.http = new HttpClient({
       baseUrl: this.baseUrl,
       apiPrefix: this.apiPrefix,
       fetchImpl: opts.fetchImpl ?? fetch,
       reportDir: this._reportDir,
+      token: this._token,
     });
   }
 
@@ -377,6 +383,7 @@ export class DaemonClient {
       wsImpl: this._wsImpl,
       logger: this._logger,
       reportDir: this._reportDir,
+      token: this._token,
     });
     this._ws = ws;
     await ws.open();

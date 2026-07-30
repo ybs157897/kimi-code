@@ -200,6 +200,7 @@ function stubSessionLifecycle(): ISessionLifecycleService {
     list: () => [],
     resume: async () => undefined,
     close: async () => {},
+    delete: async () => {},
     archive: async () => {},
     restore: async () => undefined,
     fork: async () => {

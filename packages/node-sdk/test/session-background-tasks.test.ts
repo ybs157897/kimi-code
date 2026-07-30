@@ -1,3 +1,9 @@
+/**
+ * Scenario: root SDK background-task and print completion controls use v2 task state.
+ * Responsibilities: list/output validation plus no-task print completion.
+ * Wiring: real SDK/Core runtime with no external provider.
+ * Run: pnpm exec vitest run test/session-background-tasks.test.ts
+ */
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { createKimiHarness, type KimiError } from '#/index';
@@ -12,6 +18,42 @@ afterEach(async () => {
 });
 
 describe('Session.listBackgroundTasks / getBackgroundTaskOutput', () => {
+  it('rejects the legacy pre-turn drain option instead of silently ignoring it', async () => {
+    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-background-home-');
+    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-background-work-');
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+
+    try {
+      await expect(
+        harness.createSession({
+          id: 'ses_background_legacy_drain',
+          workDir,
+          drainAgentTasksOnStop: true,
+        }),
+      ).rejects.toMatchObject({
+        name: 'KimiError',
+        code: 'not_implemented',
+        details: { option: 'drainAgentTasksOnStop' },
+      } satisfies Partial<KimiError>);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('finishes print background policy immediately when no tasks are active', async () => {
+    const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-background-home-');
+    const workDir = await makeTempDir(tempDirs, 'kimi-sdk-background-work-');
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+
+    try {
+      const session = await harness.createSession({ id: 'ses_background_print', workDir });
+      await expect(session.waitForBackgroundTasksOnPrint()).resolves.toBeUndefined();
+      await expect(session.handlePrintMainTurnCompleted()).resolves.toBe('finish');
+    } finally {
+      await harness.close();
+    }
+  });
+
   it('lists an empty task set for a fresh session', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-bgtask-work-');

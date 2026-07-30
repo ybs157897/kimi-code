@@ -861,6 +861,7 @@ function collectScopeSeed(
 class PersistenceAppendLogStore implements IAppendLogStore {
   declare readonly _serviceBrand: undefined;
   private readonly history: WireRecord[] = [];
+  private readonly logs = new Map<string, unknown[]>();
 
   constructor(
     private readonly persistence: WireRecordPersistence,
@@ -868,14 +869,30 @@ class PersistenceAppendLogStore implements IAppendLogStore {
     private readonly onRead: (event: WireRecord) => void,
   ) { }
 
-  append<R>(_scope: string, _key: string, record: R): void {
+  append<R>(scope: string, key: string, record: R): void {
+    if (key !== AGENT_WIRE_RECORD_KEY) {
+      const id = `${scope}\n${key}`;
+      const records = this.logs.get(id);
+      if (records === undefined) {
+        this.logs.set(id, [structuredClone(record)]);
+      } else {
+        records.push(structuredClone(record));
+      }
+      return;
+    }
     const event = record as WireRecord;
     this.onAppend(event);
     this.persistence.append(event);
     this.history.push(cloneRecord(event));
   }
 
-  async *read<R>(_scope: string, _key: string): AsyncIterable<R> {
+  async *read<R>(scope: string, key: string): AsyncIterable<R> {
+    if (key !== AGENT_WIRE_RECORD_KEY) {
+      for (const record of this.logs.get(`${scope}\n${key}`) ?? []) {
+        yield structuredClone(record) as R;
+      }
+      return;
+    }
     for await (const event of this.persistence.read()) {
       this.onRead(event);
       this.history.push(cloneRecord(event));
@@ -883,7 +900,11 @@ class PersistenceAppendLogStore implements IAppendLogStore {
     }
   }
 
-  rewrite<R>(_scope: string, _key: string, records: readonly R[]): Promise<void> {
+  rewrite<R>(scope: string, key: string, records: readonly R[]): Promise<void> {
+    if (key !== AGENT_WIRE_RECORD_KEY) {
+      this.logs.set(`${scope}\n${key}`, records.map((record) => structuredClone(record)));
+      return Promise.resolve();
+    }
     this.persistence.rewrite(records as readonly WireRecord[]);
     return Promise.resolve();
   }
@@ -1174,6 +1195,7 @@ export class AgentTestContext {
                 Promise.reject(
                   new Error('IAgentLifecycleService.create is not supported in the test harness'),
                 ),
+              restore: () => Promise.resolve(undefined),
               fork: () =>
                 Promise.reject(
                   new Error('IAgentLifecycleService.fork is not supported in the test harness'),

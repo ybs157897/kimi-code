@@ -11,7 +11,7 @@ async function main(): Promise<void> {
   const harness = createKimiHarness({ homeDir, identity: smokeIdentityFromEnv() });
 
   const initial = await harness.getConfig();
-  if (Object.keys(initial.providers).length > 0) {
+  if (Object.keys(initial.providers ?? {}).length > 0) {
     throw new Error('expected empty providers for a fresh config home');
   }
 
@@ -76,7 +76,7 @@ async function main(): Promise<void> {
   if (reloaded.defaultModel !== 'kimi-code/kimi-for-coding') {
     throw new Error('reloaded config did not preserve defaultModel');
   }
-  if (reloaded.providers['managed:kimi-code']?.oauth?.key !== 'oauth/kimi-code') {
+  if (reloaded.providers?.['managed:kimi-code']?.oauth?.key !== 'oauth/kimi-code') {
     throw new Error('reloaded config did not preserve provider oauth');
   }
 

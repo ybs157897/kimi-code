@@ -150,17 +150,21 @@ export async function mcpResultToExecutableOutput(
 
   const wrapped = wrapMediaOnly(converted, qualifiedToolName);
   const budgeted = applyTextBudget(wrapped);
+  const hostFs = options.hostFs;
   const compressed = await compressImageContentParts(budgeted.parts, {
     telemetry:
       options.telemetry === undefined
         ? undefined
         : { client: options.telemetry, source: 'mcp_tool_result' },
     annotate: {
-      persistOriginal: (bytes, mimeType) =>
-        persistOriginalImage(bytes, mimeType, {
-          dir: options.originalsDir,
-          hostFs: options.hostFs,
-        }),
+      persistOriginal:
+        hostFs === undefined
+          ? undefined
+          : (bytes, mimeType) =>
+              persistOriginalImage(bytes, mimeType, {
+                dir: options.originalsDir,
+                hostFs,
+              }),
     },
   });
   const capped = applyBinaryPartCap(compressed.parts);

@@ -70,6 +70,14 @@ export interface IAgentLifecycleService {
   create(opts?: CreateAgentOptions): Promise<IAgentScopeHandle>;
 
   /**
+   * Materialize an agent already registered in durable session metadata.
+   *
+   * Returns `undefined` when the id was never registered. Concurrent restore
+   * and create calls for the same id share the same fully bootstrapped handle.
+   */
+  restore(agentId: string): Promise<IAgentScopeHandle | undefined>;
+
+  /**
    * Fork an agent: copy its profile binding and context history into a new
    * agent, recording `forkedFrom = sourceAgentId`. Throws when the source does
    * not exist, and when an explicit target `agentId` is already taken (a fork

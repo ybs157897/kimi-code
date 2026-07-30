@@ -19,8 +19,18 @@ function fetchInputUrl(input: Parameters<typeof fetch>[0]): string {
   return input.url;
 }
 
+/** A KimiConfig whose `providers`/`models` are always present — tests assert on them.
+ *  The conditional mapped type strips KimiConfig's open `[key: string]` index
+ *  signature so every declared field stays a real, non-index property. */
+type TestConfig = {
+  [K in keyof KimiConfig as string extends K ? never : K]: KimiConfig[K];
+} & {
+  providers: Record<string, NonNullable<KimiConfig['providers']>[string]>;
+  models: Record<string, NonNullable<KimiConfig['models']>[string]>;
+};
+
 function makeRefreshHost(initial: KimiConfig): {
-  current: () => KimiConfig;
+  current: () => TestConfig;
   removeProvider: ReturnType<typeof vi.fn<(providerId: string) => Promise<KimiConfig>>>;
   setConfig: ReturnType<typeof vi.fn<(patch: Partial<KimiConfig>) => Promise<KimiConfig>>>;
 } {
@@ -44,7 +54,11 @@ function makeRefreshHost(initial: KimiConfig): {
     return structuredClone(persisted);
   });
   return {
-    current: () => structuredClone(persisted),
+    current: () => ({
+      ...structuredClone(persisted),
+      providers: persisted.providers ?? {},
+      models: persisted.models ?? {},
+    }) as TestConfig,
     removeProvider,
     setConfig,
   };
@@ -1042,7 +1056,7 @@ describe('refreshAllProviderModels', () => {
       baseUrl,
       apiKey: 'sk-distributed-key',
     });
-    expect(host.current().services).toBeUndefined();
+    expect((host.current() as Record<string, unknown>)['services']).toBeUndefined();
     expect(host.current().models?.['kimi-code/kimi-for-coding']?.displayName).toBe('Fresh Kimi');
     expect(host.current().defaultModel).toBe('kimi-code/kimi-for-coding');
   });
@@ -1193,7 +1207,7 @@ describe('refreshAllProviderModels', () => {
     expect(host.setConfig).toHaveBeenCalledWith(
       expect.objectContaining({ defaultProvider: 'my-kimi' }),
     );
-    expect(host.current().defaultProvider).toBe('my-kimi');
+    expect((host.current() as Record<string, unknown>)['defaultProvider']).toBe('my-kimi');
   });
 
   it('leaves registry-sourced providers at the managed base URL to the registry branch', async () => {

@@ -37,9 +37,15 @@ export type {
   GlobalFlagsFacade,
   GlobalHostFsFacade,
   GlobalKosongFacade,
+  GlobalMcpCatalogFacade,
+  GlobalMcpFacade,
+  GlobalMcpOAuthFacade,
+  GlobalMcpProbeFacade,
   GlobalPluginsFacade,
   GlobalSessionExportFacade,
+  GlobalSessionStoreFacade,
   GlobalSessionsFacade,
+  GlobalSkillsFacade,
   GlobalWorkspacesFacade,
   KlientEnvInfo,
   ModelCatalogItem,
@@ -73,6 +79,7 @@ export type {
   SessionInitFacade,
   SessionQuestionsFacade,
   SessionStatus,
+  SessionTodoFacade,
   SessionWarning,
   SessionWarningsFacade,
 } from './core/facade/session.js';
@@ -110,6 +117,17 @@ export type {
   SessionListQuery,
   SessionSummary,
 } from '@moonshot-ai/agent-core-v2/app/sessionIndex/sessionIndex';
+export type {
+  DeleteSnapshotInput,
+  ForkSnapshotInput,
+  ForkSnapshotResult,
+} from '@moonshot-ai/agent-core-v2/app/sessionStore/sessionSnapshotStore';
+export type { McpCatalogEntry } from '@moonshot-ai/agent-core-v2/app/mcpCatalog/mcpCatalog';
+export type { McpBeginAuthorizationFlowResult } from '@moonshot-ai/agent-core-v2/app/mcpOAuth/mcpOAuth';
+export type { McpProbeResult } from '@moonshot-ai/agent-core-v2/app/mcpProbe/mcpProbe';
+export type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
+export type { ContextImportInput } from '@moonshot-ai/agent-core-v2/agent/contextCommand/contextCommand';
+export type { TodoItem, TodoStatus } from '@moonshot-ai/agent-core-v2/session/todo/todoItem';
 export type {
   ExportSessionManifest,
   ExportSessionPayload,

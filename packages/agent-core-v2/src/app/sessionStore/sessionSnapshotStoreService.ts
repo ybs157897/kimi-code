@@ -3,15 +3,18 @@
  *
  * Node-FS backed snapshot store: copies session directories, reads and rewrites
  * agent wire append-logs through `appendLogStore`, reads session metadata through
- * `docs`, and removes session artifacts through `hostFs`. Bound at App scope.
+ * `docs`, and removes session artifacts through `hostFs`. Indexed forks derive
+ * one cutoff from the main Agent, truncate other Agents by record time, prune
+ * broken parent chains, and drop copied task/cron runtime state. Partial
+ * targets are removed when a fork fails. Bound at App scope.
  *
  * Collaborators:
  * - resolves session storage addressing through `bootstrap`
  * - copies directories and removes files through `hostFs`
  * - reads/rewrites agent wire records through `appendLogStore`
  * - reads session metadata through `docs`
- * - reads session summaries through `sessionIndex`
  * - removes from query-store projection through `queryStore`
+ * - removes v1-compatible discovery records through `sessionStore`
  */
 
 import { join } from 'pathe';
@@ -19,13 +22,11 @@ import { join } from 'pathe';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
 import { ErrorCodes, Error2 } from '#/errors';
 import { IHostFileSystem, type HostDirEntry } from '#/os/interface/hostFileSystem';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IQueryStore } from '#/persistence/interface/queryStore';
-import { isStorageError, StorageErrors } from '#/persistence/interface/storage';
 import type { WireRecord } from '#/wire/record';
 
 import {
@@ -35,6 +36,7 @@ import {
   type ForkSnapshotResult,
   type SessionSnapshotMeta,
 } from './sessionSnapshotStore';
+import { ISessionLegacyIndexStore } from './sessionLegacyIndexStore';
 
 const AGENT_WIRE_RECORD_KEY = 'wire.jsonl';
 const STATE_JSON_KEY = 'state.json';
@@ -45,8 +47,17 @@ const SESSION_COLLECTION = 'session';
 
 interface AgentRecordLike {
   readonly type: string;
+  readonly created_at?: number;
   readonly time?: number;
-  readonly message?: { readonly role?: string; readonly origin?: { readonly kind?: string; readonly trigger?: string; readonly phase?: string } };
+  readonly message?: {
+    readonly role?: string;
+    readonly content?: unknown;
+    readonly origin?: {
+      readonly kind?: string;
+      readonly trigger?: string;
+      readonly phase?: string;
+    };
+  };
   readonly origin?: { readonly kind?: string; readonly trigger?: string; readonly phase?: string };
 }
 
@@ -80,6 +91,13 @@ function isUserVisibleTurnRecord(record: AgentRecordLike): boolean {
 
 function recordTime(record: AgentRecordLike): number | undefined {
   if (typeof record.time === 'number' && Number.isFinite(record.time)) return record.time;
+  if (
+    record.type === 'metadata' &&
+    typeof record.created_at === 'number' &&
+    Number.isFinite(record.created_at)
+  ) {
+    return record.created_at;
+  }
   return undefined;
 }
 
@@ -91,11 +109,12 @@ export class SessionSnapshotStoreService implements ISessionSnapshotStore {
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
     @IAppendLogStore private readonly appendLogStore: IAppendLogStore,
     @IAtomicDocumentStore private readonly docs: IAtomicDocumentStore,
-    @ISessionIndex private readonly index: ISessionIndex,
     @IQueryStore private readonly queryStore: IQueryStore,
+    @ISessionLegacyIndexStore private readonly legacyIndex: ISessionLegacyIndexStore,
   ) {}
 
   async fork(input: ForkSnapshotInput): Promise<ForkSnapshotResult> {
+    validateTurnIndex(input.userVisibleTurnIndex);
     const sourceSessionDir = this.bootstrap.sessionDir(
       input.sourceWorkspaceId,
       input.sourceSessionId,
@@ -104,57 +123,87 @@ export class SessionSnapshotStoreService implements ISessionSnapshotStore {
       input.targetWorkspaceId,
       input.targetSessionId,
     );
-
-    // 1. Copy session files (excluding agent wire, state.json, logs).
-    await this.copySessionFiles(sourceSessionDir, targetSessionDir);
-
-    // 2. Read source metadata.
-    const sourceMeta = await this.readMeta(input.sourceWorkspaceId, input.sourceSessionId);
-
-    // 3. Copy agent wire records, possibly truncated at a turn boundary.
-    const agentIds = sourceMeta?.agents !== undefined ? Object.keys(sourceMeta.agents) : [];
-
-    let cutoffTime: number | undefined;
-    for (const agentId of agentIds) {
-      const agentCutoff = await this.copyAgentWire({
-        sourceWorkspaceId: input.sourceWorkspaceId,
-        sourceSessionId: input.sourceSessionId,
-        targetWorkspaceId: input.targetWorkspaceId,
-        targetSessionId: input.targetSessionId,
-        agentId,
-        userVisibleTurnIndex: input.userVisibleTurnIndex,
-      });
-      if (agentCutoff !== undefined) cutoffTime = agentCutoff;
+    await this.assertForkSourceExists(sourceSessionDir, input.sourceSessionId);
+    await this.assertForkTargetAvailable(targetSessionDir, input.targetSessionId);
+    try {
+      await this.copySessionFiles(sourceSessionDir, targetSessionDir);
+      const sourceMeta = await this.readMeta(input.sourceWorkspaceId, input.sourceSessionId);
+      const sourceAgentIds =
+        sourceMeta?.agents === undefined ? [] : Object.keys(sourceMeta.agents);
+      if (input.userVisibleTurnIndex === undefined) {
+        for (const agentId of sourceAgentIds) {
+          await this.copyFullAgentWire(input, agentId);
+        }
+        return { sourceMeta, agentIds: sourceAgentIds };
+      }
+      const main = await this.copyIndexedMainWire(input, input.userVisibleTurnIndex);
+      const retained = new Set<string>(['main']);
+      for (const agentId of sourceAgentIds) {
+        if (agentId === 'main') continue;
+        if (await this.copySubagentWireThrough(input, agentId, main.cutoffTime)) {
+          retained.add(agentId);
+        }
+      }
+      pruneAgentsWithMissingParents(retained, sourceMeta?.agents);
+      for (const agentId of sourceAgentIds) {
+        if (!retained.has(agentId)) {
+          await this.removeTargetAgent(input, agentId);
+        }
+      }
+      for (const agentId of retained) {
+        await this.dropIndexedForkRuntimeState(input, agentId);
+      }
+      return {
+        sourceMeta,
+        agentIds: sourceAgentIds.filter((agentId) => retained.has(agentId)),
+        cutoffTime: main.cutoffTime,
+        lastPrompt: main.lastPrompt,
+      };
+    } catch (error) {
+      await this.hostFs.remove(targetSessionDir).catch(() => {});
+      throw error;
     }
-
-    return { sourceMeta: sourceMeta ?? undefined, agentIds, cutoffTime };
   }
 
   async delete(input: DeleteSnapshotInput): Promise<void> {
-    // 1. Remove from QueryStore projection (best-effort).
-    try {
-      await this.queryStore.delete(SESSION_COLLECTION, input.sessionId);
-    } catch (error) {
-      // Only swallow STORAGE_LOCKED (another process holds the store);
-      // all other errors must propagate to the caller.
-      if (!isStorageError(error, StorageErrors.codes.STORAGE_LOCKED)) throw error;
-    }
+    await this.queryStore.delete(SESSION_COLLECTION, input.sessionId);
+    await this.legacyIndex.remove(input.sessionId);
 
-    // 2. Remove session directory.
     const sessionDir = this.bootstrap.sessionDir(input.workspaceId, input.sessionId);
     try {
       await this.hostFs.remove(sessionDir);
     } catch (error) {
       if (!isMissingFileError(error)) throw error;
     }
-
-    // 3. Remove from session index (the directory-based discovery).
-    // The directory removal above handles this for the v2 directory-based
-    // index; v1 `session_index.jsonl` tombstoning is handled by the caller
-    // (lifecycle) because it requires appending to the shared log.
   }
 
   // ---- private helpers ----
+
+  private async assertForkSourceExists(sourceDir: string, sessionId: string): Promise<void> {
+    if (await this.pathExists(sourceDir)) return;
+    throw new Error2(
+      ErrorCodes.SESSION_NOT_FOUND,
+      `Source session "${sessionId}" does not exist`,
+    );
+  }
+
+  private async assertForkTargetAvailable(targetDir: string, sessionId: string): Promise<void> {
+    if (!(await this.pathExists(targetDir))) return;
+    throw new Error2(
+      ErrorCodes.SESSION_ALREADY_EXISTS,
+      `Target session "${sessionId}" already exists`,
+    );
+  }
+
+  private async pathExists(path: string): Promise<boolean> {
+    try {
+      await this.hostFs.stat(path);
+      return true;
+    } catch (error) {
+      if (isMissingFileError(error)) return false;
+      throw error;
+    }
+  }
 
   private async copySessionFiles(sourceDir: string, targetDir: string): Promise<void> {
     let entries: readonly HostDirEntry[];
@@ -201,47 +250,107 @@ export class SessionSnapshotStoreService implements ISessionSnapshotStore {
     }
   }
 
-  private async copyAgentWire(args: {
-    sourceWorkspaceId: string;
-    sourceSessionId: string;
-    targetWorkspaceId: string;
-    targetSessionId: string;
-    agentId: string;
-    userVisibleTurnIndex?: number;
-  }): Promise<number | undefined> {
-    const sourceScope = this.bootstrap.agentScope(
-      args.sourceWorkspaceId,
-      args.sourceSessionId,
-      args.agentId,
-    );
-    const targetScope = this.bootstrap.agentScope(
-      args.targetWorkspaceId,
-      args.targetSessionId,
-      args.agentId,
-    );
+  private async copyFullAgentWire(
+    input: ForkSnapshotInput,
+    agentId: string,
+  ): Promise<void> {
+    const records = await this.readAgentWire(input, agentId);
+    await this.writeAgentWire(input, agentId, records);
+  }
 
-    const records = await collect(
+  private async copyIndexedMainWire(
+    input: ForkSnapshotInput,
+    userVisibleTurnIndex: number,
+  ): Promise<SliceResult> {
+    const records = await this.readAgentWire(input, 'main');
+    const slice = sliceRecordsAtTurn(records, userVisibleTurnIndex);
+    await this.writeAgentWire(input, 'main', slice.records);
+    return slice;
+  }
+
+  private async copySubagentWireThrough(
+    input: ForkSnapshotInput,
+    agentId: string,
+    cutoffTime: number | undefined,
+  ): Promise<boolean> {
+    if (cutoffTime === undefined) return false;
+    const records = await this.readAgentWire(input, agentId);
+    let end = records.length;
+    for (let index = 0; index < records.length; index += 1) {
+      const time = recordTime(records[index]! as unknown as AgentRecordLike);
+      if (time !== undefined && time > cutoffTime) {
+        end = index;
+        break;
+      }
+    }
+    const retained = records.slice(0, end);
+    if (retained.length === 0) return false;
+    await this.writeAgentWire(input, agentId, retained);
+    return true;
+  }
+
+  private async readAgentWire(
+    input: ForkSnapshotInput,
+    agentId: string,
+  ): Promise<WireRecord[]> {
+    const sourceScope = this.bootstrap.agentScope(
+      input.sourceWorkspaceId,
+      input.sourceSessionId,
+      agentId,
+    );
+    return collect(
       this.appendLogStore.read<WireRecord>(sourceScope, AGENT_WIRE_RECORD_KEY),
     );
+  }
 
-    let retained: readonly WireRecord[];
-    let cutoffTime: number | undefined;
-
-    if (args.userVisibleTurnIndex !== undefined) {
-      // Indexed fork: slice at the turn boundary.
-      const slice = sliceRecordsAtTurn(records, args.userVisibleTurnIndex);
-      retained = slice.records;
-      cutoffTime = slice.cutoffTime;
-    } else {
-      // Full fork: keep all records.
-      retained = [...records];
-    }
-
-    // Normalize metadata and append fork marker.
-    const normalized = normalizeAgentWire(retained);
-
+  private async writeAgentWire(
+    input: ForkSnapshotInput,
+    agentId: string,
+    records: readonly WireRecord[],
+  ): Promise<void> {
+    const targetScope = this.bootstrap.agentScope(
+      input.targetWorkspaceId,
+      input.targetSessionId,
+      agentId,
+    );
+    const normalized = normalizeAgentWire(records);
     await this.appendLogStore.rewrite(targetScope, AGENT_WIRE_RECORD_KEY, normalized);
-    return cutoffTime;
+  }
+
+  private async removeTargetAgent(
+    input: ForkSnapshotInput,
+    agentId: string,
+  ): Promise<void> {
+    await this.hostFs
+      .remove(
+        join(
+          this.bootstrap.sessionDir(input.targetWorkspaceId, input.targetSessionId),
+          'agents',
+          agentId,
+        ),
+      )
+      .catch((error) => {
+        if (!isMissingFileError(error)) throw error;
+      });
+  }
+
+  private async dropIndexedForkRuntimeState(
+    input: ForkSnapshotInput,
+    agentId: string,
+  ): Promise<void> {
+    const agentDir = join(
+      this.bootstrap.sessionDir(input.targetWorkspaceId, input.targetSessionId),
+      'agents',
+      agentId,
+    );
+    await Promise.all([
+      this.hostFs.remove(join(agentDir, 'tasks')).catch((error) => {
+        if (!isMissingFileError(error)) throw error;
+      }),
+      this.hostFs.remove(join(agentDir, 'cron')).catch((error) => {
+        if (!isMissingFileError(error)) throw error;
+      }),
+    ]);
   }
 
   private async readMeta(workspaceId: string, sessionId: string): Promise<SessionSnapshotMeta | undefined> {
@@ -288,6 +397,7 @@ function forkedRecord(): WireRecord {
 interface SliceResult {
   readonly records: readonly WireRecord[];
   readonly cutoffTime: number | undefined;
+  readonly lastPrompt: string | undefined;
 }
 
 function sliceRecordsAtTurn(
@@ -320,7 +430,7 @@ function sliceRecordsAtTurn(
     );
   }
 
-  const start = turnStarts[turnIndex]!;
+  const start = turnStarts[turnIndex];
   const end = turnStarts[turnIndex + 1] ?? records.length;
 
   // Collect retained turn-input records (turn.prompt / turn.steer) that belong
@@ -339,14 +449,19 @@ function sliceRecordsAtTurn(
     .map((r) => recordTime(r as unknown as AgentRecordLike))
     .filter((time): time is number => time !== undefined);
   const cutoffTime = cutoffTimes.length === 0 ? undefined : Math.max(...cutoffTimes);
+  const lastPrompt = promptText(
+    (records[start] as unknown as AgentRecordLike).message?.content,
+  );
 
-  return { records: retained, cutoffTime };
+  return { records: retained, cutoffTime, lastPrompt };
 }
 
 function isUserVisibleTurnInputRecord(record: AgentRecordLike): boolean {
   if (record.type !== 'turn.prompt' && record.type !== 'turn.steer') return false;
   const kind = record.origin?.kind;
   switch (kind) {
+    case undefined:
+      return false;
     case 'user':
       return true;
     case 'skill_activation':
@@ -428,6 +543,60 @@ function turnInputMatchesRecord(
 function sameTurnOrigin(inputKind: string | undefined, messageKind: string | undefined): boolean {
   if (inputKind === 'user') return messageKind === undefined || messageKind === 'user';
   return inputKind === messageKind;
+}
+
+function validateTurnIndex(turnIndex: number | undefined): void {
+  if (turnIndex === undefined) return;
+  if (Number.isSafeInteger(turnIndex) && turnIndex >= 0) return;
+  throw new Error2(
+    ErrorCodes.SESSION_STORE_INVALID_TURN_INDEX,
+    `turnIndex must be a non-negative safe integer, got ${String(turnIndex)}`,
+    { details: { turnIndex } },
+  );
+}
+
+function pruneAgentsWithMissingParents(
+  retained: Set<string>,
+  agents: Readonly<Record<string, unknown>> | undefined,
+): void {
+  if (agents === undefined) return;
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const agentId of retained) {
+      if (agentId === 'main') continue;
+      const value = agents[agentId];
+      if (value === null || typeof value !== 'object' || Array.isArray(value)) continue;
+      const parentAgentId = (value as Record<string, unknown>)['parentAgentId'];
+      if (
+        typeof parentAgentId === 'string' &&
+        parentAgentId !== 'main' &&
+        !retained.has(parentAgentId)
+      ) {
+        retained.delete(agentId);
+        changed = true;
+      }
+    }
+  }
+}
+
+function promptText(content: unknown): string | undefined {
+  if (typeof content === 'string') {
+    const trimmed = content.trim();
+    return trimmed === '' ? undefined : trimmed;
+  }
+  if (!Array.isArray(content)) return undefined;
+  const text = content
+    .flatMap((part) => {
+      if (part === null || typeof part !== 'object' || Array.isArray(part)) return [];
+      const record = part as Record<string, unknown>;
+      return record['type'] === 'text' && typeof record['text'] === 'string'
+        ? [record['text']]
+        : [];
+    })
+    .join('\n')
+    .trim();
+  return text === '' ? undefined : text;
 }
 
 function normalizeAgentWire(records: readonly WireRecord[]): WireRecord[] {

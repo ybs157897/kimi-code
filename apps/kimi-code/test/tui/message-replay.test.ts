@@ -177,14 +177,29 @@ function makeMockRuntime(): TUIRuntime {
       close: vi.fn(),
     },
     telemetry: { track: vi.fn(), setContext: vi.fn() },
+    localMedia: {
+      getImageMaxEdgePx: vi.fn(async () => undefined),
+      persistOriginalImage: vi.fn(async () => null),
+    },
     sessionControl: {
       sessions: {
         list: vi.fn(async () => []),
         create: vi.fn(async () => ({ id: 'test', workDir: '/tmp/proj-a', createdAt: Date.now(), updatedAt: Date.now(), archived: false })),
         resume: vi.fn(async () => undefined),
       },
+      session: vi.fn(),
+      agent: vi.fn(),
     },
-    auth: { status: vi.fn(), login: vi.fn(), logout: vi.fn(), getManagedUsage: vi.fn(), ensureReady: vi.fn() },
+    auth: {
+      status: vi.fn(),
+      login: vi.fn(),
+      logout: vi.fn(),
+      getManagedUsage: vi.fn(),
+      ensureReady: vi.fn(),
+      submitFeedback: vi.fn(),
+      createFeedbackUploadUrl: vi.fn(),
+      completeFeedbackUpload: vi.fn(),
+    },
     models: { load: vi.fn(async () => ({ defaultModel: '', models: {}, providers: {} })) },
     modelConfig: { apply: vi.fn(), removeProvider: vi.fn() },
     featureFlags: { list: vi.fn(async () => []), apply: vi.fn() },
@@ -264,21 +279,21 @@ function makeReplaySessionRuntime(
   };
 
   const expertTeam = { get: vi.fn(async () => null), list: vi.fn(async () => []), activate: vi.fn(), deactivate: vi.fn() };
-  const skills = { list: vi.fn(async () => []), run: vi.fn() };
+  const skills = { list: vi.fn(async () => []), run: vi.fn(), reload: vi.fn(), activate: vi.fn() };
   const warnings = { list: vi.fn(async () => []) };
-  const extensionCommands = { list: vi.fn(async () => []), activate: vi.fn() };
+  const extensionCommands = { list: vi.fn(async () => []), activate: vi.fn(), reload: vi.fn() };
   const pluginCommands = { list: vi.fn(async () => []), activate: vi.fn() };
-  const init = { hasPreviousSession: vi.fn(), restore: vi.fn() };
-  const btw = { get: vi.fn(), entries: vi.fn() };
-  const context = { addDir: vi.fn(), removeDir: vi.fn() };
-  const contextView = { get: vi.fn() };
+  const init = { hasPreviousSession: vi.fn(), restore: vi.fn(), generateAgentsMd: vi.fn(), cancel: vi.fn() };
+  const btw = { get: vi.fn(), entries: vi.fn(), start: vi.fn() };
+  const context = { addDir: vi.fn(), removeDir: vi.fn(), compact: vi.fn(), cancelCompaction: vi.fn(), undoHistory: vi.fn() };
+  const contextView = { get: vi.fn(), read: vi.fn() };
   const sessionEvents = { subscribe: vi.fn(() => vi.fn()), respondToApproval: vi.fn(), respondToQuestion: vi.fn() };
-  const goalQueue = { list: vi.fn(async () => []), promote: vi.fn() };
-  const mcp = { list: vi.fn(async () => []), start: vi.fn() };
-  const plugins = { list: vi.fn(async () => []), reload: vi.fn() };
+  const goalQueue = { read: vi.fn(async () => ({ goals: [] })), append: vi.fn(async () => ({ goals: [] })), update: vi.fn(async () => ({ goals: [] })), remove: vi.fn(async () => ({ goals: [] })), restore: vi.fn(async () => ({ goals: [] })), move: vi.fn(async () => ({ goals: [] })) };
+  const mcp = { list: vi.fn(async () => []), start: vi.fn(), reconnect: vi.fn(), initialLoadDurationMs: vi.fn() };
+  const plugins = { list: vi.fn(async () => []), reload: vi.fn(), info: vi.fn(), install: vi.fn(), setEnabled: vi.fn(), setMcpServerEnabled: vi.fn(), remove: vi.fn() };
   const refresh = { reload: vi.fn() };
-  const swarm = { canActivate: vi.fn(), activate: vi.fn(), deactivate: vi.fn() };
-  const workspace = { apply: vi.fn(), getCwdTasks: vi.fn() };
+  const swarm = { canActivate: vi.fn(), activate: vi.fn(), deactivate: vi.fn(), isActive: vi.fn(), enter: vi.fn(), exit: vi.fn() };
+  const workspace = { apply: vi.fn(), getCwdTasks: vi.fn(), get: vi.fn(), addAdditionalDir: vi.fn() };
 
   const sessionRuntime: TUISessionRuntime = {
     sessionId: 'ses-replay',
@@ -312,10 +327,13 @@ async function replayIntoDriver(
   overrides: Partial<TUIAgentReplay> = {},
 ): Promise<KimiTUI> {
   const { sessionRuntime } = makeReplaySessionRuntime(replay, overrides);
-  const startupInput = makeStartupInput();
-  startupInput.runtime = {
-    ...startupInput.runtime!,
-    bindSession: vi.fn(() => sessionRuntime),
+  const baseInput = makeStartupInput();
+  const startupInput: KimiTUIStartupInput = {
+    ...baseInput,
+    runtime: {
+      ...baseInput.runtime!,
+      bindSession: vi.fn(() => sessionRuntime),
+    },
   };
   const driver = new KimiTUI(startupInput);
   vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
@@ -1161,10 +1179,13 @@ describe('KimiTUI resume message replay', () => {
         },
       },
     ]);
-    const startupInput = makeStartupInput();
-    startupInput.runtime = {
-      ...startupInput.runtime!,
-      bindSession: vi.fn(() => sessionRuntime),
+    const baseInput = makeStartupInput();
+    const startupInput: KimiTUIStartupInput = {
+      ...baseInput,
+      runtime: {
+        ...baseInput.runtime!,
+        bindSession: vi.fn(() => sessionRuntime),
+      },
     };
     const driver = new KimiTUI(startupInput);
     vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});

@@ -6,9 +6,9 @@
  * a kimi-code session.
  *
  * Wire-up:
- *  - A {@link KimiHarness} is constructed with the kimi-code host identity
- *    and a dedicated `uiMode: 'acp'` so downstream telemetry can
- *    distinguish ACP sessions from the TUI.
+ *  - A v2 runtime is constructed with the kimi-code host identity and a
+ *    dedicated `uiMode: 'acp'` so downstream telemetry can distinguish ACP
+ *    sessions from the TUI.
  *  - {@link runAcpServer} owns the JSON-RPC stdio bridge and redirects
  *    rogue `console.*` traffic to stderr.
  *  - `--login` pivots into the device-code login flow instead of
@@ -22,14 +22,27 @@
 import type { Command } from 'commander';
 
 import {
+  createKimiDefaultHeaders,
+  createKimiDeviceId,
+  KIMI_CODE_PROVIDER_NAME,
+} from '@moonshot-ai/kimi-code-oauth';
+import {
   ACP_BUILTIN_SLASH_COMMANDS,
   runAcpServer,
+  V2AcpHost,
   type AvailableCommand,
+  type IAcpSessionHost,
   type SlashCommandsSnapshot,
 } from '@moonshot-ai/acp-adapter';
-import { createKimiHarness, type Session, type SkillSummary } from '@moonshot-ai/kimi-code-sdk';
+import {
+  KimiAuthFacade,
+  resolveConfigPath,
+  resolveKimiHome,
+  type SkillSummary,
+} from '@moonshot-ai/kimi-code-sdk';
+import { createKimiV2Runtime } from '@moonshot-ai/kimi-code-sdk/v2';
 
-import { KIMI_CODE_HOME_ENV } from '#/constant/app';
+import { CLI_USER_AGENT_PRODUCT, KIMI_CODE_HOME_ENV } from '#/constant/app';
 import { createKimiCodeHostIdentity, getVersion } from '#/cli/version';
 import { buildSkillSlashCommands } from '#/tui/commands/skills';
 
@@ -49,11 +62,30 @@ export function registerAcpCommand(parent: Command): void {
         await runLoginFlow();
         return;
       }
-      const identity = createKimiCodeHostIdentity();
-      const harness = createKimiHarness({
+      const version = getVersion();
+      const identity = createKimiCodeHostIdentity(version);
+      const homeDir = resolveKimiHome();
+      const configPath = resolveConfigPath({ homeDir });
+      const auth = new KimiAuthFacade({
+        homeDir,
+        configPath,
         identity,
-        uiMode: 'acp',
       });
+      const runtime = await createKimiV2Runtime({
+        homeDir,
+        configPath,
+        clientVersion: version,
+        requestHeaders: createKimiDefaultHeaders({ homeDir, ...identity }),
+        telemetry: {
+          enabled: true,
+          deviceId: createKimiDeviceId(homeDir),
+          appName: CLI_USER_AGENT_PRODUCT,
+          uiMode: 'acp',
+          getAccessToken: async () =>
+            (await auth.getCachedAccessToken(KIMI_CODE_PROVIDER_NAME)) ?? null,
+        },
+      });
+      const host = new V2AcpHost(runtime);
       // Forward `KIMI_CODE_HOME` (if set) into `authMethods[0].env` so the
       // `kimi login` subprocess clients spawn for terminal-auth writes its
       // token under the same data root the ACP server reads from. Used for
@@ -83,7 +115,7 @@ export function registerAcpCommand(parent: Command): void {
       // listSkills() failure degrades to builtins-only so a broken
       // skill source never blanks the palette.
       const resolveSlashCommands = async (
-        session: Session,
+        session: IAcpSessionHost,
       ): Promise<SlashCommandsSnapshot> => {
         let skills: readonly SkillSummary[] = [];
         try {
@@ -109,8 +141,8 @@ export function registerAcpCommand(parent: Command): void {
         };
       };
       try {
-        await runAcpServer(harness, {
-          agentInfo: { name: 'Kimi Code CLI', version: getVersion() },
+        await runAcpServer(host, {
+          agentInfo: { name: 'Kimi Code CLI', version },
           slashCommands: resolveSlashCommands,
           ...(terminalAuthEnv ? { terminalAuthEnv } : {}),
           ...(legacyCommand !== undefined && legacyCommand.length > 0
@@ -118,8 +150,8 @@ export function registerAcpCommand(parent: Command): void {
             : {}),
         });
         process.exit(0);
-      } catch (err) {
-        process.stderr.write(`acp server: fatal error: ${String(err)}\n`);
+      } catch (error) {
+        process.stderr.write(`acp server: fatal error: ${String(error)}\n`);
         process.exit(1);
       }
     });

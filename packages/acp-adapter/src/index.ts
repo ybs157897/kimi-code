@@ -31,5 +31,19 @@ export {
   turnEndReasonToStopReason,
 } from './events-map';
 export type { AcpStopReason, AcpToolCallStatus, AcpToolKind } from './types';
+export type {
+  AcpCreateSessionParams,
+  AcpHost,
+  AcpImageLimits,
+  AcpListSessionsParams,
+  AcpModelEntry,
+  AcpProtocolEvent,
+  AcpResumeSessionParams,
+  AcpSessionHost,
+  AcpSessionSummary,
+} from './types';
+export type { IAcpSessionHost } from './iacp-session-host';
+export { V2AcpHost } from './v2-acp-host';
+export { V2SessionAdapter } from './v2-session-adapter';
 export { HideOutputMarker, isHideOutputMarker } from './marker';
 export { redirectConsoleToStderr } from './log-guard';

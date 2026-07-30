@@ -164,7 +164,7 @@ const route = defineRoute(
 app.post(route.path, route.options, route.handler);
 ```
 
-**For `/api/v2` (native):** add a `resource:action` entry to `actionMap` ([edge-exposure.md](edge-exposure.md) §3). If the method fails the direct-exposure rules (returns a handle / stream / bytes, takes a live object), wrap it in a wire-shaped facade first (`IAgentRPCService` / `ISessionRPCService`) and map to the facade — as `prompts:*` does via `IAgentRPCService`.
+**For `/api/v2` (native):** add a `resource:action` entry to `actionMap` ([edge-exposure.md](edge-exposure.md) §3). If an Agent-scoped method fails the direct-exposure rules (returns a handle / stream / bytes, takes a live object), wrap it in `IAgentRPCService` and map to that facade — as `prompts:*` does. Session- and App-scoped methods should use a wire-safe method on their owning domain Service and be composed through Klient, rather than adding a monolithic Session RPC facade.
 
 ### 5. Map errors
 

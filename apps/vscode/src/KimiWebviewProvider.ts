@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
-import type { KimiHarness } from "@moonshot-ai/kimi-code-sdk";
 import { Events } from "../shared/bridge";
 import { BridgeHandler } from "./bridge-handler";
+import type { VscodeHostPort } from "./runtime/v2-host";
 
 function getNonce(): string {
   const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -44,8 +44,12 @@ export class KimiWebviewProvider implements vscode.WebviewViewProvider {
     return this.bridgeHandler.dispose();
   }
 
-  get harness(): KimiHarness {
-    return this.bridgeHandler.runtime.harness;
+  get host(): VscodeHostPort {
+    return this.bridgeHandler.runtime.requireHost();
+  }
+
+  get homeDir(): string {
+    return this.bridgeHandler.runtime.homeDir;
   }
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {

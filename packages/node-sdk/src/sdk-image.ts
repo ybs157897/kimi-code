@@ -11,6 +11,12 @@
  * pathe and is the single source of truth for compression logic.
  */
 
+import { HostFileSystem } from '@moonshot-ai/agent-core-v2/os/backends/node-local/hostFsService';
+import {
+  persistOriginalImage as persistOriginalImageWithHostFs,
+  type PersistOriginalImageOptions as CorePersistOriginalImageOptions,
+} from '@moonshot-ai/agent-core-v2/agent/media/image-originals';
+
 // ── Compression (image-compress.ts) ──────────────────────────────────────
 export {
   buildImageCompressionCaption,
@@ -52,10 +58,33 @@ export {
 // ── Image originals persistence ──────────────────────────────────────────
 export {
   originalImageCacheDir,
-  persistOriginalImage,
   sessionMediaOriginalsDir,
 } from '@moonshot-ai/agent-core-v2/agent/media/image-originals';
-export type { PersistOriginalImageOptions } from '@moonshot-ai/agent-core-v2/agent/media/image-originals';
+
+export type PersistOriginalImageOptions = Omit<
+  CorePersistOriginalImageOptions,
+  'hostFs'
+>;
+
+const imageOriginalsHostFs = new HostFileSystem();
+
+/**
+ * Node SDK edge adapter for original-image persistence.
+ *
+ * The core helper requires its host filesystem port explicitly. SDK
+ * consumers get the same narrow bytes-to-path capability without receiving
+ * the engine's filesystem service or DI accessor.
+ */
+export function persistOriginalImage(
+  bytes: Uint8Array,
+  mimeType: string,
+  options: PersistOriginalImageOptions = {},
+): Promise<string | null> {
+  return persistOriginalImageWithHostFs(bytes, mimeType, {
+    ...options,
+    hostFs: imageOriginalsHostFs,
+  });
+}
 
 // ── ImageLimits class ────────────────────────────────────────────────────
 
@@ -75,16 +104,34 @@ function positiveInt(value: string | undefined): number | undefined {
  * One instance per owner (e.g. SDK client), matching the legacy pattern.
  */
 export class ImageLimits {
-  readonly maxEdgePx: number;
-  readonly readByteBudget: number;
+  private readonly env: Readonly<Record<string, string | undefined>>;
+  private config: { readonly maxEdgePx?: number; readonly readByteBudget?: number } | undefined;
 
   constructor(
     env?: Readonly<Record<string, string | undefined>>,
     config?: { readonly maxEdgePx?: number; readonly readByteBudget?: number },
   ) {
-    const e = env ?? process.env;
-    this.maxEdgePx = positiveInt(e[ENV_MAX_EDGE_KEY]) ?? config?.maxEdgePx ?? 2000;
-    this.readByteBudget = positiveInt(e[ENV_READ_BUDGET_KEY]) ?? config?.readByteBudget ?? 256 * 1024;
+    this.env = env ?? process.env;
+    this.config = config;
+  }
+
+  get maxEdgePx(): number {
+    return positiveInt(this.env[ENV_MAX_EDGE_KEY]) ?? this.config?.maxEdgePx ?? 2000;
+  }
+
+  get readByteBudget(): number {
+    return (
+      positiveInt(this.env[ENV_READ_BUDGET_KEY]) ??
+      this.config?.readByteBudget ??
+      256 * 1024
+    );
+  }
+
+  /** Refresh the owner-scoped values after a config reload. */
+  setConfig(
+    config: { readonly maxEdgePx?: number; readonly readByteBudget?: number } | undefined,
+  ): void {
+    this.config = config;
   }
 }
 

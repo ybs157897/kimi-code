@@ -13,6 +13,7 @@ import type * as vscode from "vscode";
 
 import { Methods } from "../shared/bridge";
 import { BridgeHandler } from "../src/bridge-handler";
+import type { VscodeHostPort } from "../src/runtime/v2-host";
 
 const host = vi.hoisted(() => {
   const watcher = {
@@ -102,6 +103,7 @@ beforeEach(async () => {
     vi.fn(),
     showLogs,
     writeLog,
+    host.harness as unknown as VscodeHostPort,
   );
 });
 

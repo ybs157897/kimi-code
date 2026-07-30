@@ -26,7 +26,7 @@ export interface IAcpSessionHost {
    * Optional resume state for replay.
    * May return the state synchronously or as a Promise.
    */
-  getResumeState?(): unknown | Promise<unknown>;
+  getResumeState?(): unknown;
 
   /** Per-session metadata summary (includes `sessionDir`). */
   readonly summary?: { readonly sessionDir?: string };

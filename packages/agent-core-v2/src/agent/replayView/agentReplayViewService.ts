@@ -20,6 +20,7 @@ import { IAgentSwarmService } from '#/agent/swarm/swarm';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentUsageService } from '#/agent/usage/usage';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IWireService } from '#/wire/wire';
 
 import { IAgentReplayView } from './agentReplayView';
@@ -40,6 +41,7 @@ export class AgentReplayViewService implements IAgentReplayView {
     @IAgentUsageService private readonly usage: IAgentUsageService,
     @IAgentToolRegistryService private readonly tools: IAgentToolRegistryService,
     @IAgentTaskService private readonly tasks: IAgentTaskService,
+    @ISessionTodoService private readonly todos: ISessionTodoService,
   ) {}
 
   async read(): Promise<ResumedAgentState> {
@@ -70,8 +72,7 @@ export class AgentReplayViewService implements IAgentReplayView {
       usage: this.usage.status(),
       tools: this.tools.list(),
       tasks: this.tasks.list(false),
-      // TODO(CORE-103): wire ISessionTodoService to populate typed todos
-      todos: [],
+      todos: this.todos.getTodos(),
     };
   }
 }

@@ -1,9 +1,10 @@
 import * as vscode from "vscode";
-import type { KimiHarness } from "@moonshot-ai/kimi-code-sdk";
+import type { VscodeHostPort } from "../runtime/v2-host";
 
-export async function updateLoginContext(harness: KimiHarness): Promise<boolean> {
-  const status = await harness.auth.status();
-  const loggedIn = status.providers.some((provider) => provider.hasToken);
+export async function updateLoginContext(
+  host: Pick<VscodeHostPort, "isAuthenticated">,
+): Promise<boolean> {
+  const loggedIn = await host.isAuthenticated();
   await vscode.commands.executeCommand("setContext", "kimi.isLoggedIn", loggedIn);
   return loggedIn;
 }

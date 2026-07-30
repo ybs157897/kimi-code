@@ -60,7 +60,9 @@ function makeHarnessWithToken(hasToken: boolean): KimiHarness {
   } as unknown as KimiHarness;
 }
 
-function configuredModelConfig(provider: KimiConfig['providers'][string]): KimiConfig {
+function configuredModelConfig(
+  provider: NonNullable<KimiConfig['providers']>[string],
+): KimiConfig {
   return {
     providers: { local: provider },
     defaultModel: 'local/gpt',

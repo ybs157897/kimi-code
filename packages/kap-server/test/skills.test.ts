@@ -17,8 +17,8 @@
  * `POST /sessions` is already activated (live), so listing/activation work
  * immediately; the "not activated" branch is exercised by archiving the session
  * (it stays in the index but leaves the live map). Workspace skills are scanned
- * session-less from the workspace root via the edge composition in
- * `routes/skills.ts`, which must match the session listing for the same cwd.
+ * session-less from the workspace root through the App-scoped workspace skill
+ * catalog, which must match the session listing for the same cwd.
  */
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';

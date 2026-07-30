@@ -24,4 +24,8 @@ export const sessionCronContract = {
     input: z.tuple([]),
     output: z.number().nullable(),
   },
+  getNextFireForTask: {
+    input: z.tuple([z.string()]),
+    output: z.number().nullable(),
+  },
 } satisfies ServiceContract;

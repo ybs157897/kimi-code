@@ -195,7 +195,7 @@ export interface KimiTUIStartupInput {
   readonly migrationPlan?: MigrationPlan | null;
   /** When true, run only the migration screen, then exit (the `kimi migrate` command). */
   readonly migrateOnly?: boolean;
-  readonly runtime?: TUIRuntime;
+  readonly runtime: TUIRuntime;
   readonly runtimeEnvironment?: RuntimeEnvironmentPort;
   readonly runtimeTelemetry?: RuntimeTelemetryPort;
   readonly sessionControl?: SessionControlPort;
@@ -406,11 +406,7 @@ export class KimiTUI {
   }
 
   constructor(startupInput: KimiTUIStartupInput) {
-    const runtime = startupInput.runtime;
-    if (runtime === undefined) {
-      throw new Error('KimiTUI requires a TUI runtime.');
-    }
-    this.runtime = runtime;
+    this.runtime = startupInput.runtime;
     this.runtimeEnvironment = startupInput.runtimeEnvironment ?? this.runtime.environment;
     this.runtimeTelemetry = startupInput.runtimeTelemetry ?? this.runtime.telemetry;
     this.sessionControl = startupInput.sessionControl ?? this.runtime.sessionControl;
@@ -1754,7 +1750,9 @@ export class KimiTUI {
   }
 
   async requestApprovalResponse(request: ApprovalRequest): Promise<ApprovalResponse> {
-    return createApprovalRequestHandler(this.approvalController)(request);
+    return createApprovalRequestHandler(this.approvalController)(
+      request as unknown as Parameters<ReturnType<typeof createApprovalRequestHandler>>[0],
+    );
   }
 
   async requestQuestionResponse(request: QuestionRequest): Promise<QuestionResult> {

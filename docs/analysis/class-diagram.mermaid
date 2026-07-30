@@ -1,0 +1,359 @@
+classDiagram
+    %% ========== 基础模型 ==========
+    class BaseModel {
+        <<abstract>>
+        +int id
+        +datetime created_at
+        +datetime updated_at
+    }
+
+    %% ========== 用户域 ==========
+    class User {
+        +int id
+        +str username
+        +str password_hash
+        +str email
+        +str phone
+        +UserRole role
+        +UserStatus status
+        +datetime last_login_at
+        +register()
+        +login() -> TokenPair
+        +refresh_token() -> TokenPair
+    }
+
+    class UserRole {
+        <<enumeration>>
+        BUYER
+        SELLER
+        ADMIN
+    }
+
+    class Address {
+        +int id
+        +int user_id
+        +str province
+        +str city
+        +str district
+        +str detail
+        +str receiver_name
+        +str receiver_phone
+        +bool is_default
+    }
+
+    %% ========== 商品域 ==========
+    class Category {
+        +int id
+        +str name
+        +int parent_id
+        +int level
+        +int sort_order
+    }
+
+    class Brand {
+        +int id
+        +str name
+        +str logo_url
+        +str description
+    }
+
+    class Product {
+        +int id
+        +int category_id
+        +int brand_id
+        +int shop_id
+        +str title
+        +str description
+        +ProductStatus status
+        +str main_image
+        +list~str~ images
+        +list~SkuVO~ sku_list
+        +on_shelf()
+        +off_shelf()
+        +get_detail() -> ProductDetail
+    }
+
+    class ProductStatus {
+        <<enumeration>>
+        DRAFT
+        PENDING_REVIEW
+        ON_SHELF
+        OFF_SHELF
+        REJECTED
+    }
+
+    class SKU {
+        +int id
+        +int product_id
+        +str attrs_json  "{\"颜色\": \"红色\", \"尺寸\": \"M\"}"
+        +Decimal price
+        +int available_stock
+        +int locked_stock
+        +int sold_stock
+        +str sku_code
+        +str image_url
+        +Decimal weight
+    }
+
+    %% ========== 购物车域 ==========
+    class Cart {
+        +int id
+        +int user_id
+        +list~CartItem~ items
+        +add_item(sku_id, quantity)
+        +remove_item(sku_id)
+        +update_quantity(sku_id, quantity)
+        +clear()
+        +merge_cart(guest_cart)  "登录时合并"
+    }
+
+    class CartItem {
+        +int id
+        +int cart_id
+        +int sku_id
+        +int quantity
+        +bool selected
+    }
+
+    %% ========== 订单域 ==========
+    class Order {
+        +int id
+        +str order_no
+        +int user_id
+        +int shop_id
+        +int address_id
+        +OrderStatus status
+        +Decimal total_amount
+        +Decimal discount_amount
+        +Decimal freight_amount
+        +Decimal pay_amount
+        +str buyer_message
+        +datetime paid_at
+        +datetime shipped_at
+        +datetime completed_at
+        +create_from_cart()
+        +cancel()
+        +pay_success()
+        +ship()
+        +confirm_receive()
+    }
+
+    class OrderStatus {
+        <<enumeration>>
+        PENDING_PAYMENT
+        PENDING_SHIPMENT
+        SHIPPED
+        RECEIVED
+        COMPLETED
+        CANCELLED
+        REFUNDING
+        REFUNDED
+    }
+
+    class OrderItem {
+        +int id
+        +int order_id
+        +int sku_id
+        +str sku_attrs
+        +str product_title
+        +str product_image
+        +Decimal price
+        +int quantity
+        +Decimal subtotal
+    }
+
+    class OrderLog {
+        +int id
+        +int order_id
+        +OrderStatus from_status
+        +OrderStatus to_status
+        +str operator
+        +str remark
+    }
+
+    %% ========== 支付域 ==========
+    class Payment {
+        +int id
+        +str pay_no
+        +int order_id
+        +Decimal amount
+        +PayChannel channel
+        +PayStatus status
+        +str channel_trade_no
+        +datetime paid_at
+        +process_callback(channel_data)
+    }
+
+    class PayChannel {
+        <<enumeration>>
+        ALIPAY
+        WECHAT_PAY
+    }
+
+    class PayStatus {
+        <<enumeration>>
+        PENDING
+        PAID
+        FAILED
+        REFUNDING
+        REFUNDED
+    }
+
+    class AbstractPaymentGateway {
+        <<interface>>
+        +create_payment(order) -> PaymentForm
+        +process_callback(data) -> PaymentResult
+        +refund(payment) -> RefundResult
+        +query_status(pay_no) -> PayStatus
+    }
+
+    %% ========== 库存域 ==========
+    class InventoryChange {
+        +int id
+        +int sku_id
+        +InventoryChangeType change_type
+        +int quantity
+        +str order_no
+        +str remark
+    }
+
+    class InventoryChangeType {
+        <<enumeration>>
+        ORDER_LOCK
+        PAYMENT_DEDUCT
+        CANCEL_UNLOCK
+        REFUND_RESTORE
+        MANUAL_ADJUST
+    }
+
+    %% ========== 物流域 ==========
+    class Logistics {
+        +int id
+        +int order_id
+        +str company_code
+        +str company_name
+        +str logistics_no
+        +LogisticsStatus status
+        +list~LogisticsTrack~ tracks
+    }
+
+    class LogisticsTrack {
+        +int id
+        +int logistics_id
+        +str content
+        +datetime track_time
+    }
+
+    class LogisticsStatus {
+        <<enumeration>>
+        PENDING_PICKUP
+        IN_TRANSIT
+        DELIVERED
+        SIGNED
+    }
+
+    %% ========== 促销域 ==========
+    class Coupon {
+        +int id
+        +str name
+        +CouponType type
+        +Decimal threshold
+        +Decimal discount
+        +int total_stock
+        +int used_count
+        +datetime valid_from
+        +datetime valid_until
+    }
+
+    class CouponType {
+        <<enumeration>>
+        FIXED_DISCOUNT     "满 X 减 Y"
+        PERCENT_DISCOUNT   "折扣券"
+        FREE_SHIPPING      "免运费券"
+    }
+
+    class UserCoupon {
+        +int id
+        +int user_id
+        +int coupon_id
+        +UserCouponStatus status
+        +datetime used_at
+        +int order_id
+    }
+
+    class UserCouponStatus {
+        <<enumeration>>
+        UNUSED
+        USED
+        EXPIRED
+    }
+
+    class Activity {
+        +int id
+        +str name
+        +ActivityType type
+        +datetime start_time
+        +datetime end_time
+        +str rule_json  "规则 DSL JSON"
+    }
+
+    class ActivityType {
+        <<enumeration>>
+        FLASH_SALE
+        GROUP_BUY
+        FULL_REDUCTION
+    }
+
+    %% ========== 评价域 ==========
+    class Review {
+        +int id
+        +int user_id
+        +int product_id
+        +int order_id
+        +int rating
+        +str content
+        +list~str~ images
+        +ReviewStatus status
+        +ReviewReply reply
+    }
+
+    class ReviewReply {
+        +int id
+        +int review_id
+        +str content
+    }
+
+    class ReviewStatus {
+        <<enumeration>>
+        PENDING
+        APPROVED
+        HIDDEN
+    }
+
+    %% ========== 关联关系 ==========
+    User "1" --> "N" Address : has
+    User "1" --> "N" Order : places
+    User "1" --> "1" Cart : owns
+    User "1" --> "N" Review : writes
+    User "N" --> "N" Coupon : via UserCoupon
+
+    Product "1" --> "1" Category : belongs_to
+    Product "1" --> "1" Brand : belongs_to
+    Product "1" --> "N" SKU : has
+
+    Cart "1" --> "N" CartItem : contains
+    CartItem "1" --> "1" SKU : references
+
+    Order "1" --> "N" OrderItem : contains
+    Order "1" --> "N" OrderLog : logs
+    OrderItem "1" --> "1" SKU : references
+
+    Payment "N" --> "1" Order : for
+    Payment "1" --> "1" AbstractPaymentGateway : uses
+
+    SKU "1" --> "N" InventoryChange : records
+
+    Order "1" --> "1" Logistics : ships_via
+    Logistics "1" --> "N" LogisticsTrack : has
+
+    Review "1" --> "1" ReviewReply : has

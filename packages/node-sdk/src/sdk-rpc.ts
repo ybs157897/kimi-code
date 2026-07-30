@@ -12,17 +12,17 @@ export interface RPCCallOptions {
 
 export type RPCMethods<T> = {
   [K in keyof T]: T[K] extends (payload: infer Payload) => infer Return
-    ? (payload: Payload, options?: RPCCallOptions) => Promise<Return>
+    ? (payload: Payload, options?: RPCCallOptions) => Promise<Awaited<Return>>
     : never;
 };
 
 export type PromisableMethods<T> = {
   [K in keyof T]: T[K] extends (...args: infer Args) => infer Return
-    ? (...args: Args) => Promise<Return>
+    ? (...args: Args) => Awaited<Return> | PromiseLike<Awaited<Return>>
     : never;
 };
 
-export type RPCClient<Self extends Record<string, any>, Other extends Record<string, any>> = (
+export type RPCClient<Self extends object, Other extends object> = (
   self: PromisableMethods<Self>,
 ) => Promise<RPCMethods<Other>>;
 
@@ -31,6 +31,7 @@ export type RPCClient<Self extends Record<string, any>, Other extends Record<str
 class ControlledPromise<T> {
   readonly promise: Promise<T>;
   private _resolve!: (value: T | PromiseLike<T>) => void;
+  private settled = false;
 
   constructor() {
     this.promise = new Promise<T>((resolve) => {
@@ -39,31 +40,54 @@ class ControlledPromise<T> {
   }
 
   resolve(value: T | PromiseLike<T>): void {
+    if (this.settled) return;
+    this.settled = true;
     this._resolve(value);
   }
 }
 
+type RpcCallable = (payload: unknown) => unknown;
+type WrappedRpcCallable = (
+  payload: unknown,
+  options?: RPCCallOptions,
+) => Promise<unknown>;
+
+function isRpcCallable(value: unknown): value is RpcCallable {
+  return typeof value === 'function';
+}
+
 /**
- * Deep-map the own-function properties of an object, wrapping each with
- * JSON round-trip simulation + error handling, matching the legacy
- * agent-core semantics.
+ * Map callable own and prototype properties, wrapping each with a JSON
+ * round-trip simulation. Class-backed RPC implementations put their methods
+ * on the prototype, so stopping at own properties silently produced an empty
+ * RPC surface.
  */
-function mapRpcFunctions<T extends Record<string, any>>(obj: T): RPCMethods<T> {
-  const result: Record<string, any> = {};
-  for (const key of Object.getOwnPropertyNames(obj)) {
-    const val = (obj as Record<string, any>)[key];
-    if (typeof val !== 'function') continue;
-    if (key === 'constructor') continue;
-    result[key] = wrapRpcFunction(val);
+function mapRpcFunctions<T extends object>(obj: PromisableMethods<T>): RPCMethods<T> {
+  const result: Record<PropertyKey, WrappedRpcCallable> = {};
+  const visited = new Set<PropertyKey>();
+  let current: object | null = obj;
+
+  while (current !== null && current !== Object.prototype) {
+    for (const key of Reflect.ownKeys(current)) {
+      if (key === 'constructor' || visited.has(key)) continue;
+      visited.add(key);
+
+      const value: unknown = Reflect.get(obj, key);
+      if (!isRpcCallable(value)) continue;
+      result[key] = wrapRpcFunction(value, obj);
+    }
+    current = Reflect.getPrototypeOf(current);
   }
+
   return result as RPCMethods<T>;
 }
 
-function wrapRpcFunction(fn: Function): (payload: any, options?: RPCCallOptions) => Promise<any> {
-  return async (payload: any, options?: RPCCallOptions) => {
+function wrapRpcFunction(fn: RpcCallable, receiver: object): WrappedRpcCallable {
+  return async (payload: unknown, options?: RPCCallOptions) => {
     options?.signal?.throwIfAborted();
     const rpcPayload = await simulateNetwork(payload);
-    const result = await fn(rpcPayload);
+    options?.signal?.throwIfAborted();
+    const result = await Reflect.apply(fn, receiver, [rpcPayload]);
     return simulateNetwork(result);
   };
 }
@@ -71,12 +95,12 @@ function wrapRpcFunction(fn: Function): (payload: any, options?: RPCCallOptions)
 function simulateNetwork<T>(data: T): Promise<T> {
   return new Promise((resolve) => {
     setTimeout(() => {
+      let cloned = data;
       try {
         const serialized = JSON.stringify(data);
-        resolve(serialized === undefined ? (undefined as T) : JSON.parse(serialized));
-      } catch {
-        resolve(data);
-      }
+        cloned = serialized === undefined ? (undefined as T) : JSON.parse(serialized) as T;
+      } catch {}
+      resolve(cloned);
     }, 0);
   });
 }
@@ -87,7 +111,7 @@ function simulateNetwork<T>(data: T): Promise<T> {
  * Returns two callbacks: the first wires up the left side implementation and
  * returns a proxy for the right side; the second does the reverse.
  */
-export function createRPC<Left extends Record<string, any>, Right extends Record<string, any>>(): [
+export function createRPC<Left extends object, Right extends object>(): [
   RPCClient<Left, Right>,
   RPCClient<Right, Left>,
 ] {
@@ -106,8 +130,5 @@ export function createRPC<Left extends Record<string, any>, Right extends Record
     return mapRpcFunctions(leftImpl);
   }
 
-  return [
-    leftClient as unknown as RPCClient<Left, Right>,
-    rightClient as unknown as RPCClient<Right, Left>,
-  ];
+  return [leftClient, rightClient];
 }

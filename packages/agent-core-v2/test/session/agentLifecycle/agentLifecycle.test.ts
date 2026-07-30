@@ -515,6 +515,48 @@ describe('AgentLifecycleService', () => {
     expect(second.id).toBe('agent-3');
   });
 
+  it('restore returns undefined when session metadata has no matching agent', async () => {
+    const svc = ix.get(IAgentLifecycleService);
+
+    await expect(svc.restore('missing-agent')).resolves.toBeUndefined();
+    expect(registerAgent).not.toHaveBeenCalled();
+  });
+
+  it('restore materializes a persisted agent without rewriting its metadata', async () => {
+    ix.stub(ISessionMetadata, {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChangeMetadata: () => ({ dispose: () => {} }),
+      read: () =>
+        Promise.resolve({
+          id: 'sess_test',
+          createdAt: 0,
+          updatedAt: 0,
+          archived: false,
+          agents: {
+            'agent-7': {
+              homedir: '/tmp/kimi-agentLifecycle-test/agents/agent-7',
+              type: 'sub',
+              parentAgentId: 'main',
+              forkedFrom: 'main',
+              labels: { swarmItem: 'persisted-item' },
+            },
+          },
+        }),
+      update: () => Promise.resolve(),
+      setTitle: () => Promise.resolve(),
+      setArchived: () => Promise.resolve(),
+      registerAgent,
+    });
+    const svc = ix.get(IAgentLifecycleService);
+
+    const restored = await svc.restore('agent-7');
+
+    expect(restored?.id).toBe('agent-7');
+    expect(svc.get('agent-7')).toBe(restored);
+    expect(registerAgent).not.toHaveBeenCalled();
+  });
+
   it('seeds each agent scope with a telemetry view bound to its own agent id', async () => {
     const records: TelemetryRecord[] = [];
     ix.stub(ITelemetryService, recordingTelemetry(records));

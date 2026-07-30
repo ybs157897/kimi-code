@@ -19,6 +19,18 @@ export const createSessionOptionsSchema = z.object({
   additionalDirs: z.array(z.string()).optional(),
   mcpServers: z.record(z.string(), mcpServerConfigSchema).optional(),
   mainAgentBinding: bindAgentInputSchema.optional(),
+  title: z.string().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const resumeSessionOptionsSchema = z.object({
+  additionalDirs: z.array(z.string()).optional(),
+  mcpServers: z.record(z.string(), mcpServerConfigSchema).optional(),
+});
+
+export const deleteSessionOptionsSchema = z.object({
+  workspaceId: z.string(),
+  sessionId: z.string(),
 });
 
 export const forkSessionOptionsSchema = z.object({
@@ -26,6 +38,7 @@ export const forkSessionOptionsSchema = z.object({
   newSessionId: z.string().optional(),
   title: z.string().optional(),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  userVisibleTurnIndex: z.number().int().nonnegative().optional(),
 });
 
 /** Same fields as `ForkSessionOptions` in the engine — keep in sync. */
@@ -39,10 +52,17 @@ export const handleWireSchema = z.looseObject({
 
 export const sessionLifecycleContract = {
   create: { input: z.tuple([createSessionOptionsSchema]), output: handleWireSchema },
-  resume: { input: z.tuple([z.string()]), output: maybe(handleWireSchema) },
+  resume: {
+    input: z.tuple([z.string(), resumeSessionOptionsSchema.optional()]),
+    output: maybe(handleWireSchema),
+  },
   close: { input: z.tuple([z.string()]), output: noResult },
+  delete: { input: z.tuple([deleteSessionOptionsSchema]), output: noResult },
   archive: { input: z.tuple([z.string()]), output: noResult },
-  restore: { input: z.tuple([z.string()]), output: maybe(handleWireSchema) },
+  restore: {
+    input: z.tuple([z.string(), resumeSessionOptionsSchema.optional()]),
+    output: maybe(handleWireSchema),
+  },
   fork: { input: z.tuple([forkSessionOptionsSchema]), output: handleWireSchema },
   createChild: { input: z.tuple([createChildSessionOptionsSchema]), output: handleWireSchema },
 } satisfies ServiceContract;

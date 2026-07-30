@@ -30,11 +30,8 @@ export type ChannelLookup = (name: string) => ServiceIdentifier<unknown> | undef
 
 /**
  * Resolve the scope a request targets. Throws `Error2` when the referenced
- * session or agent does not exist — `session.not_found` for a missing session,
- * `agent.not_found` when the session exists but the agent scope is not
- * materialized (e.g. a subagent created before the last server restart or
- * session close: its metadata registry entry and wire log persist, but
- * `resume` only re-materializes the main agent).
+ * session or agent does not exist — `session.not_found` for a missing session
+ * and `agent.not_found` when no durable agent registration exists.
  */
 export async function resolveScope(
   core: Scope,
@@ -60,7 +57,8 @@ export async function resolveScope(
         throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} not found`);
       }
       if (agentId === MAIN_AGENT_ID) return ensureMainAgent(session);
-      const agent = session.accessor.get(IAgentLifecycleService).get(agentId);
+      const lifecycle = session.accessor.get(IAgentLifecycleService);
+      const agent = lifecycle.get(agentId) ?? await lifecycle.restore(agentId);
       if (agent === undefined) {
         throw new Error2(
           ErrorCodes.AGENT_NOT_FOUND,

@@ -85,7 +85,8 @@ export class SessionExportService implements ISessionExportService {
     return exportSessionDirectory({
       request: input,
       summary: liveSummary,
-      globalLogPath: resolveGlobalLogPath(this.bootstrap.homeDir),
+      globalLogPath:
+        options.globalLogPath ?? resolveGlobalLogPath(this.bootstrap.homeDir),
       desktopLogPath:
         input.includeDesktopLog === true
           ? join(this.bootstrap.homeDir, 'logs', 'kimi-code-desktop.log')
@@ -287,20 +288,10 @@ async function openOptionalZipSource(
 ): Promise<ZipSource | undefined> {
   try {
     return await openZipSource(path, signal);
-  } catch (error) {
+  } catch {
     signal?.throwIfAborted();
-    if (isMissingPath(error)) return undefined;
-    throw error;
+    return undefined;
   }
-}
-
-function isMissingPath(error: unknown): boolean {
-  return (
-    typeof error === 'object' &&
-    error !== null &&
-    'code' in error &&
-    (error as NodeJS.ErrnoException).code === 'ENOENT'
-  );
 }
 
 registerScopedService(

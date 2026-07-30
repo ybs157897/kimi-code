@@ -2,14 +2,18 @@
  * `kimi login`
  *
  * Verifies that the login sub-command is registered on the program and
- * that the action drives `harness.auth.login`, prints the device code to
+ * that the action drives the host auth facade, prints the device code to
  * stderr, and exits with the right code on success / failure.
  */
 
 import { Command } from 'commander';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { registerLoginCommand } from '#/cli/sub/login';
+import { openUrl } from '#/utils/open-url';
+
 const mockLogin = vi.fn();
+const mockAuthConstructor = vi.fn();
 
 vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
   const actual = await vi.importActual<typeof import('@moonshot-ai/kimi-code-sdk')>(
@@ -17,20 +21,19 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
   );
   return {
     ...actual,
-    createKimiHarness: vi.fn(() => ({
-      auth: {
-        login: mockLogin,
-      },
-    })),
+    resolveKimiHome: vi.fn(() => '/tmp/kimi-login-home'),
+    resolveConfigPath: vi.fn(() => '/tmp/kimi-login-home/config.toml'),
+    KimiAuthFacade: class {
+      readonly login = mockLogin;
+
+      constructor(...args: unknown[]) {
+        mockAuthConstructor(...args);
+      }
+    },
   };
 });
 
 vi.mock('#/utils/open-url', () => ({ openUrl: vi.fn() }));
-
-import { createKimiHarness } from '@moonshot-ai/kimi-code-sdk';
-
-import { registerLoginCommand } from '#/cli/sub/login';
-import { openUrl } from '#/utils/open-url';
 
 class ExitCalled extends Error {
   constructor(public code: number | string | null | undefined) {
@@ -44,8 +47,8 @@ describe('kimi login', () => {
 
   beforeEach(() => {
     mockLogin.mockReset();
+    mockAuthConstructor.mockClear();
     vi.mocked(openUrl).mockReset();
-    vi.mocked(createKimiHarness).mockClear();
     exitSpy = vi.spyOn(process, 'exit').mockImplementation(((code?: number | string | null) => {
       throw new ExitCalled(code);
     }) as never);
@@ -66,7 +69,7 @@ describe('kimi login', () => {
     expect(login?.description()).toMatch(/[Aa]uthenticat/);
   });
 
-  it('invokes harness.auth.login and exits 0 on success', async () => {
+  it('invokes the host auth facade and exits 0 on success', async () => {
     mockLogin.mockResolvedValue({ providerName: 'kimi-code', ok: true });
 
     const program = new Command('kimi').exitOverride();
@@ -82,6 +85,11 @@ describe('kimi login', () => {
         onDeviceCode: expect.any(Function),
       }),
     );
+    expect(mockAuthConstructor).toHaveBeenCalledWith({
+      homeDir: '/tmp/kimi-login-home',
+      configPath: '/tmp/kimi-login-home/config.toml',
+      identity: expect.any(Object),
+    });
     expect(exitSpy).toHaveBeenCalledWith(0);
   });
 

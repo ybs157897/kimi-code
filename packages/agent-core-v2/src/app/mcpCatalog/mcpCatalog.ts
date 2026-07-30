@@ -1,5 +1,5 @@
 /**
- * `mcpCatalog` domain (L3) — App-scoped MCP server catalog CRUD contract.
+ * `mcpCatalog` domain (L5) — App-scoped MCP server catalog CRUD contract.
  *
  * Defines `IMcpCatalogService` for managing the user-level MCP server catalog
  * (the `mcp.json` file at the Kimi home directory). Read merges user, project-

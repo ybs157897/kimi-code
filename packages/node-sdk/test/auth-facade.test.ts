@@ -1,3 +1,9 @@
+/**
+ * Scenario: root SDK authentication remains compatible on the v2 runtime.
+ * Responsibilities: OAuth config, token lifecycle, usage, and feedback contracts.
+ * Wiring: real SDK/Core config and token storage with mocked HTTP endpoints.
+ * Run: pnpm exec vitest run test/auth-facade.test.ts
+ */
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +21,11 @@ import {
 } from '@moonshot-ai/kimi-code-oauth';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { createKimiHarness, ErrorCodes, KimiError } from '#/index';
+import {
+  createKimiHarness as createHarness,
+  ErrorCodes,
+  KimiError,
+} from '#/index';
 
 import { TEST_IDENTITY } from './test-identity';
 
@@ -31,6 +41,15 @@ function resolveProviderConfig(config: Record<string, unknown>, model: string): 
 }
 
 let homeDir: string;
+const activeHarnesses = new Set<ReturnType<typeof createHarness>>();
+
+function createKimiHarness(
+  options: Parameters<typeof createHarness>[0],
+): ReturnType<typeof createHarness> {
+  const harness = createHarness(options);
+  activeHarnesses.add(harness);
+  return harness;
+}
 
 type FetchMock = (
   input: Parameters<typeof fetch>[0],
@@ -61,6 +80,8 @@ beforeEach(async () => {
 afterEach(async () => {
   vi.unstubAllGlobals();
   vi.unstubAllEnvs();
+  await Promise.all([...activeHarnesses].map((harness) => harness.close()));
+  activeHarnesses.clear();
   await rm(homeDir, { recursive: true, force: true });
 });
 
@@ -106,7 +127,7 @@ describe('KimiHarness.auth', () => {
         const error = await harness.auth
           .resolveOAuthTokenProvider(KIMI_CODE_PROVIDER_NAME)
           .getAccessToken()
-          .catch((caught: unknown) => caught);
+          .catch((error: unknown) => error);
 
         expect(error).toBeInstanceOf(KimiError);
         expect(error).toMatchObject({

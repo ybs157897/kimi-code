@@ -16,11 +16,19 @@ export interface McpProbeResult {
   readonly error?: string;
 }
 
+export interface McpProbeOptions {
+  readonly cwd?: string;
+}
+
 export interface IMcpProbeService {
   readonly _serviceBrand: undefined;
 
   /** Test connectivity to a single MCP server. Always cleans up. */
-  probe(serverName: string, config: McpServerConfig): Promise<McpProbeResult>;
+  probe(
+    serverName: string,
+    config: McpServerConfig,
+    options?: McpProbeOptions,
+  ): Promise<McpProbeResult>;
 }
 
 export const IMcpProbeService: ServiceIdentifier<IMcpProbeService> =

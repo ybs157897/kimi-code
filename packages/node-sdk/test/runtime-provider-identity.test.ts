@@ -32,6 +32,12 @@ function resolveRuntimeProvider(options: {
     throw new Error(`Provider "${providerName}" not found in config`);
   }
   const capabilities = modelAlias.capabilities;
+  const identityHeaders =
+    providerConfig.type === 'kimi'
+      ? options.kimiRequestHeaders
+      : options.kimiRequestHeaders?.['User-Agent'] === undefined
+        ? undefined
+        : { 'User-Agent': options.kimiRequestHeaders['User-Agent'] };
   return {
     providerName,
     model,
@@ -39,8 +45,8 @@ function resolveRuntimeProvider(options: {
       ...providerConfig,
       model,
       defaultHeaders: {
-        ...(options.kimiRequestHeaders ?? {}),
-        ...(providerConfig['customHeaders'] as Record<string, string> | undefined ?? {}),
+        ...identityHeaders,
+        ...providerConfig.customHeaders,
       },
       modelCapabilities: {
         tool_use: capabilities?.includes('tool_use') ?? false,

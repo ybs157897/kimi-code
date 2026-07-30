@@ -1,5 +1,5 @@
 import { ErrorCodes, KimiError } from '#/sdk-errors';
-import { createRPC, type RPCMethods, type PromisableMethods } from '#/sdk-rpc';
+import { createRPC, type RPCMethods } from '#/sdk-rpc';
 import { parseConfigString } from '#/sdk-config';
 import { resolveConfigPath } from '#/sdk-paths';
 import { z } from 'zod';
@@ -56,7 +56,7 @@ export class KimiConfigRpcClient implements KimiConfigRpc {
 
   constructor() {
     const [coreRpc, clientRpc] = createRPC<KimiConfigCoreRpc, KimiConfigClientRpc>();
-    void coreRpc(new KimiConfigCoreRpcImpl() as unknown as PromisableMethods<KimiConfigCoreRpc>);
+    void coreRpc(new KimiConfigCoreRpcImpl());
     this.ready = clientRpc({});
   }
 

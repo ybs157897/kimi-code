@@ -1,8 +1,8 @@
 /**
  * In-process dispatcher — resolves a wire triple `(service, method, args)`
  * against a live engine scope and mirrors kap-server's dispatcher semantics
- * (reflection call, non-function members are property reads, `main` agent
- * auto-materialized via `ensureMainAgent`). Scope routing walks
+ * (reflection call, non-function members are property reads, persisted agents
+ * materialized through `agentLifecycle`). Scope routing walks
  * `ISessionLifecycleService` / `IAgentLifecycleService` exactly like the
  * server's `resolveScope`. Every argument, result, and event payload passes
  * through `wireClone` (a JSON round-trip), so consumers observe
@@ -60,7 +60,7 @@ interface ResolvedScope {
 }
 
 export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
-  /** Mirrors kap-server's `resolveScope`, incl. main-agent materialization. */
+  /** Mirrors kap-server's `resolveScope`, including persisted-agent materialization. */
   async function resolveScope(scope: ScopeRef): Promise<ResolvedScope> {
     if (scope.sessionId === undefined) return { kind: 'core', like: root };
     const session = root.accessor.get(ISessionLifecycleService).get(scope.sessionId);
@@ -71,7 +71,8 @@ export function createMemoryDispatcher(root: ScopeLike): MemoryDispatcher {
     if (scope.agentId === 'main') {
       return { kind: 'agent', like: await ensureMainAgent(session) };
     }
-    const agent = session.accessor.get(IAgentLifecycleService).get(scope.agentId);
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    const agent = lifecycle.get(scope.agentId) ?? await lifecycle.restore(scope.agentId);
     if (agent === undefined) {
       throw new RPCError(NOT_FOUND, `agent not found: ${scope.agentId}`);
     }

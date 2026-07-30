@@ -17,6 +17,10 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IFlagService } from '#/app/flag/flag';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { FileSessionIndex } from '#/app/sessionIndex/sessionIndexService';
+import {
+  ISessionDeletionStore,
+  type SessionDeletionIntent,
+} from '#/app/sessionStore/sessionDeletionStore';
 import { MiniDbQueryStore } from '#/persistence/backends/minidb/miniDbQueryStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
@@ -31,6 +35,27 @@ import { stubQueryStore } from '../../persistence/interface/stubs';
 
 const WORK_DIR = '/home/user/repo';
 const SESSION_COLLECTION = 'session';
+
+function deletionStoreStub(
+  intents: readonly SessionDeletionIntent[] = [],
+): ISessionDeletionStore {
+  const byId = new Map(intents.map((intent) => [intent.sessionId, intent]));
+  return {
+    _serviceBrand: undefined,
+    begin: async (input) => {
+      byId.set(input.sessionId, { ...input, state: 'pending' });
+    },
+    complete: async (input) => {
+      byId.set(input.sessionId, { ...input, state: 'completed' });
+    },
+    clear: async (sessionId) => {
+      byId.delete(sessionId);
+    },
+    get: async (sessionId) => byId.get(sessionId),
+    list: async () => [...byId.values()],
+    listPending: async () => [...byId.values()].filter((intent) => intent.state === 'pending'),
+  };
+}
 
 describe('FileSessionIndex (legacy)', () => {
   let homeDir: string;
@@ -58,7 +83,7 @@ describe('FileSessionIndex (legacy)', () => {
     await fsp.rm(homeDir, { recursive: true, force: true });
   });
 
-  function build(): ISessionIndex {
+  function build(deletions: ISessionDeletionStore = deletionStoreStub()): ISessionIndex {
     const fileStorage = new FileStorageService(homeDir);
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
@@ -67,6 +92,7 @@ describe('FileSessionIndex (legacy)', () => {
       stubPair(IQueryStore, stubQueryStore()),
       stubPair(IFlagService, stubFlag(false)),
       stubPair(ILogService, stubLog()),
+      stubPair(ISessionDeletionStore, deletions),
     ]);
     disposeHost = () => {
       host.dispose();
@@ -233,6 +259,25 @@ describe('FileSessionIndex (legacy)', () => {
     expect(await store.countActive([workspaceId, otherId])).toBe(2);
     expect(await store.countActive([otherId])).toBe(1);
   });
+
+  it('hides pending and completed hard-delete tombstones from disk queries', async () => {
+    await seedSession('pending', {});
+    await seedSession('completed', {});
+    await seedSession('visible', {});
+    const store = build(
+      deletionStoreStub([
+        { workspaceId, sessionId: 'pending', state: 'pending' },
+        { workspaceId, sessionId: 'completed', state: 'completed' },
+      ]),
+    );
+
+    expect((await store.list({ workspaceIds: [workspaceId] })).items.map((item) => item.id)).toEqual([
+      'visible',
+    ]);
+    await expect(store.get('pending')).resolves.toBeUndefined();
+    await expect(store.get('completed')).resolves.toBeUndefined();
+    await expect(store.countActive([workspaceId])).resolves.toBe(1);
+  });
 });
 
 describe('FileSessionIndex (read model)', () => {
@@ -269,7 +314,7 @@ describe('FileSessionIndex (read model)', () => {
     await fsp.rm(homeDir, { recursive: true, force: true });
   });
 
-  function build(): ISessionIndex {
+  function build(deletions: ISessionDeletionStore = deletionStoreStub()): ISessionIndex {
     const fileStorage = new FileStorageService(homeDir);
     const host = createScopedTestHost([
       stubPair(IFileSystemStorageService, fileStorage),
@@ -277,6 +322,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
       stubPair(IFlagService, stubFlag(true)),
+      stubPair(ISessionDeletionStore, deletions),
     ]);
     disposeHost = () => {
       host.dispose();
@@ -329,6 +375,17 @@ describe('FileSessionIndex (read model)', () => {
     await queryStore.put(SESSION_COLLECTION, 'warm', summary('warm', { title: 'cached' }));
     const got = await store.get('warm');
     expect(got?.title).toBe('cached');
+  });
+
+  it('hides a tombstoned session even when the read model still has a cached row', async () => {
+    const store = build(
+      deletionStoreStub([
+        { workspaceId, sessionId: 'warm', state: 'pending' },
+      ]),
+    );
+    await queryStore.put(SESSION_COLLECTION, 'warm', summary('warm', { title: 'cached' }));
+
+    await expect(store.get('warm')).resolves.toBeUndefined();
   });
 
   it('list filters by childOf from the read model', async () => {
@@ -416,6 +473,7 @@ describe('FileSessionIndex (read model)', () => {
       stubPair(IQueryStore, lockedStore),
       stubPair(ILogService, log),
       stubPair(IFlagService, stubFlag(true)),
+      stubPair(ISessionDeletionStore, deletionStoreStub()),
     ]);
     disposeHost = () => { host.dispose(); };
     const store = host.app.accessor.get(ISessionIndex);

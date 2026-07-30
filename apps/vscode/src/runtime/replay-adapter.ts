@@ -1,3 +1,5 @@
+import { isAbsolute, resolve } from "node:path";
+
 import type {
   AgentReplayRecord,
   ContentPart,
@@ -16,7 +18,6 @@ import type {
 } from "../../shared/legacy-sdk";
 import type { UIStreamEvent } from "../../shared/types";
 import { toLegacyToolName } from "./event-adapter";
-import { toLegacyDisplay } from "./tool-display";
 
 interface SubagentReplayInvocation {
   readonly parentAgentId: string;
@@ -24,7 +25,13 @@ interface SubagentReplayInvocation {
   readonly childAgentId: string;
   readonly startedAt: number;
   readonly order: number;
+  readonly fallbackSummary?: string;
   records: readonly AgentReplayRecord[];
+}
+
+interface ReplayToolCall {
+  readonly name: string;
+  readonly arguments?: string | null;
 }
 
 interface SubagentReplayIndex {
@@ -57,7 +64,7 @@ function replayAgentToWebviewEvents(
   const events: UIStreamEvent[] = [];
   let turnOpen = false;
   let step = 0;
-  const toolDisplays = new Map<string, readonly DisplayBlock[]>();
+  const toolCalls = new Map<string, ReplayToolCall>();
 
   events.push(
     withSession(
@@ -65,7 +72,7 @@ function replayAgentToWebviewEvents(
         type: "StatusUpdate",
         payload: {
           ...(agent.config.modelAlias === undefined ? {} : { model: agent.config.modelAlias }),
-          thinking_effort: agent.config.thinkingEffort,
+          thinking_effort: agent.config.thinkingLevel,
           plan_mode: agent.plan !== null,
         },
       },
@@ -128,10 +135,7 @@ function replayAgentToWebviewEvents(
             events.push(withSession({ type: "ContentPart", payload: part }, sessionId));
           }
           for (const call of message.toolCalls) {
-            const display = message.toolCallDisplays?.[call.id];
-            if (display !== undefined) {
-              toolDisplays.set(call.id, toLegacyDisplay(display));
-            }
+            toolCalls.set(call.id, { name: call.name, arguments: call.arguments });
             const toolCall: ToolCall = {
               type: "function",
               id: call.id,
@@ -158,8 +162,6 @@ function replayAgentToWebviewEvents(
 
         if (message.role === "tool" && turnOpen && message.toolCallId !== undefined) {
           ensureStep();
-          const display = toolDisplays.get(message.toolCallId) ?? [];
-          toolDisplays.delete(message.toolCallId);
           events.push(
             withSession(
               {
@@ -170,7 +172,7 @@ function replayAgentToWebviewEvents(
                     is_error: message.isError === true,
                     output: toLegacyContent(message.content),
                     message: "",
-                    display: [...display],
+                    display: replayToolDisplay(toolCalls.get(message.toolCallId), agent.config.cwd),
                   },
                 },
               },
@@ -237,8 +239,8 @@ function buildSubagentReplayIndex(state: ResumedSessionState): SubagentReplayInd
       const call = calls.get(message.toolCallId);
       if (call === undefined || (call.name !== "Agent" && call.name !== "AgentSwarm")) continue;
       for (const childAgentId of subagentIdsFromResult(call.name, message.content)) {
-        const metadata = state.sessionMetadata.agents[childAgentId];
-        if (metadata?.parentAgentId !== parentAgentId || state.agents[childAgentId] === undefined) {
+        const metadata = state.sessionMetadata.agents?.[childAgentId];
+        if (metadata?.parentAgentId !== parentAgentId) {
           continue;
         }
         invocations.push({
@@ -247,6 +249,7 @@ function buildSubagentReplayIndex(state: ResumedSessionState): SubagentReplayInd
           childAgentId,
           startedAt: call.startedAt,
           order: call.order,
+          fallbackSummary: subagentSummaryFromResult(call.name, message.content, childAgentId),
           records: [],
         });
       }
@@ -304,6 +307,31 @@ function subagentIdsFromResult(
   return [...text.matchAll(pattern)].map((match) => match[1]!).filter(uniqueString);
 }
 
+function subagentSummaryFromResult(
+  toolName: "Agent" | "AgentSwarm",
+  content: readonly ContentPart[],
+  childAgentId: string,
+): string | undefined {
+  const text = content
+    .filter((part): part is Extract<ContentPart, { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+  if (toolName === "Agent") {
+    const marker = "\n[summary]\n";
+    const index = text.indexOf(marker);
+    const summary = index < 0
+      ? ""
+      : text.slice(index + marker.length).replace(/\r?\n$/, "");
+    return summary.trim().length === 0 ? undefined : summary;
+  }
+  const escapedId = childAgentId.replaceAll(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = new RegExp(
+    `<subagent\\b[^>]*\\bagent_id="${escapedId}"[^>]*>[\\s\\S]*?<summary>([\\s\\S]*?)<\\/summary>[\\s\\S]*?<\\/subagent>`,
+  ).exec(text);
+  const summary = match?.[1]?.trim();
+  return summary;
+}
+
 function uniqueString(value: string, index: number, values: readonly string[]): boolean {
   return values.indexOf(value) === index;
 }
@@ -335,12 +363,20 @@ function renderSubagentInvocation(
   visited: ReadonlySet<string>,
 ): LegacyWireEvent[] {
   const events: LegacyWireEvent[] = [];
-  const toolDisplays = new Map<string, readonly DisplayBlock[]>();
   let step = 0;
 
   const emit = (event: LegacyWireEvent) => {
     events.push(wrapSubagentEvent(event, chain));
   };
+
+  if (invocation.records.length === 0 && invocation.fallbackSummary !== undefined) {
+    emit({ type: "StepBegin", payload: { n: 1 } });
+    emit({
+      type: "ContentPart",
+      payload: { type: "text", text: invocation.fallbackSummary },
+    });
+    return events;
+  }
 
   for (const record of invocation.records) {
     switch (record.type) {
@@ -358,8 +394,6 @@ function renderSubagentInvocation(
           }
           for (const call of message.toolCalls) {
             const toolCallId = scopedReplayToolCallId(invocation.childAgentId, call.id);
-            const display = message.toolCallDisplays?.[call.id];
-            if (display !== undefined) toolDisplays.set(toolCallId, toLegacyDisplay(display));
             emit({
               type: "ToolCall",
               payload: {
@@ -388,8 +422,6 @@ function renderSubagentInvocation(
             invocation.childAgentId,
             message.toolCallId,
           );
-          const display = toolDisplays.get(toolCallId) ?? [];
-          toolDisplays.delete(toolCallId);
           emit({
             type: "ToolResult",
             payload: {
@@ -398,7 +430,7 @@ function renderSubagentInvocation(
                 is_error: message.isError === true,
                 output: toLegacyContent(message.content),
                 message: "",
-                display: [...display],
+                display: [],
               },
             },
           });
@@ -486,6 +518,65 @@ function sumUsage(
     }),
     { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 },
   );
+}
+
+function replayToolDisplay(
+  call: ReplayToolCall | undefined,
+  cwd: string,
+): DisplayBlock[] {
+  if (call === undefined || call.arguments === undefined || call.arguments === null) return [];
+  let args: unknown;
+  try {
+    args = JSON.parse(call.arguments);
+  } catch {
+    return [];
+  }
+  if (!isRecord(args)) return [];
+
+  if (call.name === "Write") {
+    const path = args["path"];
+    const content = args["content"];
+    if (typeof path !== "string" || typeof content !== "string") return [];
+    return [{
+      type: "diff",
+      path: absoluteReplayPath(cwd, path),
+      old_text: "",
+      new_text: content,
+    }];
+  }
+
+  if (call.name === "Edit") {
+    const path = args["path"];
+    const oldText = args["old_string"] ?? args["oldString"];
+    const newText = args["new_string"] ?? args["newString"];
+    if (
+      typeof path !== "string" ||
+      typeof oldText !== "string" ||
+      typeof newText !== "string"
+    ) return [];
+    return [{
+      type: "diff",
+      path: absoluteReplayPath(cwd, path),
+      old_text: oldText,
+      new_text: newText,
+    }];
+  }
+
+  if (call.name === "TodoList" && Array.isArray(args["todos"])) {
+    const items = args["todos"].flatMap((item) => {
+      if (!isRecord(item) || typeof item["title"] !== "string") return [];
+      const status = item["status"];
+      if (status !== "pending" && status !== "in_progress" && status !== "done") return [];
+      return [{ title: item["title"], status }];
+    });
+    return items.length === 0 ? [] : [{ type: "todo", items }];
+  }
+
+  return [];
+}
+
+function absoluteReplayPath(cwd: string, path: string): string {
+  return isAbsolute(path) ? path : resolve(cwd, path);
 }
 
 function toLegacyContent(content: readonly ContentPart[]): LegacyContentPart[] {
@@ -578,6 +669,10 @@ function decodeXml(value: string): string {
     .replaceAll("&lt;", "<")
     .replaceAll("&gt;", ">")
     .replaceAll("&amp;", "&");
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function withSession<T extends LegacyWireEvent>(event: T, sessionId: string): T & { _sessionId: string } {

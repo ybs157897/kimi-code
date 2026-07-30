@@ -1,7 +1,8 @@
 /**
  * `mcp` domain (L5) — MCP server configuration schemas.
  *
- * Owns the `McpServerConfig` schema and its transport variants. These describe
+ * Owns the `McpServerConfig` schema and its transport variants, including
+ * persisted compatibility metadata for remote authentication. These describe
  * the shape of MCP server entries as they appear in configuration (whether in
  * `config.toml` or an MCP-specific config file) and are consumed by the MCP
  * config loader and connection clients.
@@ -39,6 +40,7 @@ export const McpServerHttpConfigSchema = z.object({
   url: z.string().url(),
   headers: StringRecordSchema.optional(),
   bearerTokenEnvVar: z.string().min(1).optional(),
+  auth: z.literal('oauth').optional(),
   ...McpServerCommonFields,
 });
 
@@ -49,6 +51,7 @@ export const McpServerSseConfigSchema = z.object({
   url: z.string().url(),
   headers: StringRecordSchema.optional(),
   bearerTokenEnvVar: z.string().min(1).optional(),
+  auth: z.literal('oauth').optional(),
   ...McpServerCommonFields,
 });
 

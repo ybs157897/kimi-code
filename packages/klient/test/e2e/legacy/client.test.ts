@@ -45,6 +45,7 @@ async function daemonReachable(): Promise<boolean> {
 
 const reachable = await daemonReachable();
 const describeLive = reachable ? describe : describe.skip;
+const credentialFree = process.env['KIMI_SERVER_E2E_CREDENTIAL_FREE'] === '1';
 
 let created: { client: DaemonClient; sid: string }[] = [];
 
@@ -178,7 +179,7 @@ describeLive('DaemonClient (live server required)', () => {
     expect(fetched.id).toBe(fork.id);
   });
 
-  it(
+  it.skipIf(credentialFree)(
     'compactSession prints empty-history errors and compacted history content',
     async () => {
       const log = createCaseLogger('client: compact empty history');
@@ -278,7 +279,7 @@ describeLive('DaemonClient (live server required)', () => {
     PROMPT_TIMEOUT_MS + 30_000,
   );
 
-  it(
+  it.skipIf(credentialFree)(
     'undoSession removes the latest prompt and returns refreshed messages plus status',
     async () => {
       const log = createCaseLogger('client: undo action');

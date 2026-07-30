@@ -10,8 +10,6 @@ import {
 } from '@moonshot-ai/pi-tui';
 import {
   log,
-  type ApprovalRequest,
-  type ApprovalResponse,
   type Event,
   type GoalSnapshot,
 } from '@moonshot-ai/kimi-code-sdk';
@@ -62,6 +60,7 @@ import type {
   AgentShellResult,
   SessionAgentControlPort,
   SessionControlPort,
+  SessionIdentity,
 } from '#/tui/runtime/session-control-port';
 import type { ExtensionCommandPort } from '#/tui/runtime/extension-command-port';
 import type {
@@ -207,14 +206,29 @@ function makeMockRuntime(): TUIRuntime {
       close: vi.fn(),
     },
     telemetry: { track: vi.fn(), setContext: vi.fn() },
+    localMedia: {
+      getImageMaxEdgePx: vi.fn(async () => undefined),
+      persistOriginalImage: vi.fn(async () => null),
+    },
     sessionControl: {
       sessions: {
         list: vi.fn(async () => []),
         create: vi.fn(async () => ({ id: 'test', workDir: '/tmp/proj-a', createdAt: Date.now(), updatedAt: Date.now(), archived: false })),
         resume: vi.fn(),
       },
+      session: vi.fn(),
+      agent: vi.fn(),
     },
-    auth: { status: vi.fn(), login: vi.fn(), logout: vi.fn(), getManagedUsage: vi.fn(), ensureReady: vi.fn() },
+    auth: {
+      status: vi.fn(),
+      login: vi.fn(),
+      logout: vi.fn(),
+      getManagedUsage: vi.fn(),
+      ensureReady: vi.fn(),
+      submitFeedback: vi.fn(),
+      createFeedbackUploadUrl: vi.fn(),
+      completeFeedbackUpload: vi.fn(),
+    },
     models: { load: vi.fn(async () => ({ defaultModel: '', models: {}, providers: {} })) },
     modelConfig: { apply: vi.fn(), removeProvider: vi.fn() },
     featureFlags: { list: vi.fn(async () => []), apply: vi.fn() },
@@ -261,7 +275,7 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     summary: { title: null },
     prompt: vi.fn(async (_input: unknown) => {}),
     compact: vi.fn(async () => {}),
-    steer: vi.fn(async () => {}),
+    steer: vi.fn(async (_input: unknown) => {}),
     init: vi.fn(async () => {}),
     startBtw: vi.fn(async () => 'agent-btw'),
     undoHistory: vi.fn(async () => {}),
@@ -277,6 +291,7 @@ function makeSession(overrides: Record<string, unknown> = {}) {
       contextUsage: 0,
     })),
     getGoal: vi.fn(async () => ({ goal: null })),
+    getPlan: vi.fn(async () => null),
     setApprovalHandler: vi.fn(),
     setQuestionHandler: vi.fn(),
     setModel: vi.fn(async (alias: string) => {
@@ -287,7 +302,7 @@ function makeSession(overrides: Record<string, unknown> = {}) {
     }),
     setPermission: vi.fn(async () => {}),
     setPlanMode: vi.fn(async () => {}),
-    setSwarmMode: vi.fn(async () => {}),
+    setSwarmMode: vi.fn(async (_enabled: boolean, _preset?: string) => {}),
     listExpertTeams: vi.fn(async () => []),
     getExpertTeamStatus: vi.fn(async () => null),
     activateExpertTeam: vi.fn(async () => {
@@ -322,12 +337,12 @@ function makeSession(overrides: Record<string, unknown> = {}) {
       displayName: 'Demo',
       version: '1.0.0',
       enabled: true,
-      state: 'ok',
+      state: 'ok' as const,
       skillCount: 1,
       mcpServerCount: 0,
       enabledMcpServerCount: 0,
       hasErrors: false,
-      source: 'local-path',
+      source: 'local-path' as const,
     })),
     setPluginEnabled: vi.fn(async () => {}),
     setPluginMcpServerEnabled: vi.fn(async () => {}),
@@ -340,13 +355,14 @@ function makeSession(overrides: Record<string, unknown> = {}) {
       displayName: id,
       version: '1.0.0',
       enabled: true,
-      state: 'ok',
+      state: 'ok' as const,
       skillCount: 1,
       mcpServerCount: 0,
       enabledMcpServerCount: 0,
       hasErrors: false,
-      source: 'local-path',
+      source: 'local-path' as const,
       root: `/plugins/${id}`,
+      installedAt: '2026-01-01T00:00:00.000Z',
       manifest: undefined,
       mcpServers: [],
       diagnostics: [],
@@ -501,7 +517,7 @@ function makeMessageSessionControl(
   } satisfies SessionControlPort;
 }
 
-function makeHarness(session = makeSession(), overrides: Record<string, unknown> = {}) {
+function buildHarness(session = makeSession(), overrides: Record<string, unknown> = {}) {
   const interactiveAgentScope = new AsyncLocalStorage<string>();
   const activeSessions = new Map<string, unknown>([[session.id, session]]);
   type SessionFactory = (...args: unknown[]) => unknown;
@@ -530,17 +546,21 @@ function makeHarness(session = makeSession(), overrides: Record<string, unknown>
       configFactory === undefined
         ? {
             models: {
-              k2: { provider: 'test', model: 'moonshot-v1', maxContextSize: 100 },
+              k2: {
+                provider: 'managed:kimi-code',
+                model: 'moonshot-v1',
+                maxContextSize: 100,
+              },
             },
           }
         : await configFactory(...args);
     return { providers: {}, ...config };
   });
   return {
-    setConfig: vi.fn(async () => ({ providers: {} })),
+    setConfig: vi.fn(async (_patch: unknown) => ({ providers: {} })),
     getSession: vi.fn((id: string) => activeSessions.get(id)),
     listSessions: vi.fn(async () => []),
-    exportSession: vi.fn(async () => ({
+    exportSession: vi.fn(async (_input: unknown) => ({
       zipPath: '/tmp/fake-session.zip',
       entries: ['manifest.json', 'state.json'],
       sessionDir: '/tmp/session-a',
@@ -578,6 +598,147 @@ function makeHarness(session = makeSession(), overrides: Record<string, unknown>
   };
 }
 
+type MockHarness = ReturnType<typeof buildHarness>;
+
+const harnessesBySession = new WeakMap<object, MockHarness>();
+
+function makeHarness(
+  session = makeSession(),
+  overrides: Record<string, unknown> = {},
+): MockHarness {
+  const cached = harnessesBySession.get(session);
+  if (cached !== undefined) {
+    Object.assign(cached, overrides);
+    return cached;
+  }
+  const harness = buildHarness(session, overrides);
+  harnessesBySession.set(session, harness);
+  return harness;
+}
+
+type MockSession = ReturnType<typeof makeSession>;
+
+function projectMockSessionIdentity(session: {
+  readonly id: string;
+  readonly summary?: { readonly title?: string | null };
+  readonly workDir?: string;
+  readonly createdAt?: number;
+  readonly updatedAt?: number;
+  readonly archived?: boolean;
+}): SessionIdentity {
+  return {
+    id: session.id,
+    workDir: session.workDir ?? '/tmp/proj-a',
+    title: session.summary?.title ?? undefined,
+    createdAt: session.createdAt ?? 0,
+    updatedAt: session.updatedAt ?? 0,
+    archived: session.archived ?? false,
+  };
+}
+
+function createMockSessionAgent(session: MockSession): MessageAgentControl {
+  return makeMessageAgentControl({
+    prompt: session.prompt,
+    steer: session.steer,
+    cancel: session.cancel,
+    getStatus: session.getStatus as MessageAgentControl['getStatus'],
+    getModel: async () => (await session.getStatus()).model,
+    setModel: session.setModel,
+    getThinking: async () => (await session.getStatus()).thinkingEffort,
+    setThinking: session.setThinking,
+    setPermission: session.setPermission,
+    setPlanMode: session.setPlanMode,
+    getPlan: session.getPlan,
+    getGoal: async () => (await session.getGoal()).goal,
+  });
+}
+
+function createHarnessSessionControl(
+  harness: MockHarness,
+  initialSession: MockSession,
+): SessionControlPort {
+  const sessions = new Map<string, MockSession>([[initialSession.id, initialSession]]);
+  const agents = new Map<string, MessageAgentControl>();
+  const register = (candidate: unknown): MockSession => {
+    if (
+      typeof candidate !== 'object' ||
+      candidate === null ||
+      !('id' in candidate) ||
+      typeof candidate.id !== 'string'
+    ) {
+      throw new Error('Expected a mock session with a string id.');
+    }
+    const session = candidate as MockSession;
+    sessions.set(session.id, session);
+    return session;
+  };
+  const getSession = (sessionId: string): MockSession =>
+    sessions.get(sessionId) ?? initialSession;
+  const getAgent = (sessionId: string, agentId: string): MessageAgentControl => {
+    const session = getSession(sessionId);
+    const key = `${session.id}:${agentId}`;
+    const cached = agents.get(key);
+    if (cached !== undefined) return cached;
+    const base = createMockSessionAgent(session);
+    const agent =
+      agentId === 'main'
+        ? base
+        : {
+            ...base,
+            prompt: (input: Parameters<MessageAgentControl['prompt']>[0]) =>
+              harness.withInteractiveAgent(agentId, () => session.prompt(input)) as Promise<void>,
+            steer: (input: Parameters<MessageAgentControl['steer']>[0]) =>
+              harness.withInteractiveAgent(agentId, () => session.steer(input)) as Promise<void>,
+            cancel: () =>
+              harness.withInteractiveAgent(agentId, () => session.cancel()) as Promise<void>,
+          };
+    agents.set(key, agent);
+    return agent;
+  };
+
+  return {
+    sessions: {
+      async list() {
+        const listed = await harness.listSessions();
+        return listed.map((item) =>
+          projectMockSessionIdentity(item as Parameters<typeof projectMockSessionIdentity>[0]),
+        );
+      },
+      async create(input) {
+        const created = register(await harness.createSession(input));
+        return projectMockSessionIdentity(created);
+      },
+      async resume(input) {
+        const resumed = await harness.resumeSession({
+          id: input.id,
+          additionalDirs: input.additionalDirs,
+          replayTurnLimit: input.replayTurnLimit,
+        });
+        if (resumed === undefined) return undefined;
+        return projectMockSessionIdentity(register(resumed));
+      },
+    },
+    session: (sessionId) => ({
+      getIdentity: async () => projectMockSessionIdentity(getSession(sessionId)),
+      close: () => getSession(sessionId).close(),
+      setTitle: async (title) => {
+        (getSession(sessionId).summary as { title: string | null }).title = title;
+      },
+      async fork(input) {
+        const source = getSession(sessionId);
+        const forked = register(
+          await harness.forkSession({
+            id: source.id,
+            title: input?.title,
+          }),
+        );
+        return projectMockSessionIdentity(forked);
+      },
+    }),
+    agent: (sessionId, agentId = 'main') => getAgent(sessionId, agentId),
+  };
+}
+
 async function makeDriver(
   session = makeSession(),
   harnessOverrides: Record<string, unknown> = {},
@@ -587,10 +748,157 @@ async function makeDriver(
   driver: MessageDriver;
   session: ReturnType<typeof makeSession>;
 }> {
+  const harness = makeHarness(session, harnessOverrides);
+  const effectiveSessionControl =
+    sessionControl ?? runtime?.sessionControl ?? createHarnessSessionControl(harness, session);
+  const defaultAgent = effectiveSessionControl.agent(session.id);
+  const defaultRuntime = makeEventRuntime({
+    agent: defaultAgent,
+    sessionControl: effectiveSessionControl,
+    swarm: {
+      isActive: vi.fn(async () => false),
+      enter: (mode) => session.setSwarmMode(true, mode),
+      exit: () => session.setSwarmMode(false),
+    },
+    expertTeam: {
+      list: session.listExpertTeams,
+      get: session.getExpertTeamStatus,
+      activate: session.activateExpertTeam,
+      deactivate: session.deactivateExpertTeam,
+    },
+    init: {
+      generateAgentsMd: session.init,
+      cancel: session.cancel,
+    },
+    btw: {
+      start: session.startBtw,
+    },
+    context: {
+      compact: async () => {
+        await session.compact();
+        return true;
+      },
+      cancelCompaction: session.cancelCompaction,
+      undoHistory: session.undoHistory,
+    },
+    contextView: {
+      read: vi.fn(async () => {
+        throw new Error('Context view is not configured in the legacy fixture.');
+      }),
+    },
+    mcp: {
+      list: session.listMcpServers,
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => 0),
+    },
+    skills: {
+      list: session.listSkills,
+      reload: vi.fn(async () => {}),
+      activate: session.activateSkill,
+    },
+    plugins: {
+      list: session.listPlugins,
+      info: session.getPluginInfo,
+      install: session.installPlugin,
+      setEnabled: session.setPluginEnabled,
+      setMcpServerEnabled: session.setPluginMcpServerEnabled,
+      remove: session.removePlugin,
+      reload: session.reloadPlugins,
+    },
+    refresh: {
+      reload: async () => {
+        await session.reloadSession();
+      },
+    },
+    warnings: {
+      list: vi.fn(async () => []),
+    },
+  }).runtime;
+  defaultRuntime.telemetry.track = harness.track;
+  defaultRuntime.auth.status = harness.auth.status;
+  defaultRuntime.auth.login = harness.auth.login;
+  defaultRuntime.auth.logout = harness.auth.logout;
+  defaultRuntime.auth.getManagedUsage = harness.auth.getManagedUsage;
+  defaultRuntime.auth.submitFeedback = harness.auth.submitFeedback;
+  defaultRuntime.models.load.mockImplementation(async () => {
+    const config = await harness.getConfig() as Record<string, unknown>;
+    const models =
+      typeof config['models'] === 'object' && config['models'] !== null
+        ? config['models'] as Record<
+            string,
+            {
+              provider: string;
+              model: string;
+              maxContextSize: number;
+              displayName?: string;
+              capabilities?: string[];
+            }
+          >
+        : {};
+    const configuredProviders =
+      typeof config['providers'] === 'object' && config['providers'] !== null
+        ? config['providers'] as Readonly<Record<string, unknown>>
+        : {};
+    const providers = Object.fromEntries(
+      [...new Set(Object.values(models).map((model) => model.provider))].map(
+        (provider) => {
+          const configured = configuredProviders[provider];
+          const type =
+            typeof configured === 'object' &&
+            configured !== null &&
+            'type' in configured &&
+            typeof configured.type === 'string'
+              ? configured.type
+              : provider === 'managed:kimi-code'
+                ? 'kimi'
+                : 'anthropic';
+          return [
+            provider,
+            {
+              type,
+              status: 'connected' as const,
+              hasApiKey: true,
+            },
+          ];
+        },
+      ),
+    );
+    return {
+      defaultModel:
+        typeof config['defaultModel'] === 'string'
+          ? config['defaultModel']
+          : Object.keys(models)[0],
+      models,
+      providers,
+      thinking:
+        typeof config['thinking'] === 'object' && config['thinking'] !== null
+          ? config['thinking'] as {
+              enabled?: boolean;
+              effort?: string;
+              keep?: string;
+            }
+          : undefined,
+    };
+  });
+  defaultRuntime.modelConfig.apply.mockImplementation((input) =>
+    harness.setConfig(input).then(() => undefined),
+  );
+  vi.mocked(defaultRuntime.sessionExport.export).mockImplementation(async (input) =>
+    harness.exportSession({
+      id: input.sessionId,
+      version: input.version,
+      installSource: input.installSource,
+      shellEnv: input.shellEnv,
+      includeGlobalLog: input.includeGlobalLog,
+      outputPath: input.outputPath,
+    }) as unknown as Awaited<
+      ReturnType<RuntimeSessionExportPort['export']>
+    >,
+  );
   const driver = new KimiTUI({
     ...makeStartupInput(),
-    sessionControl,
-    ...(runtime !== undefined ? { runtime } : {}),
+    sessionControl: effectiveSessionControl,
+    runtime: runtime ?? defaultRuntime,
   }) as unknown as MessageDriver;
   vi.spyOn(driver.state.ui, 'requestRender').mockImplementation(() => {});
   vi.spyOn(driver.state.terminal, 'setProgress').mockImplementation(() => {});
@@ -603,12 +911,19 @@ function makeEventRuntime(
   input: {
     agent?: MessageAgentControl;
     sessionControl?: SessionControlPort;
+    swarm?: TUISessionRuntime['swarm'];
+    expertTeam?: TUISessionRuntime['expertTeam'];
+    init?: TUISessionRuntime['init'];
+    btw?: TUISessionRuntime['btw'];
+    context?: TUISessionRuntime['context'];
+    contextView?: TUISessionRuntime['contextView'];
     extensionCommands?: ExtensionCommandPort;
     mcp?: SessionMcpPort;
     pluginCommands?: SessionPluginCommandsPort;
     refresh?: SessionRefreshPort;
     skills?: SessionSkillsPort;
     plugins?: SessionPluginsPort;
+    warnings?: TUISessionRuntime['warnings'];
     workspace?: SessionWorkspacePort;
     sessionExport?: RuntimeSessionExportPort;
   } = {},
@@ -650,12 +965,12 @@ function makeEventRuntime(
       reload: vi.fn(async () => {}),
       activate: vi.fn(async () => undefined),
     } satisfies ExtensionCommandPort);
-  const swarm = {
+  const swarm = input.swarm ?? {
     isActive: vi.fn(async () => false),
     enter: vi.fn(async () => {}),
     exit: vi.fn(async () => {}),
   };
-  const expertTeam = {
+  const expertTeam = input.expertTeam ?? {
     list: vi.fn(async () => []),
     get: vi.fn(async () => null),
     activate: vi.fn(async () => {
@@ -663,19 +978,19 @@ function makeEventRuntime(
     }),
     deactivate: vi.fn(async () => {}),
   };
-  const init = {
+  const init = input.init ?? {
     generateAgentsMd: vi.fn(async () => {}),
     cancel: vi.fn(async () => {}),
   };
-  const btw = {
+  const btw = input.btw ?? {
     start: vi.fn(async () => 'agent-btw'),
   };
-  const context = {
+  const context = input.context ?? {
     compact: vi.fn(async () => true),
     cancelCompaction: vi.fn(async () => {}),
     undoHistory: vi.fn(async () => {}),
   };
-  const contextView = {
+  const contextView = input.contextView ?? {
     read: vi.fn(async () => ({ history: [], tokenCount: 0 })),
   };
   const goalQueue = {
@@ -712,7 +1027,7 @@ function makeEventRuntime(
       reload: vi.fn(async () => {}),
     } satisfies SessionRefreshPort);
   const plugins = input.plugins ?? makeMessagePluginsPort();
-  const warnings = {
+  const warnings = input.warnings ?? {
     list: vi.fn(async () => []),
   };
   const workspace =
@@ -729,7 +1044,7 @@ function makeEventRuntime(
   const sessionExport =
     input.sessionExport ??
     ({
-      export: vi.fn(async () => ({
+      export: vi.fn<RuntimeSessionExportPort['export']>(async () => ({
         zipPath: '/tmp/example-session.zip',
         entries: ['manifest.json'],
         manifest: {
@@ -771,6 +1086,10 @@ function makeEventRuntime(
       getConfigDiagnostics: vi.fn(async () => []),
       close: vi.fn(async () => {}),
     },
+    localMedia: {
+      getImageMaxEdgePx: vi.fn(async () => undefined),
+      persistOriginalImage: vi.fn(async () => null),
+    },
     featureFlags: {
       list: vi.fn<RuntimeFeatureFlagsPort['list']>(async () => []),
       apply: vi.fn<RuntimeFeatureFlagsPort['apply']>(async () => []),
@@ -803,7 +1122,7 @@ function makeEventRuntime(
         sessionId,
         agentId,
         lifecycle: sessionControl.session(sessionId),
-        agent,
+        agent: sessionControl.agent(sessionId, agentId),
         swarm,
         expertTeam,
         init,
@@ -1209,7 +1528,6 @@ command = "vim"
         version: 'kimi-code-0.0.0-test',
         model: 'k2',
       }),
-      undefined,
     );
     expect(harness.track).toHaveBeenCalledWith('feedback_submitted', undefined);
     const transcript = stripSgr(renderTranscript(driver));
@@ -1270,7 +1588,6 @@ command = "vim"
     });
     expect(harness.auth.submitFeedback).toHaveBeenCalledWith(
       expect.objectContaining({ content: 'useful feedback' }),
-      undefined,
     );
     expect(harness.auth.submitFeedback.mock.invocationCallOrder[0]).toBeLessThan(
       harness.exportSession.mock.invocationCallOrder[0]!,
@@ -1363,7 +1680,6 @@ command = "vim"
     );
     expect(harness.auth.submitFeedback).toHaveBeenCalledWith(
       expect.not.objectContaining({ info: expect.anything() }),
-      undefined,
     );
   });
 
@@ -1641,7 +1957,7 @@ command = "vim"
         'Post-create setup failed: permission setup failed',
       );
     });
-    expect(failedSession.onEvent).toHaveBeenCalledOnce();
+    expect(driver.getCurrentSessionId()).toBe('ses-failed');
   });
 
   it('tracks Shift-Tab mode switches through the editor handler', async () => {
@@ -1811,36 +2127,39 @@ command = "vim"
   });
 
   it('deduplicates identical MCP status updates while allowing reconnect transitions', async () => {
-    const eventListeners: Array<(event: Event) => void> = [];
     const connectedServer = {
       name: 'local-tools',
-      transport: 'stdio',
-      status: 'connected',
+      transport: 'stdio' as const,
+      status: 'connected' as const,
       toolCount: 2,
     };
-    const session = makeSession({
-      onEvent: vi.fn((listener: (event: Event) => void) => {
-        eventListeners.push(listener);
-        return vi.fn();
-      }),
-      listMcpServers: vi.fn(async () => [connectedServer]),
-    });
-    const { driver } = await makeDriver(session);
+    const mcp = {
+      list: vi.fn(async () => [connectedServer]),
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => 0),
+    } satisfies SessionMcpPort;
+    const eventRuntime = makeEventRuntime({ mcp });
+    const { driver } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
 
     driver.sessionEventHandler.startSubscription();
     await Promise.resolve();
-    eventListeners[0]?.({
+    eventRuntime.emitAgent({
       type: 'mcp.server.status',
       agentId: 'main',
       sessionId: 'ses-1',
       server: connectedServer,
-    } as Event);
+    });
 
     expect(countOccurrences(renderTranscript(driver), 'MCP server "local-tools" connected')).toBe(
       1,
     );
 
-    eventListeners[0]?.({
+    eventRuntime.emitAgent({
       type: 'mcp.server.status',
       agentId: 'main',
       sessionId: 'ses-1',
@@ -1849,13 +2168,13 @@ command = "vim"
         status: 'pending',
         toolCount: 0,
       },
-    } as Event);
-    eventListeners[0]?.({
+    });
+    eventRuntime.emitAgent({
       type: 'mcp.server.status',
       agentId: 'main',
       sessionId: 'ses-1',
       server: connectedServer,
-    } as Event);
+    });
 
     expect(countOccurrences(renderTranscript(driver), 'MCP server "local-tools" connected')).toBe(
       2,
@@ -1863,7 +2182,6 @@ command = "vim"
   });
 
   it('does not let a late MCP snapshot overwrite a live status event', async () => {
-    const eventListeners: Array<(event: Event) => void> = [];
     let resolveSnapshot: (
       servers: Array<{
         name: string;
@@ -1873,20 +2191,32 @@ command = "vim"
         error?: string;
       }>,
     ) => void = () => {};
-    const snapshot = new Promise((resolve) => {
+    const snapshot = new Promise<
+      ReadonlyArray<{
+        name: string;
+        transport: 'stdio' | 'http' | 'sse';
+        status: 'pending' | 'connected' | 'failed' | 'disabled';
+        toolCount: number;
+        error?: string;
+      }>
+    >((resolve) => {
       resolveSnapshot = resolve;
     });
-    const session = makeSession({
-      onEvent: vi.fn((listener: (event: Event) => void) => {
-        eventListeners.push(listener);
-        return vi.fn();
-      }),
-      listMcpServers: vi.fn(() => snapshot),
-    });
-    const { driver } = await makeDriver(session);
+    const mcp = {
+      list: vi.fn(() => snapshot),
+      reconnect: vi.fn(async () => {}),
+      initialLoadDurationMs: vi.fn(async () => 0),
+    } satisfies SessionMcpPort;
+    const eventRuntime = makeEventRuntime({ mcp });
+    const { driver } = await makeDriver(
+      makeSession(),
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
 
     driver.sessionEventHandler.startSubscription();
-    eventListeners[0]?.({
+    eventRuntime.emitAgent({
       type: 'mcp.server.status',
       agentId: 'main',
       sessionId: 'ses-1',
@@ -1896,7 +2226,7 @@ command = "vim"
         status: 'connected',
         toolCount: 2,
       },
-    } as Event);
+    });
     resolveSnapshot([
       {
         name: 'local-tools',
@@ -2447,24 +2777,48 @@ command = "vim"
   });
 
   it('removes approval notices from undone turns', async () => {
-    const { driver, session } = await makeDriver();
+    const session = makeSession();
+    const eventRuntime = makeEventRuntime({
+      agent: createMockSessionAgent(session),
+      context: {
+        compact: vi.fn(async () => true),
+        cancelCompaction: session.cancelCompaction,
+        undoHistory: session.undoHistory,
+      },
+      contextView: {
+        read: vi.fn(async () => {
+          throw new Error('Context view is not configured in this fixture.');
+        }),
+      },
+    });
+    const { driver } = await makeDriver(
+      session,
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
     driver.sessionEventHandler.startSubscription();
-    const approvalHandler = vi.mocked(session.setApprovalHandler).mock.calls[0]?.[0] as
-      | ((request: ApprovalRequest) => Promise<ApprovalResponse>)
-      | undefined;
-    if (approvalHandler === undefined) throw new Error('expected approval handler');
 
     driver.handleUserInput('hello');
     driver.state.appState.streamingPhase = 'idle';
-    const response = approvalHandler({
-      turnId: 1,
-      toolCallId: 'call_bash',
-      toolName: 'Bash',
-      action: 'Run shell command',
-      display: {
-        kind: 'generic',
-        summary: 'Run shell command',
-        detail: { command: 'echo ok', description: 'Run a shell command' },
+    eventRuntime.emitSession({
+      type: 'interaction.requested',
+      interaction: {
+        id: 'approval-bash',
+        sessionId: 'ses-1',
+        agentId: 'main',
+        kind: 'approval',
+        request: {
+          turnId: 1,
+          toolCallId: 'call_bash',
+          toolName: 'Bash',
+          action: 'Run shell command',
+          display: {
+            kind: 'generic',
+            summary: 'Run shell command',
+            detail: { command: 'echo ok', description: 'Run a shell command' },
+          },
+        },
       },
     });
 
@@ -2472,7 +2826,12 @@ command = "vim"
       expect(driver.state.editorContainer.children[0]).toBeInstanceOf(ApprovalPanelComponent);
     });
     (driver.state.editorContainer.children[0] as ApprovalPanelComponent).handleInput('1');
-    await expect(response).resolves.toMatchObject({ decision: 'approved' });
+    await vi.waitFor(() => {
+      expect(eventRuntime.sessionEvents.respondToApproval).toHaveBeenCalledWith(
+        'approval-bash',
+        expect.objectContaining({ decision: 'approved' }),
+      );
+    });
 
     await vi.waitFor(() => {
       expect(stripSgr(renderTranscript(driver))).toContain('Approved: Run shell command');
@@ -4145,8 +4504,8 @@ command = "vim"
       .fn()
       .mockResolvedValueOnce(initialSession)
       .mockResolvedValueOnce(nextSession);
-    const { driver } = await makeDriver(initialSession);
-    const harness = makeHarness(initialSession, { createSession });
+    const { driver } = await makeDriver(initialSession, { createSession });
+    const harness = makeHarness(initialSession);
     const cancelledAgentIds: string[] = [];
     initialSession.cancel.mockImplementation(async () => {
       cancelledAgentIds.push(harness.interactiveAgentId);
@@ -4672,7 +5031,15 @@ command = "vim"
         path: '/tmp/no-duplicate-plan.md',
       })),
     });
-    const { driver } = await makeDriver(session);
+    const eventRuntime = makeEventRuntime({
+      agent: createMockSessionAgent(session),
+    });
+    const { driver } = await makeDriver(
+      session,
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
     driver.sessionEventHandler.startSubscription();
 
     driver.sessionEventHandler.handleEvent(
@@ -4694,19 +5061,24 @@ command = "vim"
       expect(countOccurrences(transcript, 'non-duplicated plan work')).toBe(1);
     });
 
-    const approvalHandler = vi.mocked(session.setApprovalHandler).mock.calls[0]?.[0] as
-      | ((request: ApprovalRequest) => Promise<ApprovalResponse>)
-      | undefined;
-    if (approvalHandler === undefined) throw new Error('expected approval handler');
-    void approvalHandler({
-      turnId: 1,
-      toolCallId: 'call_exit_plan',
-      toolName: 'ExitPlanMode',
-      action: 'Review plan',
-      display: {
-        kind: 'plan_review',
-        plan: planContent,
-        path: '/tmp/no-duplicate-plan.md',
+    eventRuntime.emitSession({
+      type: 'interaction.requested',
+      interaction: {
+        id: 'approval-exit-plan',
+        sessionId: 'ses-1',
+        agentId: 'main',
+        kind: 'approval',
+        request: {
+          turnId: 1,
+          toolCallId: 'call_exit_plan',
+          toolName: 'ExitPlanMode',
+          action: 'Review plan',
+          display: {
+            kind: 'plan_review',
+            plan: planContent,
+            path: '/tmp/no-duplicate-plan.md',
+          },
+        },
       },
     });
 
@@ -5147,7 +5519,15 @@ command = "vim"
         path: '/tmp/reject-plan.md',
       })),
     });
-    const { driver } = await makeDriver(session);
+    const eventRuntime = makeEventRuntime({
+      agent: createMockSessionAgent(session),
+    });
+    const { driver } = await makeDriver(
+      session,
+      {},
+      undefined,
+      eventRuntime.runtime,
+    );
     driver.sessionEventHandler.startSubscription();
 
     driver.sessionEventHandler.handleEvent(
@@ -5169,19 +5549,24 @@ command = "vim"
       expect(countOccurrences(transcript, 'keep this plan visible after reject')).toBe(1);
     });
 
-    const approvalHandler = vi.mocked(session.setApprovalHandler).mock.calls[0]?.[0] as
-      | ((request: ApprovalRequest) => Promise<ApprovalResponse>)
-      | undefined;
-    if (approvalHandler === undefined) throw new Error('expected approval handler');
-    const response = approvalHandler({
-      turnId: 1,
-      toolCallId: 'call_exit_reject_plan',
-      toolName: 'ExitPlanMode',
-      action: 'Review plan',
-      display: {
-        kind: 'plan_review',
-        plan: planContent,
-        path: '/tmp/reject-plan.md',
+    eventRuntime.emitSession({
+      type: 'interaction.requested',
+      interaction: {
+        id: 'approval-reject-plan',
+        sessionId: 'ses-1',
+        agentId: 'main',
+        kind: 'approval',
+        request: {
+          turnId: 1,
+          toolCallId: 'call_exit_reject_plan',
+          toolName: 'ExitPlanMode',
+          action: 'Review plan',
+          display: {
+            kind: 'plan_review',
+            plan: planContent,
+            path: '/tmp/reject-plan.md',
+          },
+        },
       },
     });
 
@@ -5189,7 +5574,12 @@ command = "vim"
       expect(driver.state.editorContainer.children[0]).toBeInstanceOf(ApprovalPanelComponent);
     });
     (driver.state.editorContainer.children[0] as ApprovalPanelComponent).handleInput('2');
-    await expect(response).resolves.toMatchObject({ decision: 'rejected' });
+    await vi.waitFor(() => {
+      expect(eventRuntime.sessionEvents.respondToApproval).toHaveBeenCalledWith(
+        'approval-reject-plan',
+        expect.objectContaining({ decision: 'rejected' }),
+      );
+    });
 
     driver.sessionEventHandler.handleEvent(
       {
@@ -6506,7 +6896,6 @@ command = "vim"
       expect(setTitle).toHaveBeenCalledWith('Fork: Source title');
       expect(process.title).toBe('kimi-test-runner');
       expect(source.close).toHaveBeenCalledOnce();
-      expect(forked.onEvent).toHaveBeenCalledOnce();
       expect(harness.resumeSession).not.toHaveBeenCalled();
       expect(driver.state.transcriptContainer.render(120).join('\n')).toContain(
         'Session forked (ses-fork). To return to the original session: kimi -r ses-source',

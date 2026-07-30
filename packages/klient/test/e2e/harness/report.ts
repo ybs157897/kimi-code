@@ -10,6 +10,8 @@ import {
 } from 'node:fs';
 import { join, resolve } from 'node:path';
 
+import { withServerAuth } from './auth.js';
+
 export type ReportEventKind = 'log' | 'http' | 'ws' | 'test-result';
 export type WsDirection = 'in' | 'out' | 'lifecycle';
 
@@ -159,9 +161,10 @@ export async function fetchWithReport(
   const url = fetchUrl(input);
   const path = options?.path ?? pathFromUrl(url);
   const startedAt = Date.now();
+  const authenticatedInit = withServerAuth(input, init);
   let response: Response;
   try {
-    response = await fetchImpl(input, init);
+    response = await fetchImpl(input, authenticatedInit);
   } catch (error) {
     recordReportEvent(
       {
@@ -170,7 +173,7 @@ export async function fetchWithReport(
         path,
         url,
         durationMs: Date.now() - startedAt,
-        request: requestForFetchReport(input, init),
+        request: requestForFetchReport(input, authenticatedInit),
         error: errorForReport(error),
       },
       { reportDir: options?.reportDir },
@@ -187,7 +190,7 @@ export async function fetchWithReport(
       url,
       status: response.status,
       durationMs: Date.now() - startedAt,
-      request: requestForFetchReport(input, init),
+      request: requestForFetchReport(input, authenticatedInit),
       response: responseForReport(text),
     },
     { reportDir: options?.reportDir },

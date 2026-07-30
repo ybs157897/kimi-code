@@ -234,9 +234,8 @@ describe('EditorKeyboardController plan toggle', () => {
     expect(handlePlanToggle).not.toHaveBeenCalled();
   });
 
-  it('toggles plan mode through the active runtime when the raw session is absent', () => {
+  it('toggles plan mode through the active session runtime', () => {
     const {
-      host,
       editor,
       requireSessionRuntime,
       showError,
@@ -244,7 +243,6 @@ describe('EditorKeyboardController plan toggle', () => {
       handlePlanToggle,
     } = createHarness();
 
-    expect(host.session).toBeUndefined();
     pressShiftTab(editor);
 
     expect(requireSessionRuntime).toHaveBeenCalledOnce();

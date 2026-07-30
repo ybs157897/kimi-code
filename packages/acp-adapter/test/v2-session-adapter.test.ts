@@ -91,7 +91,20 @@ function createMockKlient(overrides?: {
       read: vi.fn().mockResolvedValue(
         overrides?.resumeState ?? {
           type: 'main' as const,
-          config: { cwd: '/tmp/x', modelAlias: 'kimi-coder' },
+          config: {
+            cwd: '/tmp/x',
+            modelAlias: 'kimi-coder',
+            modelCapabilities: {
+              image_in: true,
+              video_in: true,
+              audio_in: false,
+              thinking: true,
+              tool_use: true,
+              max_context_tokens: 128_000,
+            },
+            thinkingLevel: 'off',
+            systemPrompt: '',
+          },
           context: { history: [{ role: 'user', content: [{ type: 'text', text: 'hello' }] }], tokenCount: 10 },
           replay: [],
           permission: { mode: 'manual', rules: [] },
@@ -104,6 +117,9 @@ function createMockKlient(overrides?: {
     },
     skills: {
       activate: vi.fn().mockResolvedValue(undefined),
+    },
+    plugins: {
+      refreshSessionStartReminder: vi.fn().mockResolvedValue(undefined),
     },
     swarm: {
       isActive: vi.fn().mockResolvedValue(false),
@@ -165,6 +181,7 @@ function createMockKlient(overrides?: {
     cron: {
       list: vi.fn().mockResolvedValue([]),
       getNextFireTime: vi.fn().mockResolvedValue(null),
+      getNextFireForTask: vi.fn().mockResolvedValue(null),
     },
     goalQueue: {
       read: vi.fn().mockResolvedValue({ upcoming: [], active: null }),
@@ -182,6 +199,11 @@ function createMockKlient(overrides?: {
     workspace: {
       get: vi.fn().mockResolvedValue({ workDir: '/tmp/x', additionalDirs: [] }),
       addAdditionalDir: vi.fn().mockResolvedValue({}),
+    },
+    todos: {
+      list: vi.fn().mockResolvedValue([]),
+      replace: vi.fn().mockResolvedValue(undefined),
+      clear: vi.fn().mockResolvedValue(undefined),
     },
     agents: vi.fn().mockResolvedValue({}),
     events: {
@@ -258,10 +280,7 @@ describe('V2SessionAdapter', () => {
       });
 
       adapter = new V2SessionAdapter(klient, 'sess-1');
-      // Allow the eager loadResumeState() microtask to settle
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      const state = adapter.getResumeState() as any;
+      const state = await adapter.getResumeState() as any;
       expect(state).toBeDefined();
       expect(state.agents).toBeDefined();
       expect(state.agents.main).toBeDefined();
@@ -281,9 +300,7 @@ describe('V2SessionAdapter', () => {
       (agentHandle.replay.read as any).mockRejectedValue(new Error('replay not available'));
 
       adapter = new V2SessionAdapter(klient, 'sess-1');
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      expect(adapter.getResumeState()).toBeUndefined();
+      await expect(adapter.getResumeState()).resolves.toBeUndefined();
     });
 
     it('returns undefined when replay state has no agents property', async () => {
@@ -292,9 +309,7 @@ describe('V2SessionAdapter', () => {
       });
 
       adapter = new V2SessionAdapter(klient, 'sess-1');
-      await new Promise((resolve) => setTimeout(resolve, 10));
-
-      const state = adapter.getResumeState() as any;
+      const state = await adapter.getResumeState() as any;
       expect(state).toBeDefined();
       expect(state.agents.main.context.history).toEqual([]);
     });
@@ -365,7 +380,7 @@ describe('V2SessionAdapter', () => {
       expect(cbs).toBeDefined();
       const changedCb = cbs!.values().next().value;
 
-      await changedCb!([
+      changedCb!([
         { id: 'ia-1', kind: 'approval', payload: { toolName: 'Bash', toolCallId: 'tc-1', action: 'execute' } },
       ]);
 
@@ -398,7 +413,7 @@ describe('V2SessionAdapter', () => {
       const changedCb = cbs.values().next().value;
       const decideSpy = vi.spyOn(klient.session('sess-1').approvals, 'decide');
 
-      await changedCb!([
+      changedCb!([
         { id: 'ia-2', kind: 'approval', payload: { toolName: 'Read', toolCallId: 'tc-2', action: 'read_file' } },
       ]);
 
@@ -423,7 +438,7 @@ describe('V2SessionAdapter', () => {
       const changedCb = cbs.values().next().value;
       const decideSpy = vi.spyOn(klient.session('sess-1').approvals, 'decide');
 
-      await changedCb!([
+      changedCb!([
         { id: 'ia-3', kind: 'approval', payload: { toolName: 'Write', toolCallId: 'tc-3' } },
       ]);
 
@@ -448,7 +463,7 @@ describe('V2SessionAdapter', () => {
       const cbs = sessionEvents.get('interactions.changed')!;
       const changedCb = cbs.values().next().value;
 
-      await changedCb!([
+      changedCb!([
         { id: 'ia-sub', kind: 'approval', payload: { toolName: 'Bash' }, origin: { agentId: 'sub-1' } },
       ]);
 
@@ -473,10 +488,10 @@ describe('V2SessionAdapter', () => {
       const changedCb = cbs.values().next().value;
 
       // Fire the same interaction twice
-      await changedCb!([
+      changedCb!([
         { id: 'ia-duplicate', kind: 'approval', payload: { toolName: 'Bash', toolCallId: 'tc-d' } },
       ]);
-      await changedCb!([
+      changedCb!([
         { id: 'ia-duplicate', kind: 'approval', payload: { toolName: 'Bash', toolCallId: 'tc-d' } },
       ]);
 
@@ -502,7 +517,7 @@ describe('V2SessionAdapter', () => {
       const cbs = sessionEvents.get('interactions.changed')!;
       const changedCb = cbs.values().next().value;
 
-      await changedCb!([
+      changedCb!([
         {
           id: 'iq-1',
           kind: 'question',
@@ -541,7 +556,7 @@ describe('V2SessionAdapter', () => {
       const changedCb = cbs.values().next().value;
       const answerSpy = vi.spyOn(klient.session('sess-1').questions, 'answer');
 
-      await changedCb!([
+      changedCb!([
         {
           id: 'iq-2',
           kind: 'question',
@@ -570,7 +585,7 @@ describe('V2SessionAdapter', () => {
       const changedCb = cbs.values().next().value;
       const dismissSpy = vi.spyOn(klient.session('sess-1').questions, 'dismiss');
 
-      await changedCb!([
+      changedCb!([
         {
           id: 'iq-3',
           kind: 'question',
@@ -650,7 +665,7 @@ describe('V2SessionAdapter', () => {
       expect(status.contextUsage).toBeCloseTo(5000 / 128000, 4);
     });
 
-    it('returns zeros when getContext() fails', async () => {
+    it('keeps the model context limit when getContext() fails', async () => {
       const klient = createMockKlient();
       const agentHandle = klient.session('sess-1').agent('main');
       (agentHandle.getContext as any).mockRejectedValue(new Error('context unavailable'));
@@ -659,7 +674,7 @@ describe('V2SessionAdapter', () => {
       const status = await adapter.getStatus!();
 
       expect(status.contextTokens).toBe(0);
-      expect(status.maxContextTokens).toBe(0);
+      expect(status.maxContextTokens).toBe(128_000);
       expect(status.contextUsage).toBe(0);
     });
   });

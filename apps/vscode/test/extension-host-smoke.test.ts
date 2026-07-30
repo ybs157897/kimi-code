@@ -76,6 +76,24 @@ describe('installed VSIX Extension Host smoke', () => {
     expect(env.KIMI_VSCODE_SMOKE_OS_HOME).toContain('os-home');
   });
 
+  it('uses a two-minute idle timeout when downloading the extension host', async () => {
+    const fixture = await makeFixture();
+
+    await runExtensionHostSmoke({
+      version: '1.100.0',
+      vsixPath: fixture.vsixPath,
+      cachePath: fixture.cachePath,
+    });
+
+    expect(vscodeTest.runVSCodeCommand).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ timeout: 120_000 }),
+    );
+    expect(vscodeTest.runTests).toHaveBeenCalledWith(
+      expect.objectContaining({ timeout: 120_000 }),
+    );
+  });
+
   it('rejects a cached host that does not match an exact requested version', async () => {
     const fixture = await makeFixture();
     vscodeTest.runTests.mockImplementationOnce(async (options) => {

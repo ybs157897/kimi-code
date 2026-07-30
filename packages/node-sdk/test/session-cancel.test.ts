@@ -120,7 +120,7 @@ describe('Session.cancel', () => {
 });
 
 describe('KimiHarness.forkSession', () => {
-  it('rejects while the source session has an active turn', async () => {
+  it('rejects an indexed fork while the source session has an active turn', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-fork-active-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-fork-active-work-');
     await writeFakeModelConfig(homeDir);
@@ -138,6 +138,7 @@ describe('KimiHarness.forkSession', () => {
           harness.forkSession({
             id: session.id,
             forkId: 'ses_fork_active_child',
+            turnIndex: 0,
           }),
         ).rejects.toMatchObject({
           name: 'KimiError',

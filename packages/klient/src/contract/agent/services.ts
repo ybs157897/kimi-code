@@ -78,7 +78,11 @@ export const agentMcpContract = {
   reconnect: { input: z.tuple([z.string()]), output: noResult },
 } satisfies ServiceContract;
 
-const contentPartSchema = z.discriminatedUnion('type', [
+export const agentPluginContract = {
+  appendFreshSessionStartReminder: { input: z.tuple([]), output: noResult },
+} satisfies ServiceContract;
+
+export const contentPartSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('text'), text: z.string() }),
   z.object({
     type: z.literal('think'),

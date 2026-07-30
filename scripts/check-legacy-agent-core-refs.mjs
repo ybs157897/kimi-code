@@ -62,7 +62,7 @@ function isConfigLike(rel) {
   if (base === 'api-extractor.json') return true;
   if (/^tsconfig.*\.json$/.test(base)) return true;
   if (/\.config\.(ts|mts|js|mjs|cts|cjs)$/.test(base)) return true;
-  if (/\.nix$/.test(base)) return true;
+  if (base.endsWith('.nix')) return true;
   if (/\/scripts\//.test(rel)) return true;
   if (base.endsWith('.json') && base !== 'package.json') return true;
   return false;

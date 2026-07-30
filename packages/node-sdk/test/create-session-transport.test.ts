@@ -1,3 +1,9 @@
+/**
+ * Scenario: root KimiHarness session lifecycle crosses the SDK transport boundary.
+ * Responsibilities: create/resume/fork/delete options, telemetry, and v2 exceptions.
+ * Wiring: real SDK runtime for integration cases plus a narrow RPC stub for wrapper routing.
+ * Run: pnpm exec vitest run test/create-session-transport.test.ts
+ */
 import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -10,7 +16,6 @@ import type { ResumeSessionInput, ResumedSessionSummary } from '#/types';
 import { SDKRpcClientBase } from '#/rpc';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { waitForAgentWireEvent } from './session-runtime-helpers';
 import { recordingTelemetry, type TelemetryRecord } from './telemetry';
 import { TEST_IDENTITY } from './test-identity';
 
@@ -46,6 +51,8 @@ api_key = "sk-test"
 provider = "local"
 model = "${modelName}"
 max_context_size = 1000
+capabilities = ["thinking", "tool_use"]
+support_efforts = ["low", "medium", "high"]
 `,
     'utf-8',
   );
@@ -77,10 +84,12 @@ class StubRpc extends SDKRpcClientBase {
       createdAt: 1,
       updatedAt: 1,
       sessionMetadata: {
-        createdAt: '',
-        updatedAt: '',
+        id: input.id,
+        createdAt: 1,
+        updatedAt: 1,
         title: '',
         isCustomTitle: false,
+        archived: false,
         agents: {},
         custom: {},
       },
@@ -314,7 +323,7 @@ describe('KimiHarness.createSession transport link', () => {
     }
   });
 
-  it('emits session_fork with the forked session context', async () => {
+  it('forks with a generated id and emits session_fork with that context', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
     const records: TelemetryRecord[] = [];
@@ -331,11 +340,14 @@ describe('KimiHarness.createSession transport link', () => {
       });
       const forked = await harness.forkSession({
         id: source.id,
-        forkId: 'ses_fork_child',
         title: 'Forked child',
       });
 
-      expect(forked.id).toBe('ses_fork_child');
+      expect(forked.id).not.toBe(source.id);
+      expect(forked.summary).toMatchObject({
+        title: 'Forked child',
+        metadata: {},
+      });
       expect(records).toContainEqual({
         event: 'session_started',
         sessionId: forked.id,
@@ -352,6 +364,34 @@ describe('KimiHarness.createSession transport link', () => {
         sessionId: forked.id,
         properties: undefined,
       });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('uses an explicit fork id through the public Harness API', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = await makeTempDir();
+    const harness = createKimiHarness({
+      identity: TEST_IDENTITY,
+      homeDir,
+    });
+
+    try {
+      const source = await harness.createSession({
+        id: 'ses_explicit_fork_source',
+        workDir,
+      });
+
+      const forked = await harness.forkSession({
+        id: source.id,
+        forkId: 'ses_explicit_fork_target',
+      });
+
+      expect(forked.id).toBe('ses_explicit_fork_target');
+      await expect(
+        harness.listSessions({ sessionId: 'ses_explicit_fork_target' }),
+      ).resolves.toHaveLength(1);
     } finally {
       await harness.close();
     }
@@ -408,17 +448,6 @@ describe('KimiHarness.createSession transport link', () => {
       expect(session.workDir).toBe(toPosix(workDir));
       await expect(session.getStatus()).resolves.toMatchObject({ model: 'kimi-test-model' });
       expect(harness.sessions.get(session.id)).toBe(session);
-      const configEvent = await waitForAgentWireEvent(
-        homeDir,
-        session.id,
-        'config.update',
-        (event) => event['modelAlias'] === 'kimi-test-model',
-      );
-      expect(configEvent).toMatchObject({
-        type: 'config.update',
-        modelAlias: 'kimi-test-model',
-      });
-      expect(configEvent).not.toHaveProperty('provider');
 
       const summaries = await harness.listSessions({ workDir });
       const summary = summaries.find((item) => item.id === session.id);
@@ -472,17 +501,6 @@ effort = "medium"
       expect(session.id).toBe('ses_alias_model');
       await expect(session.getStatus()).resolves.toMatchObject({ model: 'alias-model' });
       expect(harness.sessions.get(session.id)).toBe(session);
-      const configEvent = await waitForAgentWireEvent(
-        homeDir,
-        session.id,
-        'config.update',
-        (event) => event['modelAlias'] === 'alias-model',
-      );
-      expect(configEvent).toMatchObject({
-        type: 'config.update',
-        modelAlias: 'alias-model',
-      });
-      expect(configEvent).not.toHaveProperty('provider');
     } finally {
       await harness.close();
     }
@@ -668,6 +686,7 @@ effort = "medium"
   it('applies initial thinking and permission runtime options', async () => {
     const homeDir = await makeTempDir();
     const workDir = await makeTempDir();
+    await writeTestModelConfig(homeDir);
     const harness = createKimiHarness({
       identity: TEST_IDENTITY,
       homeDir,
@@ -677,31 +696,14 @@ effort = "medium"
       const session = await harness.createSession({
         id: 'ses_initial_runtime_options',
         workDir,
+        model: 'kimi-test-model',
         thinking: 'low',
         permission: 'auto',
       });
 
-      await expect(
-        waitForAgentWireEvent(
-          homeDir,
-          session.id,
-          'config.update',
-          (event) => event['thinkingEffort'] === 'low',
-        ),
-      ).resolves.toMatchObject({
-        type: 'config.update',
+      await expect(session.getStatus()).resolves.toMatchObject({
         thinkingEffort: 'low',
-      });
-      await expect(
-        waitForAgentWireEvent(
-          homeDir,
-          session.id,
-          'permission.set_mode',
-          (event) => event['mode'] === 'auto',
-        ),
-      ).resolves.toMatchObject({
-        type: 'permission.set_mode',
-        mode: 'auto',
+        permission: 'auto',
       });
     } finally {
       await harness.close();
@@ -724,17 +726,6 @@ effort = "medium"
       });
 
       await expect(session.getStatus()).resolves.toMatchObject({ permission: 'auto' });
-      await expect(
-        waitForAgentWireEvent(
-          homeDir,
-          session.id,
-          'permission.set_mode',
-          (event) => event['mode'] === 'auto',
-        ),
-      ).resolves.toMatchObject({
-        type: 'permission.set_mode',
-        mode: 'auto',
-      });
 
       const explicit = await harness.createSession({
         id: 'ses_default_permission_explicit_override',
@@ -742,6 +733,42 @@ effort = "medium"
         permission: 'manual',
       });
       await expect(explicit.getStatus()).resolves.toMatchObject({ permission: 'manual' });
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it('rejects custom Kaos create and resume overrides with a stable v2 error', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = await makeTempDir();
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const kaos = {} as Kaos;
+
+    try {
+      await expect(
+        harness.createSession({
+          id: 'ses_custom_kaos_create',
+          workDir,
+          kaos,
+        }),
+      ).rejects.toMatchObject({
+        name: 'KimiError',
+        code: 'not_implemented',
+        details: { option: 'custom Kaos session overrides' },
+      } satisfies Partial<KimiError>);
+
+      const session = await harness.createSession({
+        id: 'ses_custom_kaos_resume',
+        workDir,
+      });
+      await session.close();
+      await expect(
+        harness.resumeSession({ id: session.id, kaos }),
+      ).rejects.toMatchObject({
+        name: 'KimiError',
+        code: 'not_implemented',
+        details: { option: 'custom Kaos session overrides' },
+      } satisfies Partial<KimiError>);
     } finally {
       await harness.close();
     }

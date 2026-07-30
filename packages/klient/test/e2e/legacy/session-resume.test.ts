@@ -38,7 +38,8 @@ async function daemonReachable(): Promise<boolean> {
 }
 
 const reachable = await daemonReachable();
-const describeLive = reachable ? describe : describe.skip;
+const credentialFree = process.env['KIMI_SERVER_E2E_CREDENTIAL_FREE'] === '1';
+const describeLiveWithModel = reachable && !credentialFree ? describe : describe.skip;
 
 const created: Array<{ client: DaemonClient; sid: string }> = [];
 
@@ -57,7 +58,7 @@ afterEach(async () => {
   }
 });
 
-describeLive('session resume + activity (live server required)', () => {
+describeLiveWithModel('session resume + activity (live server and model required)', () => {
   // ── Gap 1: cold-session /messages ──────────────────────────────────────
   it(
     'GET /messages on a persisted session returns 200 (resumeSession injection)',

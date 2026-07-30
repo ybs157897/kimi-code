@@ -136,6 +136,7 @@ async function openSocketWithHello(opts: {
 
 const reachable = await daemonReachable();
 const describeLive = reachable ? describe : describe.skip;
+const credentialFree = process.env['KIMI_SERVER_E2E_CREDENTIAL_FREE'] === '1';
 
 const created: Array<{ client: DaemonClient; sid: string }> = [];
 const sockets: WsClient[] = [];
@@ -198,7 +199,7 @@ describeLive('refresh-replay (live server required)', () => {
     expect(typeof auth.providers_count).toBe('number');
   });
 
-  it(
+  it.skipIf(credentialFree)(
     'reconnect with caught-up last_seq → ack accepts subscription, no replay events',
     async () => {
       const log = createCaseLogger('refresh: caught-up replay');
@@ -260,7 +261,7 @@ describeLive('refresh-replay (live server required)', () => {
     PROMPT_TIMEOUT_MS + 30_000,
   );
 
-  it(
+  it.skipIf(credentialFree)(
     'reconnect with last_seq=0 → server replays buffered events in order before ack',
     async () => {
       const log = createCaseLogger('refresh: replay from zero');

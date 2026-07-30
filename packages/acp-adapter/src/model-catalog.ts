@@ -33,6 +33,10 @@
 
 import type { KimiHarness, ModelAlias } from '@moonshot-ai/kimi-code-sdk';
 
+import type { AcpModelEntry } from './types';
+
+export type { AcpModelEntry } from './types';
+
 // ── Local mirrors of legacy @moonshot-ai/agent-core helpers ──────────────
 // The canonical implementations live in @moonshot-ai/agent-core-v2's IModelCatalog
 // service and @moonshot-ai/kosong/providers/anthropic-profile. These adapter-local
@@ -120,31 +124,6 @@ function effectiveModelAlias(
  * later without breaking callers; ACP UIs treat it as a flavour-text
  * subtitle.
  */
-export interface AcpModelEntry {
-  readonly id: string;
-  readonly name: string;
-  readonly description?: string | undefined;
-  readonly thinkingSupported: boolean;
-  /** Declared 'always_thinking' capability — thinking cannot be turned off. */
-  readonly alwaysThinking?: boolean;
-  /**
-   * The model's selectable thinking-effort levels: declared
-   * `support_efforts` after override/provider-profile resolution (blank
-   * entries dropped, mirroring v2's `effortsFor`). Empty for
-   * boolean models, where the ACP picker keeps the legacy `off`/`on`
-   * pair instead of per-level rows.
-   */
-  readonly supportEfforts: readonly string[];
-  /**
-   * The thinking effort to send when the client picks the legacy `'on'`
-   * value: the model's declared `default_effort`, else the middle
-   * `support_efforts` entry, else `'on'` for boolean models. Mirrors
-   * v2's `defaultThinkingEffortFor` so the ACP on-state matches
-   * the TUI.
-   */
-  readonly defaultThinkingEffort: string;
-}
-
 /**
  * Models that support thinking by toggle (not by name match or
  * `capabilities` declaration). Kept here because the list is

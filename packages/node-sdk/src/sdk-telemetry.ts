@@ -9,11 +9,13 @@
 export interface TelemetryClient {
   track(event: string, properties?: Record<string, string | number | boolean | null | undefined>): void;
   setContext?(patch: Record<string, string | number | boolean | null | undefined>): void;
+  withContext?(patch: TelemetryContextPatch): TelemetryClient;
   flush?(): Promise<void>;
   shutdown?(): Promise<void>;
 }
 
 export interface TelemetryContextPatch {
+  readonly sessionId?: string | null;
   readonly [key: string]: string | number | boolean | null | undefined;
 }
 
@@ -36,6 +38,9 @@ export function withTelemetryContext(
   client: TelemetryClient,
   patch: TelemetryContextPatch,
 ): TelemetryClient {
+  if (client.withContext !== undefined) {
+    return client.withContext(patch);
+  }
   return {
     ...client,
     track(event: string, properties?: Record<string, string | number | boolean | null | undefined>): void {

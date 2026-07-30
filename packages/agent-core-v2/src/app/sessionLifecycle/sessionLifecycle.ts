@@ -1,17 +1,19 @@
 /**
  * `sessionLifecycle` domain (L6) — creates and tracks sessions at the process root.
  *
- * Defines the public contract of session lifecycle: the `CreateSessionOptions`,
- * `ForkSessionOptions`, `CreateChildSessionOptions`, and the
+ * Defines the public contract of session lifecycle: create/resume/fork
+ * options, the runtime-only `SessionHostContext`, and the
  * `ISessionLifecycleService` used to create sessions (`create`), look up the
- * live ones (`get` / `list`), close them (`close`), archive/restore them,
+ * live ones (`get` / `list`), close or hard-delete them, archive/restore them,
  * fork them (`fork`), and fork-then-tag them as direct children (`createChild`). Announces
  * lifecycle transitions through ordered hook slots plus
  * `onDidCreateSession` / `onDidCloseSession` / `onDidArchiveSession` /
  * `onDidForkSession`. App-scoped — a single
  * process-wide instance owns the live session scope tree. Persisted
  * sessions (open or closed) are the `sessionIndex` read model; per-session
- * behaviour lives in the Session-scoped domains.
+ * behaviour lives in the Session-scoped domains. The host context can replace
+ * the Workspace FS factory for an in-process host without adding a callback
+ * to the serializable Klient contract.
  */
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
@@ -20,6 +22,7 @@ import type { Event } from '#/_base/event';
 import type { McpServerConfig } from '#/agent/mcp/config-schema';
 import type { BindAgentInput } from '#/agent/profile/profile';
 import type { Hooks } from '#/hooks';
+import type { IWorkspaceFileSystemFactory } from '#/os/interface/workspaceFileSystem';
 
 export interface CreateSessionOptions {
   readonly sessionId?: string;
@@ -27,6 +30,22 @@ export interface CreateSessionOptions {
   readonly additionalDirs?: readonly string[];
   readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
   readonly mainAgentBinding?: BindAgentInput;
+  readonly title?: string;
+  readonly metadata?: Record<string, unknown>;
+}
+
+export interface ResumeSessionOptions {
+  readonly additionalDirs?: readonly string[];
+  readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
+}
+
+export interface DeleteSessionOptions {
+  readonly workspaceId: string;
+  readonly sessionId: string;
+}
+
+export interface SessionHostContext {
+  readonly workspaceFileSystemFactory?: IWorkspaceFileSystemFactory;
 }
 
 export interface ForkSessionOptions {
@@ -34,6 +53,7 @@ export interface ForkSessionOptions {
   readonly newSessionId?: string;
   readonly title?: string;
   readonly metadata?: Record<string, unknown>;
+  readonly userVisibleTurnIndex?: number;
 }
 
 export interface CreateChildSessionOptions {
@@ -41,6 +61,7 @@ export interface CreateChildSessionOptions {
   readonly newSessionId?: string;
   readonly title?: string;
   readonly metadata?: Record<string, unknown>;
+  readonly userVisibleTurnIndex?: number;
 }
 
 export interface SessionCreatedEvent {
@@ -86,13 +107,25 @@ export interface ISessionLifecycleService {
   readonly onDidArchiveSession: Event<SessionArchivedEvent>;
   readonly onDidForkSession: Event<SessionForkedEvent>;
   readonly hooks: Hooks<SessionLifecycleHooks>;
-  create(opts: CreateSessionOptions): Promise<ISessionScopeHandle>;
+  create(
+    opts: CreateSessionOptions,
+    host?: SessionHostContext,
+  ): Promise<ISessionScopeHandle>;
   get(sessionId: string): ISessionScopeHandle | undefined;
   list(): readonly ISessionScopeHandle[];
-  resume(sessionId: string): Promise<ISessionScopeHandle | undefined>;
+  resume(
+    sessionId: string,
+    opts?: ResumeSessionOptions,
+    host?: SessionHostContext,
+  ): Promise<ISessionScopeHandle | undefined>;
   close(sessionId: string): Promise<void>;
+  delete(opts: DeleteSessionOptions): Promise<void>;
   archive(sessionId: string): Promise<void>;
-  restore(sessionId: string): Promise<ISessionScopeHandle | undefined>;
+  restore(
+    sessionId: string,
+    opts?: ResumeSessionOptions,
+    host?: SessionHostContext,
+  ): Promise<ISessionScopeHandle | undefined>;
   fork(opts: ForkSessionOptions): Promise<ISessionScopeHandle>;
   createChild(opts: CreateChildSessionOptions): Promise<ISessionScopeHandle>;
 }

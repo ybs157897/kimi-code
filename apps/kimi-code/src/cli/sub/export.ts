@@ -8,26 +8,17 @@
 import { createInterface } from 'node:readline/promises';
 
 import {
-  setTelemetryContext,
-  shutdownTelemetry,
-  track,
-  withTelemetryContext,
-} from '@moonshot-ai/kimi-telemetry';
-import {
-  createKimiHarness,
   type ExportSessionInput,
   type ExportSessionResult,
-  type KimiHarness,
-  type SessionSummary,
   type ShellEnvironment,
-  type TelemetryClient,
 } from '@moonshot-ai/kimi-code-sdk';
 import type { Command } from 'commander';
+import { resolve } from 'pathe';
 
-import { CLI_SHUTDOWN_TIMEOUT_MS, CLI_UI_MODE } from '#/constant/app';
-import { createCliTelemetryBootstrap, initializeCliTelemetry } from '#/cli/telemetry';
+import type { CLIOptions } from '#/cli/options';
 import { detectInstallSource } from '#/cli/update/source';
-import { createKimiCodeHostIdentity } from '#/cli/version';
+import { getVersion } from '#/cli/version';
+import { createCliV2Runtime } from '#/cli/v2/create-v2-runtime';
 import { detectShellEnvironment } from '#/utils/process/shell-env';
 
 interface WritableLike {
@@ -37,14 +28,20 @@ interface WritableLike {
 export interface PreviousSessionSummary {
   readonly workDir: string;
   readonly sessionId: string;
-  readonly sessionDir: string;
   readonly title?: string | undefined;
 }
 
+export interface ExportSessionSummary {
+  readonly id: string;
+  readonly workDir: string;
+  readonly title?: string;
+}
+
 export interface ExportDeps {
-  readonly listSessions: (workDir: string) => Promise<readonly SessionSummary[]>;
+  readonly listSessions: (workDir: string) => Promise<readonly ExportSessionSummary[]>;
   readonly exportSession: (input: ExportSessionInput) => Promise<ExportSessionResult>;
   readonly confirmPreviousSession: (summary: PreviousSessionSummary) => Promise<boolean>;
+  readonly close?: () => Promise<void>;
   readonly getInstallSource: () => Promise<string>;
   readonly getShellEnv: () => ShellEnvironment;
   readonly version: string;
@@ -120,76 +117,61 @@ export function registerExportCommand(parent: Command, deps?: Partial<ExportDeps
         sessionId: string | undefined,
         options: { output?: string; yes?: boolean; includeGlobalLog?: boolean },
       ) => {
-        await handleExport(createDefaultExportDeps(deps), sessionId, options.output, {
-          yes: options.yes === true,
-          includeGlobalLog: options.includeGlobalLog !== false,
-        });
+        const resolved = createDefaultExportDeps(deps);
+        try {
+          await handleExport(resolved, sessionId, options.output, {
+            yes: options.yes === true,
+            includeGlobalLog: options.includeGlobalLog !== false,
+          });
+        } finally {
+          await resolved.close?.();
+        }
       },
     );
 }
 
 function createDefaultExportDeps(overrides: Partial<ExportDeps> = {}): ExportDeps {
-  let harness: KimiHarness | undefined;
-  let telemetryBootstrap: ReturnType<typeof createCliTelemetryBootstrap> | undefined;
-  let telemetryInitialized = false;
-  let telemetryShutdown = false;
-  const identity = createKimiCodeHostIdentity();
-  const telemetryClient: TelemetryClient = {
-    track,
-    withContext: withTelemetryContext,
-    setContext: setTelemetryContext,
-  };
-  const getTelemetryBootstrap = (): ReturnType<typeof createCliTelemetryBootstrap> => {
-    telemetryBootstrap ??= createCliTelemetryBootstrap();
-    return telemetryBootstrap;
-  };
-  const getHarness = (): KimiHarness => {
-    const currentTelemetryBootstrap = getTelemetryBootstrap();
-    harness ??= createKimiHarness({
-      homeDir: currentTelemetryBootstrap.homeDir,
-      identity,
-      telemetry: telemetryClient,
+  const version = getVersion();
+  let runtimePromise:
+    | Promise<Awaited<ReturnType<typeof createCliV2Runtime>>['runtime']>
+    | undefined;
+  const getRuntime = () => {
+    runtimePromise ??= createCliV2Runtime(
+      EXPORT_CLI_OPTIONS,
+      version,
+      'shell',
+      'default',
+    ).then(({ runtime, firstLaunch }) => {
+      if (firstLaunch) runtime.telemetry.track('first_launch');
+      return runtime;
     });
-    return harness;
-  };
-  const initializeDefaultTelemetry = async (): Promise<void> => {
-    if (telemetryInitialized) return;
-    const currentTelemetryBootstrap = getTelemetryBootstrap();
-    const currentHarness = getHarness();
-    await currentHarness.ensureConfigFile();
-    const config = await currentHarness.getConfig();
-    initializeCliTelemetry({
-      harness: currentHarness,
-      bootstrap: currentTelemetryBootstrap,
-      config,
-      version: identity.version,
-      uiMode: CLI_UI_MODE,
-    });
-    telemetryInitialized = true;
-  };
-  const shutdownDefaultTelemetry = async (): Promise<void> => {
-    if (!telemetryInitialized || telemetryShutdown) return;
-    telemetryShutdown = true;
-    await shutdownTelemetry({ timeoutMs: CLI_SHUTDOWN_TIMEOUT_MS });
+    return runtimePromise;
   };
   return {
     listSessions:
       overrides.listSessions ??
-      ((workDir: string) =>
-        getHarness().listSessions({
-          workDir,
-        })),
+      ((workDir: string) => listSessionsForWorkDir(getRuntime, workDir)),
     exportSession:
       overrides.exportSession ??
       (async (input: ExportSessionInput) => {
-        await initializeDefaultTelemetry();
-        try {
-          return await getHarness().exportSession(input);
-        } finally {
-          await shutdownDefaultTelemetry();
+        const runtime = await getRuntime();
+        return runtime.klient.global.sessionExport.export({
+          sessionId: input.id,
+          outputPath: input.outputPath,
+          includeGlobalLog: input.includeGlobalLog,
+          version: input.version,
+          installSource: input.installSource,
+          shellEnv: input.shellEnv,
+        });
+      }),
+    close:
+      overrides.close ??
+      (async () => {
+        if (runtimePromise !== undefined) {
+          await (await runtimePromise).close();
         }
       }),
-    version: overrides.version ?? identity.version,
+    version: overrides.version ?? version,
     getInstallSource: overrides.getInstallSource ?? (() => detectInstallSource()),
     getShellEnv: overrides.getShellEnv ?? detectShellEnvironment,
     confirmPreviousSession: overrides.confirmPreviousSession ?? confirmPreviousSession,
@@ -201,19 +183,62 @@ function createDefaultExportDeps(overrides: Partial<ExportDeps> = {}): ExportDep
 }
 
 async function findPreviousSession(deps: Pick<ExportDeps, 'cwd' | 'listSessions'>): Promise<
-  SessionSummary | undefined
+  ExportSessionSummary | undefined
 > {
   const sessions = await deps.listSessions(deps.cwd());
   return sessions[0];
 }
 
-function toPreviousSessionSummary(summary: SessionSummary): PreviousSessionSummary {
+function toPreviousSessionSummary(summary: ExportSessionSummary): PreviousSessionSummary {
   return {
     workDir: summary.workDir,
     sessionId: summary.id,
-    sessionDir: summary.sessionDir,
-    ...(summary.title === undefined ? {} : { title: summary.title }),
+    title: summary.title,
   };
+}
+
+const EXPORT_CLI_OPTIONS: CLIOptions = {
+  session: undefined,
+  continue: false,
+  yolo: false,
+  auto: false,
+  plan: false,
+  model: undefined,
+  outputFormat: undefined,
+  prompt: undefined,
+  skillsDirs: [],
+  agent: undefined,
+  agentFiles: [],
+};
+
+type ExportRuntime = Awaited<ReturnType<typeof createCliV2Runtime>>['runtime'];
+
+async function listSessionsForWorkDir(
+  getRuntime: () => Promise<ExportRuntime>,
+  workDir: string,
+): Promise<readonly ExportSessionSummary[]> {
+  const runtime = await getRuntime();
+  const normalizedWorkDir = resolve(workDir);
+  const sessions: ExportSessionSummary[] = [];
+  const visitedCursors = new Set<string>();
+  let cursor: string | undefined;
+  for (;;) {
+    const page = await runtime.klient.global.sessions.list({
+      cursor,
+      limit: 100,
+    });
+    for (const summary of page.items) {
+      if (summary.cwd === undefined || resolve(summary.cwd) !== normalizedWorkDir) continue;
+      sessions.push({
+        id: summary.id,
+        workDir: summary.cwd,
+        title: summary.title,
+      });
+    }
+    cursor = page.nextCursor;
+    if (cursor === undefined || visitedCursors.has(cursor)) return sessions;
+    visitedCursors.add(cursor);
+  }
 }
 
 function normalizeOptionalSessionId(sessionId: string | undefined): string | undefined {

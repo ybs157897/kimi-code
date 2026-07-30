@@ -11,12 +11,26 @@ const dtsRoot = path.join(tempDir, 'dts');
 const providerClientShimPath = path.join(dtsRoot, 'provider-clients.d.ts');
 const tscBinPath = packageBinPath('typescript', 'bin/tsc6');
 const apiExtractorBinPath = packageBinPath('@microsoft/api-extractor', 'bin/api-extractor');
+const v2Only = process.argv.includes('--v2-only');
 
-const packageDirs = new Set(['kaos', 'kosong', 'node-sdk', 'oauth']);
+const packageDirs = new Set([
+  'agent-core-v2',
+  'kaos',
+  'klient',
+  'kosong',
+  'minidb',
+  'node-sdk',
+  'oauth',
+  'protocol',
+]);
 const workspacePackages = new Map([
+  ['@moonshot-ai/agent-core-v2', 'agent-core-v2'],
   ['@moonshot-ai/kaos', 'kaos'],
   ['@moonshot-ai/kimi-code-oauth', 'oauth'],
+  ['@moonshot-ai/klient', 'klient'],
   ['@moonshot-ai/kosong', 'kosong'],
+  ['@moonshot-ai/minidb', 'minidb'],
+  ['@moonshot-ai/protocol', 'protocol'],
 ]);
 
 try {
@@ -24,7 +38,20 @@ try {
   await run('tsc', tscBinPath, ['-p', 'tsconfig.dts.json']);
   await writeProviderClientShim();
   await rewriteWorkspaceSpecifiers();
-  await run('api-extractor', apiExtractorBinPath, ['run', '--local']);
+  if (!v2Only) {
+    await run('api-extractor (root)', apiExtractorBinPath, [
+      'run',
+      '--local',
+      '--config',
+      'api-extractor.json',
+    ]);
+  }
+  await run('api-extractor (v2)', apiExtractorBinPath, [
+    'run',
+    '--local',
+    '--config',
+    'api-extractor.v2.json',
+  ]);
 } finally {
   await rm(tempDir, { recursive: true, force: true });
 }
@@ -104,7 +131,7 @@ async function rewriteWorkspaceSpecifiers() {
           `import { GoogleGenAI as GenAIClient } from '${providerClientSpecifier}';`,
         );
       const updated = providerClientText.replaceAll(
-        /(["'])(#\/[^"']+|@moonshot-ai\/(?:kaos|kimi-code-oauth|kosong)(?:\/[^"']+)?)\1/g,
+        /(["'])(#\/[^"']+|@moonshot-ai\/(?:agent-core-v2|kaos|kimi-code-oauth|klient|kosong|minidb|protocol)(?:\/[^"']+)?)\1/g,
         (_match, quote, specifier) => {
           const resolved = resolveSpecifier({
             currentFile: file,

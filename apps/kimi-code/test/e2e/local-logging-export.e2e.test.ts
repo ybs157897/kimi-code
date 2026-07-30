@@ -1,3 +1,9 @@
+/**
+ * Scenario: CLI session export packages v2 diagnostic logs.
+ * Responsibilities: the default includes session/global logs; the opt-out omits the global log.
+ * Wiring: real SDK/Core storage and CLI export command, with no external provider.
+ * Run: KIMI_E2E=1 pnpm exec vitest run apps/kimi-code/test/e2e/local-logging-export.e2e.test.ts
+ */
 import { readFile, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -58,7 +64,7 @@ afterEach(async () => {
 });
 
 describe.skipIf(!ENABLED)('local logging export e2e', () => {
-  it('exports session log and global log by default, and allows skipping global log', async () => {
+  it('exports session and global logs when global diagnostics use the default policy', async () => {
     const harness = createKimiHarness({
       homeDir,
       identity: createKimiCodeHostIdentity('0.1.1'),
@@ -86,6 +92,22 @@ describe.skipIf(!ENABLED)('local logging export e2e', () => {
       ) as Record<string, unknown>;
       expect(defaultManifest['sessionLogPath']).toBe(SESSION_LOG);
       expect(defaultManifest['globalLogPath']).toBe(GLOBAL_LOG);
+    } finally {
+      await harness.close().catch(() => {});
+    }
+  }, 15_000);
+
+  it('omits the global log when export disables global diagnostics', async () => {
+    const harness = createKimiHarness({
+      homeDir,
+      identity: createKimiCodeHostIdentity('0.1.1'),
+    });
+    try {
+      const session = await harness.createSession({
+        id: 'ses_cli_logging_export_without_global',
+        workDir,
+      });
+      log.warn('cli global marker excluded from export');
 
       const noGlobalZip = join(workDir, 'no-global.zip');
       await runKimiExport([session.id, '-o', noGlobalZip, '--no-include-global-log']);

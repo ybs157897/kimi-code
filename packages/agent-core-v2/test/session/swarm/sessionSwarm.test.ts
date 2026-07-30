@@ -1304,6 +1304,7 @@ function lifecycleStub(
       handles.set(id, handle);
       return handle;
     }),
+    restore: vi.fn(async (agentId: string) => handles.get(agentId)),
     fork: vi.fn(),
     get: (agentId: string) => handles.get(agentId),
     list: () => [...handles.values()],

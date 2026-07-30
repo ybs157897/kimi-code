@@ -18,6 +18,7 @@ import { fileHandlers } from "../src/handlers/file.handler";
 import type { HandlerContext } from "../src/handlers/types";
 import { FileManager } from "../src/managers/file.manager";
 import { SessionRuntime } from "../src/runtime/session-runtime";
+import type { VscodeHostPort } from "../src/runtime/v2-host";
 import { areSameFsPath, isFsPathInsideOrEqual } from "../src/utils/fs-path";
 import { relativeWorkspacePath } from "../src/utils/workspace-path";
 
@@ -487,6 +488,10 @@ function createBridge(): BridgeHandler {
     vi.fn(),
     vi.fn(),
     vi.fn(),
+    {
+      homeDir: "/tmp/kimi-code-test-home",
+      close: vi.fn(async () => undefined),
+    } as unknown as VscodeHostPort,
   );
   bridges.push(bridge);
   return bridge;

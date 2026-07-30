@@ -32,6 +32,7 @@ export const mcpServerConfigSchema = z.discriminatedUnion('transport', [
     url: z.string().url(),
     headers: stringRecordSchema.optional(),
     bearerTokenEnvVar: z.string().min(1).optional(),
+    auth: z.literal('oauth').optional(),
     ...mcpServerCommonFields,
   }),
   z.object({
@@ -39,6 +40,7 @@ export const mcpServerConfigSchema = z.discriminatedUnion('transport', [
     url: z.string().url(),
     headers: stringRecordSchema.optional(),
     bearerTokenEnvVar: z.string().min(1).optional(),
+    auth: z.literal('oauth').optional(),
     ...mcpServerCommonFields,
   }),
 ]);

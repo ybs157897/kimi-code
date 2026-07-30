@@ -11,6 +11,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { pluginManifestSchema } from '../src/contract/global/plugins.js';
+import { mcpCatalogContract } from '../src/contract/global/mcp.js';
 import {
   authManagedUsageResultSchema,
   completeFeedbackUploadBodySchema,
@@ -75,6 +76,16 @@ describe('MCP timeout contract validation', () => {
 
   it.each(timeoutCases)('rejects an above-maximum $field for $surface', ({ field, parse }) => {
     expect(parse(field, 2_147_483_648).success).toBe(false);
+  });
+});
+
+describe('MCP catalog optional result contract', () => {
+  it('normalizes an IPC undefined result to undefined', () => {
+    expect(mcpCatalogContract.get.output.parse(undefined)).toBeUndefined();
+  });
+
+  it('normalizes an HTTP null result to undefined', () => {
+    expect(mcpCatalogContract.get.output.parse(null)).toBeUndefined();
   });
 });
 
@@ -265,6 +276,17 @@ describe('session creation contract', () => {
           model: 'example-model',
           thinking: 'off',
         },
+      }).success,
+    ).toBe(true);
+  });
+
+  it('accepts explicit identity and initial metadata', () => {
+    expect(
+      createSessionOptionsSchema.safeParse({
+        sessionId: 'session-example',
+        workDir: '/tmp/example',
+        title: 'Example',
+        metadata: { owner: 'example' },
       }).success,
     ).toBe(true);
   });

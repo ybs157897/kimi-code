@@ -1,21 +1,10 @@
 /**
- * Minimal SDK-local diagnostic logger.
+ * SDK-local diagnostic logging facade.
  *
- * The legacy `@moonshot-ai/agent-core` owned a full rotating-file `RootLogger`
- * with session-scoped sinks.  In the v2 world the engine's `ILogService`
- * handles that — the SDK only needs a lightweight singleton for process-level
- * startup / shutdown messages that may occur before or after the v2 runtime's
- * lifecycle.
- *
- * This implementation is a best-effort stderr emitter with the same type
- * surface as the legacy `Logger`.  Diagnostics not configured at process
- * level will be swallowed silently.
- *
- * External consumers who previously imported `log`, `redact`,
- * `flushDiagnosticLogs` from `@moonshot-ai/kimi-code-sdk` get the same
- * symbols from this module — the interface is backward compatible and the
- * implementation is intentionally simpler, since v2's ILogService owns the
- * durable session-scoped path.
+ * Keeps the root SDK's process-wide `log` symbol while routing entries into
+ * the v2 runtime that owns the matching live session. Untagged entries use the
+ * most recently constructed runtime, preserving the root SDK's active-home
+ * behavior without exposing engine log services to consumers.
  */
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -34,6 +23,39 @@ export interface Logger {
   debug(message: string, payload?: LogPayload): void;
   createChild(ctx: LogContext): Logger;
 }
+
+type WritableLogLevel = Exclude<LogLevel, 'off'>;
+
+interface DiagnosticEntry {
+  readonly level: WritableLogLevel;
+  readonly message: string;
+  readonly payload?: LogPayload;
+}
+
+export interface DiagnosticLogBackend {
+  readonly globalLogPath: string;
+  write(
+    level: WritableLogLevel,
+    message: string,
+    payload?: LogPayload,
+  ): boolean;
+  flush(): Promise<void>;
+  flushSync?(): void;
+}
+
+export interface DiagnosticLogRegistration {
+  dispose(): void;
+}
+
+interface BackendSlot {
+  readonly pending: DiagnosticEntry[];
+  ready: Promise<void>;
+  backend?: DiagnosticLogBackend;
+  disposed: boolean;
+  failed: boolean;
+}
+
+const backendSlots: BackendSlot[] = [];
 
 class SimpleLogger implements Logger {
   constructor(private readonly boundCtx: LogContext) {}
@@ -58,39 +80,91 @@ class SimpleLogger implements Logger {
     return new SimpleLogger({ ...this.boundCtx, ...ctx });
   }
 
-  private emit(level: string, message: string, _payload?: LogPayload): void {
-    if (isEnabled(level, currentLogLevel)) {
-      const sid = this.boundCtx['sessionId'];
-      const prefix = sid
-        ? `[kimi:${level}] [session:${String(sid)}]`
-        : `[kimi:${level}]`;
-      process.stderr.write(`${prefix} ${message}\n`);
-    }
+  private emit(
+    level: WritableLogLevel,
+    message: string,
+    payload?: LogPayload,
+  ): void {
+    const entry: DiagnosticEntry = {
+      level,
+      message,
+      payload: mergePayloadContext(payload, this.boundCtx),
+    };
+    if (routeEntry(entry)) return;
+    emitFallback(entry);
   }
-}
-
-let currentLogLevel: LogLevel = resolveLogLevel();
-
-function resolveLogLevel(): LogLevel {
-  const env = process.env['KIMI_LOG_LEVEL']?.trim().toLowerCase();
-  if (env === 'error' || env === 'warn' || env === 'info' || env === 'debug') return env;
-  return 'off';
-}
-
-function isEnabled(target: string, current: LogLevel): boolean {
-  if (current === 'off') return false;
-  const order: LogLevel[] = ['error', 'warn', 'info', 'debug'];
-  const targetIdx = order.indexOf(target as LogLevel);
-  const currentIdx = order.indexOf(current);
-  return targetIdx >= 0 && currentIdx >= 0 && targetIdx <= currentIdx;
 }
 
 export const log: Logger = new SimpleLogger({});
 
-/**
- * Best-effort value redaction.  Walks a plain object tree and masks known
- * sensitive keys (apiKey, token, password, secret).
- */
+export function registerDiagnosticLogBackend(
+  backendReady: Promise<DiagnosticLogBackend>,
+): DiagnosticLogRegistration {
+  const slot = {
+    pending: [],
+    ready: Promise.resolve(),
+    disposed: false,
+    failed: false,
+  } as BackendSlot;
+  slot.ready = backendReady.then(
+    (backend) => {
+      if (slot.disposed) return;
+      slot.backend = backend;
+      for (const entry of slot.pending.splice(0)) {
+        backend.write(entry.level, entry.message, entry.payload);
+      }
+    },
+    () => {
+      slot.failed = true;
+      slot.pending.length = 0;
+    },
+  );
+  backendSlots.push(slot);
+  return {
+    dispose(): void {
+      if (slot.disposed) return;
+      slot.disposed = true;
+      slot.pending.length = 0;
+      const index = backendSlots.indexOf(slot);
+      if (index >= 0) backendSlots.splice(index, 1);
+    },
+  };
+}
+
+export async function resolveActiveGlobalLogPath(): Promise<string | undefined> {
+  const slot = latestSlot();
+  if (slot === undefined) return undefined;
+  await slot.ready;
+  return slot.backend?.globalLogPath;
+}
+
+export async function flushDiagnosticLogs(): Promise<boolean> {
+  const slots = [...backendSlots];
+  await Promise.all(slots.map((slot) => slot.ready));
+  const results = await Promise.all(
+    slots.map(async (slot) => {
+      if (slot.disposed || slot.failed || slot.backend === undefined) return false;
+      try {
+        await slot.backend.flush();
+        return true;
+      } catch {
+        return false;
+      }
+    }),
+  );
+  return results.every(Boolean);
+}
+
+export function flushDiagnosticLogsSync(): void {
+  for (const slot of backendSlots) {
+    if (!slot.disposed) slot.backend?.flushSync?.();
+  }
+}
+
+export function getRootLoggerInfo(): { readonly log: Logger } {
+  return { log };
+}
+
 export function redact<T>(value: T): T {
   if (value === null || typeof value !== 'object') return value;
   return redactTree(value as Record<string, unknown>) as T;
@@ -108,6 +182,73 @@ const SENSITIVE_KEYS = new Set([
   'Authorization',
 ]);
 
+function routeEntry(entry: DiagnosticEntry): boolean {
+  if (entrySessionId(entry) !== undefined) {
+    for (let i = backendSlots.length - 1; i >= 0; i--) {
+      const slot = backendSlots[i]!;
+      if (
+        !slot.disposed &&
+        slot.backend?.write(entry.level, entry.message, entry.payload) === true
+      ) {
+        return true;
+      }
+    }
+  }
+
+  const slot = latestSlot();
+  if (slot === undefined) return false;
+  if (slot.backend !== undefined) {
+    return slot.backend.write(entry.level, entry.message, entry.payload);
+  }
+  if (!slot.failed) {
+    slot.pending.push(entry);
+    return true;
+  }
+  return false;
+}
+
+function latestSlot(): BackendSlot | undefined {
+  for (let i = backendSlots.length - 1; i >= 0; i--) {
+    const slot = backendSlots[i]!;
+    if (!slot.disposed) return slot;
+  }
+  return undefined;
+}
+
+function mergePayloadContext(
+  payload: LogPayload | undefined,
+  bound: LogContext,
+): LogPayload | undefined {
+  if (Object.keys(bound).length === 0) return payload;
+  if (payload instanceof Error) return { error: payload, ...bound };
+  return { ...payload, ...bound };
+}
+
+function entrySessionId(entry: DiagnosticEntry): string | undefined {
+  const payload = entry.payload;
+  if (payload === undefined || payload instanceof Error) return undefined;
+  const sessionId = payload['sessionId'];
+  return typeof sessionId === 'string' && sessionId.length > 0 ? sessionId : undefined;
+}
+
+function emitFallback(entry: DiagnosticEntry): void {
+  if (!fallbackEnabled(entry.level)) return;
+  const sessionId = entrySessionId(entry);
+  const prefix =
+    sessionId === undefined
+      ? `[kimi:${entry.level}]`
+      : `[kimi:${entry.level}] [session:${sessionId}]`;
+  process.stderr.write(`${prefix} ${entry.message}\n`);
+}
+
+function fallbackEnabled(level: WritableLogLevel): boolean {
+  const configured = process.env['KIMI_LOG_LEVEL']?.trim().toLowerCase() ?? 'off';
+  const order: LogLevel[] = ['off', 'error', 'warn', 'info', 'debug'];
+  const targetIndex = order.indexOf(level);
+  const configuredIndex = order.indexOf(configured as LogLevel);
+  return targetIndex > 0 && configuredIndex >= targetIndex;
+}
+
 function redactTree(value: Record<string, unknown>): Record<string, unknown> {
   const result: Record<string, unknown> = {};
   for (const [key, val] of Object.entries(value)) {
@@ -117,23 +258,13 @@ function redactTree(value: Record<string, unknown>): Record<string, unknown> {
       result[key] = redactTree(val as Record<string, unknown>);
     } else if (Array.isArray(val)) {
       result[key] = val.map((item) =>
-        item !== null && typeof item === 'object' ? redactTree(item as Record<string, unknown>) : item,
+        item !== null && typeof item === 'object'
+          ? redactTree(item as Record<string, unknown>)
+          : item,
       );
     } else {
       result[key] = val;
     }
   }
   return result;
-}
-
-export async function flushDiagnosticLogs(): Promise<boolean> {
-  return true;
-}
-
-export function flushDiagnosticLogsSync(): void {
-  // no-op
-}
-
-export function getRootLoggerInfo(): { readonly log: Logger } {
-  return { log };
 }

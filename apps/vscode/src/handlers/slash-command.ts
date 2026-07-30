@@ -251,14 +251,14 @@ async function importContext(
   }
 
   if (target === runtime.id) throw new Error("Cannot import the current session into itself.");
-  const summary = (await ctx.harness.listSessions({
+  const summary = (await ctx.host.listSessions({
     workDir: runtime.session.workDir,
     sessionId: target,
   })).find((session) => session.id === target);
   if (summary === undefined) throw new Error(`'${target}' is not a valid file path or session ID.`);
 
   const activeSource = ctx.runtime.getSession(target)?.session;
-  const sourceSession = activeSource ?? await ctx.harness.resumeSession({ id: target });
+  const sourceSession = activeSource ?? await ctx.host.resumeSession({ id: target });
   try {
     const sourceContext = await sourceSession.getContext();
     if (sourceContext.history.length === 0) throw new Error("The source session has no messages.");

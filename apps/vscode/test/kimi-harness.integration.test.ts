@@ -1,7 +1,7 @@
 /**
- * Scenario: the VS Code host and another Node SDK client share one in-process Kimi home.
+ * Scenario: the VS Code v2 host and a compatibility Node SDK client share one Kimi home.
  * Responsibilities: outbound host identity, config/session interoperability, MCP credential/edit compatibility, and terminal provider failures.
- * Wiring: KimiRuntime, KimiHarness, core, storage, and HTTP provider adapter are real; only the remote provider is local.
+ * Wiring: KimiRuntime/VscodeV2Host, core, storage, and HTTP provider adapter are real; only the remote provider is local.
  * Run: pnpm --filter kimi-code exec vitest run test/kimi-harness.integration.test.ts
  */
 
@@ -13,19 +13,8 @@ import {
   createKimiHarness,
   type KimiHarness,
 } from "@moonshot-ai/kimi-code-sdk";
+import { createKimiV2Runtime } from "@moonshot-ai/kimi-code-sdk/v2";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-vi.mock("vscode", () => ({
-  Uri: { file: (path: string) => ({ fsPath: path }) },
-  window: {
-    showInformationMessage: async () => undefined,
-    showWarningMessage: async () => undefined,
-    showTextDocument: async () => undefined,
-  },
-  workspace: {
-    getConfiguration: () => ({ get: (_key: string, fallback: unknown) => fallback }),
-  },
-}));
 
 import {
   createFakeProviderHarness,
@@ -44,6 +33,19 @@ import { parseHostSlashCommand, runHostSlashCommand } from "../src/handlers/slas
 import type { HandlerContext } from "../src/handlers/types";
 import { KimiRuntime } from "../src/runtime/kimi-runtime";
 import type { SessionRuntime } from "../src/runtime/session-runtime";
+import { VscodeV2Host, type VscodeHostPort } from "../src/runtime/v2-host";
+
+vi.mock("vscode", () => ({
+  Uri: { file: (path: string) => ({ fsPath: path }) },
+  window: {
+    showInformationMessage: async () => undefined,
+    showWarningMessage: async () => undefined,
+    showTextDocument: async () => undefined,
+  },
+  workspace: {
+    getConfiguration: () => ({ get: (_key: string, fallback: unknown) => fallback }),
+  },
+}));
 
 const MODEL_ALIAS = "vscode-test";
 const PROVIDER_TOKEN = "sk-vscode-boundary-secret";
@@ -71,7 +73,7 @@ interface RuntimeRig {
 }
 
 interface McpHandlerRig {
-  readonly harness: KimiHarness;
+  readonly host: VscodeHostPort;
   readonly broadcasts: BroadcastRecord[];
   readonly logs: LogRecord[];
 }
@@ -150,10 +152,11 @@ async function createPlainHarness(homeDir: string): Promise<KimiHarness> {
 async function createMcpHandlerRig(): Promise<McpHandlerRig> {
   const homeDir = await mkdtemp(join(tmpdir(), "kimi-vscode-mcp-handler-"));
   cleanups.push(() => rm(homeDir, { recursive: true, force: true }));
-  const harness = await createPlainHarness(homeDir);
+  const host = new VscodeV2Host(createKimiV2Runtime({ homeDir }), homeDir);
+  cleanups.push(() => host.close());
   const broadcasts: BroadcastRecord[] = [];
   const logs: LogRecord[] = [];
-  return { harness, broadcasts, logs };
+  return { host, broadcasts, logs };
 }
 
 async function updateMcpServer(
@@ -169,7 +172,7 @@ async function getMcpServers(rig: McpHandlerRig): Promise<MCPServerConfig[]> {
 
 function mcpHandlerContext(rig: McpHandlerRig): HandlerContext {
   return {
-    harness: rig.harness,
+    host: rig.host,
     broadcast: (event: string, data: unknown, webviewId?: string) => {
       rig.broadcasts.push({ event, data, webviewId });
     },
@@ -355,12 +358,13 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
   it("combines the released slash commands with user-activatable workspace skills", async () => {
     const commands = await configHandlers[Methods.GetSlashCommands]!(undefined, {
       workDir: "/workspace",
-      harness: {
+      host: {
         listWorkspaceSkills: async () => [
           { name: "review", description: "Review changes", path: "/skills/review", source: "user", type: "prompt" },
           { name: "reference-only", description: "Reference", path: "/skills/ref", source: "user", type: "reference" },
         ],
       },
+      getSession: () => undefined,
       logError: () => undefined,
     } as unknown as HandlerContext);
 
@@ -395,17 +399,19 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     const plain = await createPlainHarness(rig.homeDir);
 
     await plain.setConfig({ thinking: { enabled: true, effort: "high" } });
-    await expect(rig.runtime.harness.getConfig({ reload: true })).resolves.toMatchObject({
+    await expect(rig.runtime.requireHost().getConfig({ reload: true })).resolves.toMatchObject({
       thinking: { enabled: true, effort: "high" },
     });
 
-    await rig.runtime.harness.setConfig({ yolo: true });
-    await expect(plain.getConfig({ reload: true })).resolves.toMatchObject({ yolo: true });
+    await rig.runtime.requireHost().setConfig({ thinking: { enabled: false, effort: "low" } });
+    await expect(plain.getConfig({ reload: true })).resolves.toMatchObject({
+      thinking: { enabled: false, effort: "low" },
+    });
   });
 
   it("masks credential-valued MCP fields at the Webview list boundary while leaving ordinary values visible", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "remote",
       transport: "http",
       url: "https://example.test/mcp",
@@ -416,7 +422,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
         "X-Workspace": "workspace-visible",
       },
     });
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "local",
       transport: "stdio",
       command: "example-mcp",
@@ -455,7 +461,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("logs a failed MCP test without returning credential values to the Webview", async () => {
     const rig = await createMcpHandlerRig();
-    vi.spyOn(rig.harness, "testMcpServer").mockResolvedValue({
+    vi.spyOn(rig.host, "testMcpServer").mockResolvedValue({
       success: false,
       output: [
         "spawn missing-mcp ENOENT",
@@ -481,7 +487,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("preserves an unchanged masked HTTP credential without exposing it in the response or broadcast", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "remote",
       transport: "http",
       url: "https://old.example.test/mcp",
@@ -518,7 +524,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     expect(rig.broadcasts).toEqual([
       { event: Events.MCPServersChanged, data: servers, webviewId: undefined },
     ]);
-    await expect(rig.harness.listMcpServers()).resolves.toEqual([
+    await expect(rig.host.listMcpServers()).resolves.toEqual([
       {
         name: "remote",
         transport: "http",
@@ -533,7 +539,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("preserves an unchanged masked stdio credential in the host configuration", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "local",
       transport: "stdio",
       command: "old-command",
@@ -567,7 +573,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
         },
       },
     ]);
-    await expect(rig.harness.listMcpServers()).resolves.toEqual([
+    await expect(rig.host.listMcpServers()).resolves.toEqual([
       {
         name: "local",
         transport: "stdio",
@@ -582,7 +588,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("replaces an HTTP credential when the Webview submits a new literal value", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "remote",
       transport: "http",
       url: "https://example.test/mcp",
@@ -600,7 +606,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     });
 
     expect(servers[0]?.headers).toEqual({ Authorization: MCP_SECRET_MASK });
-    await expect(rig.harness.listMcpServers()).resolves.toEqual([
+    await expect(rig.host.listMcpServers()).resolves.toEqual([
       {
         name: "remote",
         transport: "http",
@@ -612,7 +618,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("replaces a stdio credential when the Webview submits a new literal value", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "local",
       transport: "stdio",
       command: "example-mcp",
@@ -630,7 +636,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     });
 
     expect(servers[0]?.env).toEqual({ SERVICE_TOKEN: MCP_SECRET_MASK });
-    await expect(rig.harness.listMcpServers()).resolves.toEqual([
+    await expect(rig.host.listMcpServers()).resolves.toEqual([
       {
         name: "local",
         transport: "stdio",
@@ -642,7 +648,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("preserves existing HTTP MCP headers when the released form updates the server", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "remote",
       transport: "http",
       url: "https://old.example.test/mcp",
@@ -657,7 +663,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
       auth: "oauth",
     });
 
-    await expect(rig.harness.listMcpServers()).resolves.toEqual([
+    await expect(rig.host.listMcpServers()).resolves.toEqual([
       {
         name: "remote",
         transport: "http",
@@ -671,7 +677,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("removes stored stdio arguments when the structured edit omits them", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "local",
       transport: "stdio",
       command: "old-command",
@@ -701,7 +707,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("removes stored stdio environment variables when the structured edit omits them", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "local",
       transport: "stdio",
       command: "old-command",
@@ -731,7 +737,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("removes stored HTTP headers when the structured edit omits them", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "remote",
       transport: "http",
       url: "https://old.example.test/mcp",
@@ -764,7 +770,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("removes the stored bearer token reference when the structured edit omits it", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "remote",
       transport: "http",
       url: "https://old.example.test/mcp",
@@ -797,7 +803,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("switches an OAuth HTTP server back to ordinary HTTP when auth is omitted", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "remote",
       transport: "http",
       url: "https://old.example.test/mcp",
@@ -830,7 +836,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("moves an edited server from its original name to the new name", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "old-name",
       transport: "stdio",
       command: "old-command",
@@ -857,7 +863,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
         enabled: false,
       },
     ]);
-    await expect(rig.harness.listMcpServers()).resolves.toEqual([
+    await expect(rig.host.listMcpServers()).resolves.toEqual([
       {
         name: "new-name",
         transport: "stdio",
@@ -870,7 +876,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("preserves a Windows executable path containing spaces through a structured edit", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "windows",
       transport: "stdio",
       command: "old-command",
@@ -896,7 +902,7 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
 
   it("preserves Windows arguments containing spaces through a structured edit", async () => {
     const rig = await createMcpHandlerRig();
-    await rig.harness.addMcpServer({
+    await rig.host.addMcpServer({
       name: "windows",
       transport: "stdio",
       command: "node.exe",
@@ -1233,9 +1239,9 @@ describe("VS Code Kimi harness integration (shares one in-process SDK home)", ()
     const runtime = await openRuntimeSession(rig);
 
     await expect(runSlash(runtime, "/import missing.md", {
-      harness: rig.runtime.harness,
+      host: rig.runtime.harness,
       runtime: rig.runtime,
-    } as HandlerContext)).rejects.toThrow(
+    } as unknown as HandlerContext)).rejects.toThrow(
       "is not a valid file path or session ID",
     );
 

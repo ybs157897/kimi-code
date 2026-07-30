@@ -17,6 +17,7 @@ import {
   agentFullCompactionContract,
   agentMcpContract,
   agentPlanContract,
+  agentPluginContract,
   agentProfileContract,
   agentReplayViewContract,
   agentShellCommandContract,
@@ -30,12 +31,20 @@ import { configContract } from './global/config.js';
 import { envContract } from './global/env.js';
 import { flagsContract } from './global/flags.js';
 import { hostFsContract } from './global/hostFs.js';
+import {
+  mcpCatalogContract,
+  mcpOAuthContract,
+  mcpProbeContract,
+} from './global/mcp.js';
 import { modelsContract } from './global/models.js';
 import { pluginsContract } from './global/plugins.js';
 import { providersContract } from './global/providers.js';
 import { sessionExportContract } from './global/session-export.js';
+import { sessionStoreContract } from './global/session-store.js';
 import { sessionsContract } from './global/sessions.js';
+import { workspaceSkillCatalogContract } from './global/skills.js';
 import { workspacesContract } from './global/workspaces.js';
+import { agentContextCommandContract } from './agent/contextCommand.js';
 import { sessionApprovalContract } from './session/approval.js';
 import { sessionBtwContract } from './session/btw.js';
 import { sessionCronContract } from './session/cron.js';
@@ -48,6 +57,7 @@ import { sessionLifecycleContract } from './session/lifecycle.js';
 import { sessionMetadataContract } from './session/metadata.js';
 import { sessionQuestionContract } from './session/question.js';
 import { sessionSkillCatalogContract } from './session/skill.js';
+import { sessionTodoContract } from './session/todo.js';
 import { sessionSecondaryModelWarningContract } from './session/warnings.js';
 import {
   sessionWorkspaceCommandContract,
@@ -57,6 +67,7 @@ import {
 export const globalContract: KlientContract = {
   // core (app scope)
   sessionIndex: sessionsContract,
+  workspaceSkillCatalogService: workspaceSkillCatalogContract,
   workspaceService: workspacesContract,
   configService: configContract,
   providerService: providersContract,
@@ -64,6 +75,10 @@ export const globalContract: KlientContract = {
   modelResolver: catalogContract,
   providerDiscovery: providerDiscoveryContract,
   sessionExportService: sessionExportContract,
+  sessionSnapshotStore: sessionStoreContract,
+  mcpCatalogService: mcpCatalogContract,
+  mcpOAuthService: mcpOAuthContract,
+  mcpProbeService: mcpProbeContract,
   oauthService: authContract,
   authSummaryService: authSummaryContract,
   flagService: flagsContract,
@@ -83,6 +98,7 @@ export const globalContract: KlientContract = {
   sessionExtensionService: sessionExtensionContract,
   sessionGoalQueueService: sessionGoalQueueContract,
   sessionSkillCatalog: sessionSkillCatalogContract,
+  sessionTodoService: sessionTodoContract,
   sessionSecondaryModelWarningService: sessionSecondaryModelWarningContract,
   sessionWorkspaceContext: sessionWorkspaceContextContract,
   sessionWorkspaceCommandService: sessionWorkspaceCommandContract,
@@ -90,6 +106,7 @@ export const globalContract: KlientContract = {
   agentRPCService: agentRpcContract,
   agentFullCompactionService: agentFullCompactionContract,
   agentMcpService: agentMcpContract,
+  agentPluginService: agentPluginContract,
   agentPermissionModeService: agentPermissionModeContract,
   agentExtensionService: agentExtensionContract,
   agentGoalService: agentGoalContract,
@@ -101,6 +118,7 @@ export const globalContract: KlientContract = {
   agentUsageService: agentUsageContract,
   agentPlanService: agentPlanContract,
   agentTaskService: agentTaskContract,
+  agentContextCommandService: agentContextCommandContract,
 };
 
 export type { KlientContract, ProcedureContract, ServiceContract, StreamingProcedureContract } from './types.js';

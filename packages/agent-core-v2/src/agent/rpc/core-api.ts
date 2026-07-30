@@ -1,13 +1,14 @@
 /**
- * `rpc` domain (L7) — v2 native RPC contract.
+ * `rpc` domain (L7) — Agent RPC contract and shared wire DTOs.
  *
- * Request/response payloads and event types for the engine's native RPC
- * surface. `PromptPayload.disabledTools` is the client-managed session
- * denylist, applied via `IAgentProfileService.setSessionDisabledTools` before
- * the prompt is enqueued: full-replace semantics, the profile's own
- * `disallowedTools` always survive, omitting the field keeps the persisted
- * value, and `[]` clears the client portion. It is ignored by engines without
- * profile support.
+ * Defines the implemented Agent-scoped facade contract and request/response
+ * types shared by edge adapters. `PromptPayload.disabledTools` is the
+ * client-managed session denylist, applied via
+ * `IAgentProfileService.setSessionDisabledTools` before the prompt is
+ * enqueued: full-replace semantics, the profile's own `disallowedTools`
+ * always survive, omitting the field keeps the persisted value, and `[]`
+ * clears the client portion. It is ignored by engines without profile
+ * support.
  */
 
 import type { AgentContextData } from '#/agent/contextMemory/types';
@@ -25,15 +26,10 @@ import type { SwarmModeTrigger } from '#/agent/swarm/swarm';
 import type { ToolDisclosure, ToolInfo } from '#/tool/toolContract';
 import type { ResolvedConfig } from '#/app/config/config';
 import type { McpServerConfig } from '#/agent/mcp/config-schema';
-import type { ExperimentalFeatureState } from '#/app/flag/flag';
-import type { ResumeSessionResult } from '#/agent/replayBuilder/types';
 import type { SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import type { ContentPart } from '#/kosong/contract/message';
-import type { SessionWarning } from '#/app/sessionLegacy/sessionProtocol';
 
-import type { ExportSessionPayload, ExportSessionResult } from '#/app/sessionExport/sessionExport';
-import type { PluginCommandDef, PluginInfo, PluginSummary, ReloadSummary } from '#/app/plugin/types';
-import type { WithAgentId, WithSessionId } from './types';
+import type { PluginInfo, PluginSummary, ReloadSummary } from '#/app/plugin/types';
 
 export type { ExportSessionManifest, ExportSessionPayload, ExportSessionResult, ShellEnvironment } from '#/app/sessionExport/sessionExport';
 
@@ -321,46 +317,4 @@ export interface AgentAPI {
   activatePluginCommand: (payload: ActivatePluginCommandPayload) => void;
   getContext: (payload: EmptyPayload) => AgentContextData;
   getTools: (payload: EmptyPayload) => readonly ToolInfo[];
-}
-
-type AgentAPIWithId = WithAgentId<AgentAPI>;
-
-export interface SessionAPI extends AgentAPIWithId {
-  renameSession: (payload: RenameSessionPayload) => void;
-  updateSessionMetadata: (payload: UpdateSessionMetadataPayload) => void;
-  getSessionMetadata: (payload: EmptyPayload) => SessionMeta;
-  listSkills: (payload: EmptyPayload) => readonly SkillSummary[];
-  listPluginCommands: (payload: EmptyPayload) => readonly PluginCommandDef[];
-  listMcpServers: (payload: EmptyPayload) => readonly McpServerInfo[];
-  getMcpStartupMetrics: (payload: EmptyPayload) => McpStartupMetrics;
-  reconnectMcpServer: (payload: ReconnectMcpServerPayload) => void;
-  generateAgentsMd: (payload: EmptyPayload) => void;
-  getSessionWarnings: (payload: EmptyPayload) => readonly SessionWarning[];
-  addAdditionalDir: (payload: AddAdditionalDirPayload) => AddAdditionalDirResult;
-}
-
-type SessionAPIWithId = WithSessionId<SessionAPI>;
-
-export interface CoreAPI extends SessionAPIWithId {
-  getCoreInfo: (payload: EmptyPayload) => CoreInfo;
-  getExperimentalFeatures: (payload: EmptyPayload) => readonly ExperimentalFeatureState[];
-  getKimiConfig: (payload: GetKimiConfigPayload) => ResolvedConfig;
-  getConfigDiagnostics: (payload: EmptyPayload) => ConfigDiagnostics;
-  setKimiConfig: (payload: SetKimiConfigPayload) => ResolvedConfig;
-  removeKimiProvider: (payload: RemoveKimiProviderPayload) => ResolvedConfig;
-  createSession: (payload: CreateSessionPayload) => SessionSummary;
-  closeSession: (payload: CloseSessionPayload) => void;
-  archiveSession: (payload: ArchiveSessionPayload) => void;
-  resumeSession: (payload: ResumeSessionPayload) => ResumeSessionResult;
-  reloadSession: (payload: ReloadSessionPayload) => ResumeSessionResult;
-  forkSession: (payload: ForkSessionPayload) => ResumeSessionResult;
-  listSessions: (payload: ListSessionsPayload) => readonly SessionSummary[];
-  exportSession: (payload: ExportSessionPayload) => ExportSessionResult;
-  listPlugins: (payload: EmptyPayload) => readonly PluginSummary[];
-  installPlugin: (payload: InstallPluginPayload) => PluginSummary;
-  setPluginEnabled: (payload: SetPluginEnabledPayload) => void;
-  setPluginMcpServerEnabled: (payload: SetPluginMcpServerEnabledPayload) => void;
-  removePlugin: (payload: RemovePluginPayload) => void;
-  reloadPlugins: (payload: EmptyPayload) => ReloadPluginsResult;
-  getPluginInfo: (payload: GetPluginInfoPayload) => PluginInfo;
 }

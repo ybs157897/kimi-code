@@ -1,5 +1,5 @@
 /**
- * `workspaceFs` domain (L4) — `IWorkspaceFileSystemFactory` default implementation.
+ * `workspaceFs` domain (L2) — `IWorkspaceFileSystemFactory` default implementation.
  *
  * App-scoped factory that creates `LocalWorkspaceFileSystem` backends, each
  * backed by the real `IHostFileSystem` and confined to a session workspace.

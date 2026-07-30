@@ -12,9 +12,21 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  symlink,
+  writeFile,
+} from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import type { TestInstantiationService } from '#/_base/di/test';
+import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IWorkspaceFileSystemFactory } from '#/os/interface/workspaceFileSystem';
 import { LocalWorkspaceFileSystem } from '#/session/sessionFs/localWorkspaceFs';
@@ -347,6 +359,32 @@ describe('LocalWorkspaceFileSystem', () => {
       });
       await expect(fs.readText('/other/secret.txt')).rejects.toThrow();
     });
+
+    it('rejects reads and writes through a symlink that escapes the workspace', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'workspace-fs-symlink-'));
+      const workspace = join(root, 'workspace');
+      const outside = join(root, 'outside');
+      try {
+        await mkdir(workspace, { recursive: true });
+        await mkdir(outside, { recursive: true });
+        await writeFile(join(outside, 'secret.txt'), 'secret');
+        await symlink(outside, join(workspace, 'escape'), 'dir');
+        const fs = new LocalWorkspaceFileSystem(new HostFileSystem(), {
+          workDir: workspace,
+          additionalDirs: [],
+        });
+
+        await expect(fs.readText('escape/secret.txt')).rejects.toMatchObject({
+          code: 'os.fs.permission_denied',
+        });
+        await expect(fs.writeText('escape/new.txt', 'bad')).rejects.toMatchObject({
+          code: 'os.fs.permission_denied',
+        });
+        await expect(readFile(join(outside, 'new.txt'), 'utf8')).rejects.toThrow();
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    });
   });
 
   // ---- isolation -----------------------------------------------------------
@@ -404,8 +442,12 @@ describe('LocalWorkspaceFileSystem', () => {
   describe('dispose', () => {
     it('is idempotent', () => {
       const fs = makeFs();
-      expect(() => fs.dispose()).not.toThrow();
-      expect(() => fs.dispose()).not.toThrow();
+      expect(() => {
+        fs.dispose();
+      }).not.toThrow();
+      expect(() => {
+        fs.dispose();
+      }).not.toThrow();
     });
 
     it('does not prevent further operations (no-op dispose)', async () => {

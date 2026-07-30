@@ -12,6 +12,7 @@ import { z } from 'zod';
 import type { EventRegistration } from '../types.js';
 import { goalSnapshotSchema, goalStatusSchema } from './goal.js';
 import { agentTaskInfoSchema, tokenUsageSchema } from './rpc.js';
+import { contentPartSchema } from './services.js';
 
 /**
  * Scope-stream registration (`kind: 'stream'`). Declared structurally here
@@ -167,6 +168,13 @@ export const shellStartedEventSchema = z.object({
   taskId: z.string(),
 });
 
+export const shellCompletedEventSchema = z.object({
+  type: z.literal('shell.completed'),
+  commandId: z.string(),
+  isError: z.boolean(),
+  taskId: z.string().optional(),
+});
+
 export const toolResultEventSchema = z.object({
   type: z.literal('tool.result'),
   turnId: z.number(),
@@ -189,6 +197,15 @@ export const promptAbortedEventSchema = z.object({
   promptId: z.string(),
   /** ISO 8601 datetime string on the wire. */
   abortedAt: z.string(),
+});
+
+export const promptSteeredEventSchema = z.object({
+  type: z.literal('prompt.steered'),
+  activePromptId: z.string(),
+  promptIds: z.array(z.string()),
+  content: z.array(contentPartSchema),
+  /** ISO 8601 datetime string on the wire. */
+  steeredAt: z.string(),
 });
 
 export const goalUpdatedEventSchema = z.object({
@@ -390,9 +407,11 @@ export interface AgentEventPayloads {
   'tool.progress': z.infer<typeof toolProgressEventSchema>;
   'shell.output': z.infer<typeof shellOutputEventSchema>;
   'shell.started': z.infer<typeof shellStartedEventSchema>;
+  'shell.completed': z.infer<typeof shellCompletedEventSchema>;
   'tool.result': z.infer<typeof toolResultEventSchema>;
   'prompt.completed': z.infer<typeof promptCompletedEventSchema>;
   'prompt.aborted': z.infer<typeof promptAbortedEventSchema>;
+  'prompt.steered': z.infer<typeof promptSteeredEventSchema>;
   'goal.updated': z.infer<typeof goalUpdatedEventSchema>;
   'skill.activated': z.infer<typeof skillActivatedEventSchema>;
   'plugin_command.activated': z.infer<typeof pluginCommandActivatedEventSchema>;
@@ -481,9 +500,21 @@ export const agentEvents = {
     type: 'shell.started',
     schema: shellStartedEventSchema,
   },
+  'shell.completed': {
+    kind: 'stream',
+    name: 'events',
+    type: 'shell.completed',
+    schema: shellCompletedEventSchema,
+  },
   'tool.result': { kind: 'stream', name: 'events', type: 'tool.result', schema: toolResultEventSchema },
   'prompt.completed': { kind: 'stream', name: 'events', type: 'prompt.completed', schema: promptCompletedEventSchema },
   'prompt.aborted': { kind: 'stream', name: 'events', type: 'prompt.aborted', schema: promptAbortedEventSchema },
+  'prompt.steered': {
+    kind: 'stream',
+    name: 'events',
+    type: 'prompt.steered',
+    schema: promptSteeredEventSchema,
+  },
   'goal.updated': {
     kind: 'stream',
     name: 'events',

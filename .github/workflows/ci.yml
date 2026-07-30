@@ -27,6 +27,8 @@ jobs:
       - run: pnpm run build
       - name: Smoke test CLI bundle
         run: pnpm -C apps/kimi-code run smoke
+      - name: Smoke test Klient memory runtime
+        run: pnpm --filter @moonshot-ai/klient run smoke
 
   test:
     runs-on: ubuntu-latest
@@ -103,6 +105,7 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm run lint
       - run: pnpm run sherif
+      - run: pnpm run check:legacy-agent-core-refs
 
   typecheck:
     runs-on: ubuntu-latest
@@ -133,3 +136,42 @@ jobs:
         run: pnpm --filter @moonshot-ai/vis-server run typecheck
       - name: Typecheck vis-web
         run: pnpm --filter @moonshot-ai/vis-web run typecheck
+
+  smoke-klient-docker-e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run credential-free Klient Docker E2E
+        run: bash packages/klient/scripts/run-docker-e2e.sh
+        env:
+          KIMI_SERVER_E2E_CREDENTIAL_FREE: "1"
+          KIMI_SERVER_E2E_STATE_ROOT: ${{ runner.temp }}/kimi-server-e2e
+
+  smoke-vscode-extension-host:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - name: Package Linux VSIX
+        run: pnpm --filter kimi-code run package:platform -- --target linux-x64
+      - name: Cache VS Code Extension Host
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/kimi-vscode-test-cache
+          key: vscode-extension-host-1.100.0-${{ runner.os }}-${{ runner.arch }}
+      - name: Smoke test installed VSIX
+        run: xvfb-run -a pnpm --filter kimi-code run test:extension-host -- --version 1.100.0
+        env:
+          VSCODE_TEST_CACHE: ${{ runner.temp }}/kimi-vscode-test-cache

@@ -15,7 +15,7 @@
  * absolute paths must land inside the allowed workspace tree.
  */
 
-import { isAbsolute, join, normalize, relative, resolve } from 'node:path';
+import { dirname, isAbsolute, normalize, relative, resolve } from 'node:path';
 import * as fs from 'node:fs/promises';
 
 import type { AgentSideConnection } from '@agentclientprotocol/sdk';
@@ -45,6 +45,7 @@ export class AcpWorkspaceFileSystem implements IWorkspaceFileSystem {
   private readonly workDir: string;
   private readonly additionalDirs: readonly string[];
   private readonly allDirs: readonly string[];
+  private readonly canonicalDirs: Promise<readonly string[]>;
 
   constructor(opts: AcpWorkspaceFileSystemOptions) {
     this.conn = opts.conn;
@@ -52,35 +53,50 @@ export class AcpWorkspaceFileSystem implements IWorkspaceFileSystem {
     this.workDir = resolve(opts.workDir);
     this.additionalDirs = opts.additionalDirs.map((d) => resolve(d));
     this.allDirs = [this.workDir, ...this.additionalDirs];
+    this.canonicalDirs = Promise.all(this.allDirs.map((dir) => this.canonicalize(dir)));
   }
 
   // ── path resolution ─────────────────────────────────────────────────
 
-  private resolvePath(relOrAbs: string): string {
+  private async resolvePath(relOrAbs: string): Promise<string> {
+    let candidate: string;
     if (isAbsolute(relOrAbs)) {
-      const norm = normalize(relOrAbs);
-      this.assertAllowed(norm);
-      return norm;
-    }
-    const normRel = normalize(relOrAbs);
-    if (normRel.startsWith('..') || isAbsolute(normRel)) {
-      const abs = resolve(this.workDir, normRel);
-      this.assertAllowed(abs);
-      return abs;
-    }
-    const candidate = join(this.workDir, normRel);
-    if (isWithinDir(candidate, this.workDir)) return candidate;
-    for (const dir of this.additionalDirs) {
-      const alt = join(dir, normRel);
-      if (isWithinDir(alt, dir)) return alt;
+      candidate = normalize(relOrAbs);
+    } else {
+      candidate = resolve(this.workDir, normalize(relOrAbs));
     }
     this.assertAllowed(candidate);
+    const canonical = await this.canonicalize(candidate);
+    const canonicalDirs = await this.canonicalDirs;
+    if (!canonicalDirs.some((dir) => isWithinDir(canonical, dir))) {
+      throw accessDenied(canonical);
+    }
     return candidate;
   }
 
   private assertAllowed(absPath: string): void {
     if (!this.allDirs.some((d) => isWithinDir(absPath, d))) {
-      throw Object.assign(new Error(`path outside workspace: ${absPath}`), { code: 'EACCES' });
+      throw accessDenied(absPath);
+    }
+  }
+
+  /**
+   * Resolve the longest existing prefix, then append the missing suffix.
+   * This catches both an existing symlink target and a not-yet-created file
+   * beneath a symlinked directory.
+   */
+  private async canonicalize(absPath: string): Promise<string> {
+    let existing = absPath;
+    while (true) {
+      try {
+        const real = await fs.realpath(existing);
+        return resolve(real, relative(existing, absPath));
+      } catch (error) {
+        if (!isMissingPathError(error)) throw error;
+        const parent = dirname(existing);
+        if (parent === existing) throw error;
+        existing = parent;
+      }
     }
   }
 
@@ -88,9 +104,9 @@ export class AcpWorkspaceFileSystem implements IWorkspaceFileSystem {
 
   async readText(
     path: string,
-    options?: { encoding?: BufferEncoding; errors?: TextDecodeErrors },
+    _options?: { encoding?: BufferEncoding; errors?: TextDecodeErrors },
   ): Promise<string> {
-    const abs = this.resolvePath(path);
+    const abs = await this.resolvePath(path);
     try {
       const resp = await this.conn.readTextFile({ sessionId: this.sessionId, path: abs });
       return resp.content;
@@ -101,19 +117,19 @@ export class AcpWorkspaceFileSystem implements IWorkspaceFileSystem {
   }
 
   async writeText(path: string, data: string): Promise<void> {
-    const abs = this.resolvePath(path);
+    const abs = await this.resolvePath(path);
     try {
       await this.conn.writeTextFile({ sessionId: this.sessionId, path: abs, content: data });
     } catch {
       // Fall back to local FS
-      await fs.mkdir(abs.replace(/[/][^/]+$/, ''), { recursive: true }).catch(() => {});
+      await fs.mkdir(dirname(abs), { recursive: true }).catch(() => {});
       await fs.writeFile(abs, data, 'utf8');
     }
   }
 
   async appendText(path: string, data: string): Promise<void> {
     // Try ACP append: read existing, merge, write back.
-    const abs = this.resolvePath(path);
+    const abs = await this.resolvePath(path);
     let existing = '';
     try {
       const resp = await this.conn.readTextFile({ sessionId: this.sessionId, path: abs });
@@ -125,7 +141,7 @@ export class AcpWorkspaceFileSystem implements IWorkspaceFileSystem {
       await this.conn.writeTextFile({ sessionId: this.sessionId, path: abs, content: existing + data });
     } catch {
       // Local fallback
-      await fs.mkdir(abs.replace(/[/][^/]+$/, ''), { recursive: true }).catch(() => {});
+      await fs.mkdir(dirname(abs), { recursive: true }).catch(() => {});
       await fs.appendFile(abs, data, 'utf8');
     }
   }
@@ -138,7 +154,7 @@ export class AcpWorkspaceFileSystem implements IWorkspaceFileSystem {
     if (text.length === 0) return;
     let start = 0;
     for (let i = 0; i < text.length; i++) {
-      if (text.charCodeAt(i) === 0x0a /* \n */) {
+      if (text.codePointAt(i) === 0x0a /* \n */) {
         yield text.slice(start, i + 1);
         start = i + 1;
       }
@@ -149,7 +165,7 @@ export class AcpWorkspaceFileSystem implements IWorkspaceFileSystem {
   // ── binary operations via local FS ───────────────────────────────────
 
   async readBytes(path: string, n?: number): Promise<Uint8Array> {
-    const abs = this.resolvePath(path);
+    const abs = await this.resolvePath(path);
     const handle = await fs.open(abs, 'r');
     try {
       const buf = new Uint8Array(n ?? (await handle.stat()).size);
@@ -161,54 +177,66 @@ export class AcpWorkspaceFileSystem implements IWorkspaceFileSystem {
   }
 
   async writeBytes(path: string, data: Uint8Array): Promise<void> {
-    const abs = this.resolvePath(path);
-    await fs.mkdir(abs.replace(/[/][^/]+$/, ''), { recursive: true }).catch(() => {});
+    const abs = await this.resolvePath(path);
+    await fs.mkdir(dirname(abs), { recursive: true }).catch(() => {});
     await fs.writeFile(abs, data);
   }
 
   // ── metadata / directory operations via local FS ─────────────────────
 
   async stat(path: string): Promise<HostFileStat> {
-    const abs = this.resolvePath(path);
+    const abs = await this.resolvePath(path);
     const s = await fs.stat(abs);
     return statToHostFileStat(s);
   }
 
   async lstat(path: string): Promise<HostFileStat> {
-    const abs = this.resolvePath(path);
+    const abs = await this.resolvePath(path);
     const s = await fs.lstat(abs);
     return statToHostFileStat(s);
   }
 
   async readdir(path: string): Promise<readonly HostDirEntry[]> {
-    const abs = this.resolvePath(path);
+    const abs = await this.resolvePath(path);
     const entries = await fs.readdir(abs, { withFileTypes: true });
     return entries.map((e) => ({
       name: e.name,
       isFile: e.isFile(),
       isDirectory: e.isDirectory(),
-      isSymlink: e.isSymbolicLink(),
+      isSymbolicLink: e.isSymbolicLink(),
     }));
   }
 
   async mkdir(path: string, options?: { readonly recursive?: boolean }): Promise<void> {
-    const abs = this.resolvePath(path);
+    const abs = await this.resolvePath(path);
     await fs.mkdir(abs, { recursive: options?.recursive ?? false });
   }
 
   async remove(path: string): Promise<void> {
-    const abs = this.resolvePath(path);
+    const abs = await this.resolvePath(path);
     await fs.rm(abs, { recursive: false });
   }
 
   async realpath(path: string): Promise<string> {
-    const abs = this.resolvePath(path);
+    const abs = await this.resolvePath(path);
     return fs.realpath(abs);
   }
 
   dispose(): void {
     // No native resources to release beyond the connection reference.
   }
+}
+
+function accessDenied(path: string): Error {
+  return Object.assign(new Error(`path outside workspace: ${path}`), { code: 'EACCES' });
+}
+
+function isMissingPathError(error: unknown): error is NodeJS.ErrnoException {
+  return (
+    error instanceof Error &&
+    'code' in error &&
+    (error as NodeJS.ErrnoException).code === 'ENOENT'
+  );
 }
 
 function statToHostFileStat(s: { size: number; isFile(): boolean; isDirectory(): boolean; isSymbolicLink(): boolean; mtimeMs: number }): HostFileStat {

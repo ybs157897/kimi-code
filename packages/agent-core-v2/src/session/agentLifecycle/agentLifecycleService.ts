@@ -130,7 +130,30 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       if (existing !== undefined) return existing;
     }
     const agentId = opts.agentId ?? (await this.nextAvailableAgentId());
-    const promise = this.doCreate(agentId, opts);
+    const promise = this.doCreate(agentId, opts, true);
+    this.creating.set(agentId, promise);
+    try {
+      return await promise;
+    } finally {
+      this.creating.delete(agentId);
+    }
+  }
+
+  async restore(agentId: string): Promise<IAgentScopeHandle | undefined> {
+    const inflight = this.creating.get(agentId);
+    if (inflight !== undefined) return inflight;
+    const existing = this.handles.get(agentId);
+    if (existing !== undefined) return existing;
+
+    const persisted = (await this.sessionMetadata.read()).agents?.[agentId];
+    if (persisted === undefined) return undefined;
+
+    const concurrent = this.creating.get(agentId);
+    if (concurrent !== undefined) return concurrent;
+    const materialized = this.handles.get(agentId);
+    if (materialized !== undefined) return materialized;
+
+    const promise = this.doCreate(agentId, {}, false);
     this.creating.set(agentId, promise);
     try {
       return await promise;
@@ -153,7 +176,11 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     return `agent-${String(candidate)}`;
   }
 
-  private async doCreate(agentId: string, opts: CreateAgentOptions): Promise<IAgentScopeHandle> {
+  private async doCreate(
+    agentId: string,
+    opts: CreateAgentOptions,
+    registerMetadata: boolean,
+  ): Promise<IAgentScopeHandle> {
     const mcpReady = this.sessionMcp.ensureMcpReady();
     const agentHomedir = this.bootstrap.agentHomedir(
       this.ctx.workspaceId,
@@ -184,13 +211,15 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     try {
       const wire = handle.accessor.get(IWireService);
       await wire.seal();
-      await this.sessionMetadata.registerAgent(agentId, {
-        homedir: agentHomedir,
-        type: agentId === 'main' ? 'main' : 'sub',
-        parentAgentId: agentId === 'main' ? undefined : 'main',
-        forkedFrom: opts.forkedFrom,
-        labels: opts.labels,
-      });
+      if (registerMetadata) {
+        await this.sessionMetadata.registerAgent(agentId, {
+          homedir: agentHomedir,
+          type: agentId === 'main' ? 'main' : 'sub',
+          parentAgentId: agentId === 'main' ? undefined : 'main',
+          forkedFrom: opts.forkedFrom,
+          labels: opts.labels,
+        });
+      }
       this.onDidCreateEmitter.fire(handle);
       await mcpReady;
       await wire.restore();

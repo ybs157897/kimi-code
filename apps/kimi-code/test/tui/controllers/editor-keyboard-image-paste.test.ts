@@ -25,7 +25,10 @@ import {
 } from '#/tui/controllers/editor-keyboard';
 import { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
 import { parseImageMeta } from '#/utils/image/image-mime';
-import { ImageLimits, type KimiHarness } from '@moonshot-ai/kimi-code-sdk';
+import {
+  persistOriginalImage,
+  sessionMediaOriginalsDir,
+} from '@moonshot-ai/kimi-code-sdk';
 
 // vitest hoists vi.mock/vi.hoisted above the imports above, so the mock still
 // applies to the editor-keyboard module that pulls in readClipboardMedia.
@@ -42,36 +45,50 @@ interface PasteHarness {
   pasteImage(): Promise<void>;
 }
 
-function createPasteHarness(options: { sessionDir?: string; imageLimits?: ImageLimits } = {}): PasteHarness {
+function createPasteHarness(
+  options: { sessionDir?: string; maxEdgePx?: number } = {},
+): PasteHarness {
   const editor: Record<string, ((...args: never[]) => unknown) | undefined> = {
     setHistoryFilter: vi.fn() as unknown as (...args: never[]) => unknown,
   };
   const store = new ImageAttachmentStore();
   const track = vi.fn();
   const host = {
+    runtime: {
+      localMedia: {
+        getImageMaxEdgePx: vi.fn(async () => options.maxEdgePx),
+        persistOriginalImage: ({
+          bytes,
+          mimeType,
+        }: {
+          bytes: Uint8Array;
+          mimeType: string;
+        }) =>
+          persistOriginalImage(bytes, mimeType, {
+            dir:
+              options.sessionDir === undefined
+                ? undefined
+                : sessionMediaOriginalsDir(options.sessionDir),
+          }),
+      },
+    },
     state: {
       editor,
       activeDialog: null,
-      appState: { streamingPhase: 'idle', isCompacting: false },
+      appState: {
+        sessionId: options.sessionDir === undefined ? '' : 'session-known',
+        streamingPhase: 'idle',
+        isCompacting: false,
+      },
       footer: { setTransientHint: vi.fn() },
       ui: { requestRender: vi.fn() },
     },
-    session:
-      options.sessionDir === undefined
-        ? undefined
-        : { summary: { sessionDir: options.sessionDir } },
     btwPanelController: { closeOrCancel: vi.fn(() => false) },
     track,
     showError: vi.fn(),
     openUndoSelector: vi.fn(),
     cancelRunningShellCommand: vi.fn(),
   } as unknown as EditorKeyboardHost;
-  if (options.imageLimits !== undefined) {
-    (host as unknown as { harness: KimiHarness }).harness = {
-      imageLimits: options.imageLimits,
-    } as unknown as KimiHarness;
-  }
-
   const controller = new EditorKeyboardController(host, store);
   controller.install();
 
@@ -157,18 +174,18 @@ describe('clipboard image paste compression', () => {
     expect(Math.max(dims!.width, dims!.height)).toBeLessThanOrEqual(3000);
   });
 
-  it('honors the harness [image] max_edge_px when pasting', async () => {
+  it('honors the runtime [image] max_edge_px when pasting', async () => {
     const big = await solidPng(3600, 1800);
     readClipboardMedia.mockResolvedValue({ kind: 'image', bytes: big, mimeType: 'image/png' });
 
     const { store, pasteImage } = createPasteHarness({
-      imageLimits: new ImageLimits(process.env, { maxEdgePx: 800 }),
+      maxEdgePx: 800,
     });
     await pasteImage();
 
     const att = store.get(1);
     if (att?.kind !== 'image') throw new Error('expected image attachment');
-    // The harness [image] config — not the built-in 2000px — drives ingestion.
+    // The runtime [image] config — not the built-in 2000px — drives ingestion.
     expect(Math.max(att.width, att.height)).toBe(800);
     expect(att.placeholder).toContain('800×400');
     const dims = parseImageMeta(att.bytes);

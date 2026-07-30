@@ -5,23 +5,29 @@
  * MUST treat the returned promise as `Promise<never>`.
  */
 
-import { createKimiHarness } from '@moonshot-ai/kimi-code-sdk';
+import {
+  KimiAuthFacade,
+  resolveConfigPath,
+  resolveKimiHome,
+} from '@moonshot-ai/kimi-code-sdk';
 
 import { createKimiCodeHostIdentity } from '#/cli/version';
 import { openUrl } from '#/utils/open-url';
 
 export async function runLoginFlow(): Promise<never> {
   const identity = createKimiCodeHostIdentity();
-  const harness = createKimiHarness({
+  const homeDir = resolveKimiHome();
+  const auth = new KimiAuthFacade({
+    homeDir,
+    configPath: resolveConfigPath({ homeDir }),
     identity,
-    uiMode: 'cli',
   });
   const controller = new AbortController();
   process.once('SIGINT', () => {
     controller.abort();
   });
   try {
-    const result = await harness.auth.login(undefined, {
+    const result = await auth.login(undefined, {
       signal: controller.signal,
       onDeviceCode: (data) => {
         const url = data.verificationUriComplete || data.verificationUri;

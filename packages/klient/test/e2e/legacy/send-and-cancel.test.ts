@@ -50,6 +50,7 @@ async function debugPromptsReachable(): Promise<boolean> {
 const reachable = await daemonReachable();
 const debugReachable = reachable && (await debugPromptsReachable());
 const describeLive = debugReachable ? describe : describe.skip;
+const credentialFree = process.env['KIMI_SERVER_E2E_CREDENTIAL_FREE'] === '1';
 
 const created: Array<{ client: DaemonClient; sid: string; promptIds: string[] }> = [];
 
@@ -76,7 +77,7 @@ afterEach(async () => {
 });
 
 describeLive('send prompt + cancel prompt (live server required)', () => {
-  it(
+  it.skipIf(credentialFree)(
     'submits a prompt and receives prompt.completed',
     async () => {
       const log = createCaseLogger('send: prompt completes');
@@ -218,7 +219,7 @@ describeLive('send prompt + cancel prompt (live server required)', () => {
     PROMPT_TIMEOUT_MS + SHORT_TIMEOUT_MS,
   );
 
-  it(
+  it.skipIf(credentialFree)(
     'recovers and completes a prompt after aborts',
     async () => {
       const log = createCaseLogger('send: scheduler recovery after abort');

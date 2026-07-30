@@ -33,6 +33,7 @@ import type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permission
 import type { ActivateExtensionCommandInput } from '@moonshot-ai/agent-core-v2/agent/extension/agentExtension';
 import type { SkillActivationInput } from '@moonshot-ai/agent-core-v2/agent/skill/skill';
 import type { ActivatePluginCommandPayload } from '@moonshot-ai/agent-core-v2/agent/rpc/core-api';
+import type { ContextImportInput } from '@moonshot-ai/agent-core-v2/agent/contextCommand/contextCommand';
 
 import type { ScopeRef } from '../channel.js';
 import type { ScopedCaller } from './session.js';
@@ -82,6 +83,10 @@ export interface AgentMcpFacade {
   initialLoadDurationMs(): Promise<number>;
 }
 
+export interface AgentPluginsFacade {
+  refreshSessionStartReminder(): Promise<void>;
+}
+
 export interface AgentSwarmFacade {
   isActive(): Promise<boolean>;
   enter(trigger: SwarmModeTrigger): Promise<void>;
@@ -104,6 +109,8 @@ export interface AgentFacade {
   setPermission(mode: PermissionMode): Promise<void>;
   getUsage(): Promise<UsageStatus>;
   getContext(): Promise<AgentContextData>;
+  clearContext(): Promise<void>;
+  importContext(input: ContextImportInput): Promise<void>;
   compact(input?: { instruction?: string }): Promise<boolean>;
   cancelCompaction(): Promise<void>;
   undoHistory(count?: number): Promise<number>;
@@ -116,6 +123,7 @@ export interface AgentFacade {
   stopTask(input: { taskId: string; reason?: string }): Promise<void>;
   getTaskOutput(input: { taskId: string; tail?: number }): Promise<string>;
   readonly mcp: AgentMcpFacade;
+  readonly plugins: AgentPluginsFacade;
   readonly goal: AgentGoalFacade;
   readonly profile: AgentProfileFacade;
   readonly replay: AgentReplayFacade;
@@ -146,6 +154,10 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
     setPermission: (mode) => rpc('setPermission', { mode }) as Promise<void>,
     getUsage: () => call(scope, 'agentUsageService', 'status', []) as Promise<UsageStatus>,
     getContext: () => rpc('getContext', {}) as Promise<AgentContextData>,
+    clearContext: () =>
+      call(scope, 'agentContextCommandService', 'clear', []) as Promise<void>,
+    importContext: (input) =>
+      call(scope, 'agentContextCommandService', 'importContext', [input]) as Promise<void>,
     compact: (input) =>
       call(scope, 'agentFullCompactionService', 'begin', [
         { source: 'manual', instruction: input?.instruction },
@@ -182,6 +194,15 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
         call(scope, 'agentMcpService', 'reconnect', [name]) as Promise<void>,
       initialLoadDurationMs: () =>
         call(scope, 'agentMcpService', 'initialLoadDurationMs', []) as Promise<number>,
+    },
+    plugins: {
+      refreshSessionStartReminder: () =>
+        call(
+          scope,
+          'agentPluginService',
+          'appendFreshSessionStartReminder',
+          [],
+        ) as Promise<void>,
     },
     goal: {
       get: async () => {

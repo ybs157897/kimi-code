@@ -213,6 +213,21 @@ export async function buildSessionConfigOptions(
   currentModeId: AcpModeId,
 ): Promise<SessionConfigOption[]> {
   const models = await listModelsFromHarness(harness);
+  return buildSessionConfigOptionsFromModels(
+    models,
+    currentBaseModelId,
+    currentThinkingEffort,
+    currentModeId,
+  );
+}
+
+/** Compose config options from an engine-neutral ACP model catalog. */
+export function buildSessionConfigOptionsFromModels(
+  models: readonly AcpModelEntry[],
+  currentBaseModelId: string,
+  currentThinkingEffort: string,
+  currentModeId: AcpModeId,
+): SessionConfigOption[] {
   const currentModelEntry = models.find((m) => m.id === currentBaseModelId);
   const showThinking = currentModelEntry?.thinkingSupported === true;
   const out: SessionConfigOption[] = [buildModelOption(models, currentBaseModelId)];

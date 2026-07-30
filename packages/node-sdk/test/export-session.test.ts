@@ -177,10 +177,13 @@ describe('exportSessionDirectory', () => {
       summary: makeSummary({ id: sid, sessionDir, workDir: tmp }),
     });
 
-    expect(dirname(result.zipPath)).toBe(toPosix(resolve('.')));
-    expect(basename(result.zipPath)).toMatch(/^kimi-debug-session_-\d{8}-\d{6}\.zip$/);
-    expect(existsSync(result.zipPath)).toBe(true);
-    await rm(result.zipPath, { force: true });
+    try {
+      expect(dirname(result.zipPath)).toBe(toPosix(resolve('.')));
+      expect(basename(result.zipPath)).toMatch(/^kimi-debug-session_-\d{8}-\d{6}\.zip$/);
+      expect(existsSync(result.zipPath)).toBe(true);
+    } finally {
+      await rm(result.zipPath, { force: true });
+    }
   });
 
   it('does not overwrite a previous default-path export when run again', async () => {

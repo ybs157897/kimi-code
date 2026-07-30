@@ -87,6 +87,9 @@ export function isSensitiveFile(fileName: string): boolean {
 }
 
 function isInternalMessage(message: ContextMessage): boolean {
+  if (message.origin?.kind === "injection" && message.origin.variant === "context_import") {
+    return false;
+  }
   return message.origin !== undefined && INTERNAL_ORIGINS.has(message.origin.kind);
 }
 

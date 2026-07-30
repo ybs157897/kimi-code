@@ -1,53 +1,21 @@
-import type * as KosongModule from '@moonshot-ai/kosong';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createKimiHarness, type KimiError } from '#/index';
 
-import { makeTempDir, removeTempDirs, waitForAgentWireEvent } from './session-runtime-helpers';
+import { makeTempDir, removeTempDirs, waitForSDKEvent } from './session-runtime-helpers';
 import { TEST_IDENTITY } from './test-identity';
-
-const fakeProviderState = vi.hoisted(() => ({
-  responseText: 'steer response',
-}));
-
-vi.mock('@moonshot-ai/kosong', async (importOriginal) => {
-  const actual = await importOriginal<typeof KosongModule>();
-  return {
-    ...actual,
-    createProvider: () => ({
-      name: 'fake',
-      modelName: 'fake-model',
-      thinkingEffort: null,
-      async generate() {
-        return {
-          id: 'fake-response',
-          usage: {
-            inputOther: 0,
-            output: 1,
-            inputCacheRead: 0,
-            inputCacheCreation: 0,
-          },
-          finishReason: 'completed',
-          rawFinishReason: 'stop',
-          async *[Symbol.asyncIterator]() {
-            yield { type: 'text', text: fakeProviderState.responseText };
-          },
-        };
-      },
-      withThinking() {
-        return this;
-      },
-    }),
-  };
-});
+import { startFakeProvider, type FakeProvider } from './v2-runtime-fixture';
 
 const tempDirs: string[] = [];
+let fakeProvider: FakeProvider | undefined;
 
-beforeEach(() => {
-  fakeProviderState.responseText = 'steer response';
+beforeEach(async () => {
+  fakeProvider = await startFakeProvider();
 });
 
 afterEach(async () => {
+  await fakeProvider?.close();
+  fakeProvider = undefined;
   await removeTempDirs(tempDirs);
 });
 
@@ -58,18 +26,53 @@ describe('Session.steer', () => {
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     try {
+      await configureFakeProvider(harness);
       const session = await harness.createSession({ id: 'ses_steer_wire', workDir });
-
-      await session.steer('also do this');
-
-      await expect(
-        waitForAgentWireEvent(homeDir, session.id, 'turn.steer', (event) =>
-          Array.isArray(event['input']),
-        ),
-      ).resolves.toMatchObject({
-        type: 'turn.steer',
-        input: [{ type: 'text', text: 'also do this' }],
+      let resolveApproval!: () => void;
+      const approvalResolution = new Promise<void>((resolve) => {
+        resolveApproval = resolve;
       });
+      let markHandlerStarted!: () => void;
+      const handlerStarted = new Promise<void>((resolve) => {
+        markHandlerStarted = resolve;
+      });
+      session.setApprovalHandler(async () => {
+        markHandlerStarted();
+        await approvalResolution;
+        return { decision: 'approved' };
+      });
+      requireFakeProvider().push(
+        {
+          kind: 'tool_call',
+          id: 'call_steer_hold',
+          name: 'Bash',
+          arguments: JSON.stringify({ command: 'printf steer-ready' }),
+        },
+        { kind: 'text', text: 'steer response' },
+      );
+      const ended = waitForSDKEvent(session, (event) => event.type === 'turn.ended', 5_000);
+      const steered = waitForSDKEvent(
+        session,
+        (event) => event.type === 'prompt.steered',
+        5_000,
+      );
+
+      await session.prompt('start the active turn');
+      await handlerStarted;
+      try {
+        await session.steer('also do this');
+      } finally {
+        resolveApproval();
+      }
+      await ended;
+
+      await expect(steered).resolves.toMatchObject({
+        type: 'prompt.steered',
+        sessionId: session.id,
+        agentId: 'main',
+        content: [{ type: 'text', text: 'also do this' }],
+      });
+      expect(providerMessages(1)).toContain('also do this');
     } finally {
       await harness.close();
     }
@@ -110,3 +113,30 @@ describe('Session.steer', () => {
     }
   });
 });
+
+async function configureFakeProvider(
+  harness: ReturnType<typeof createKimiHarness>,
+): Promise<void> {
+  await harness.setConfig({
+    models: {
+      'fake-model': {
+        name: 'stub-model',
+        protocol: 'openai',
+        baseUrl: requireFakeProvider().baseUrl,
+        apiKey: 'YOUR_API_KEY',
+        maxContextSize: 262144,
+        capabilities: ['tool_use'],
+      },
+    },
+    defaultModel: 'fake-model',
+  });
+}
+
+function requireFakeProvider(): FakeProvider {
+  if (fakeProvider === undefined) throw new Error('Fake provider was not initialized');
+  return fakeProvider;
+}
+
+function providerMessages(index: number): string {
+  return JSON.stringify(requireFakeProvider().requests[index]?.body.messages ?? []);
+}

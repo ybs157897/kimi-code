@@ -1,0 +1,78 @@
+sequenceDiagram
+    participant Buyer as 买家
+    participant CartSvc as 购物车服务
+    participant ProductSvc as 商品服务
+    participant OrderSvc as 订单服务
+    participant InvSvc as 库存服务
+    participant PromoSvc as 促销服务
+    participant PaySvc as 支付服务
+    participant Alipay as 支付宝
+    participant ShipSvc as 物流服务
+
+    %% Step 1: 加入购物车
+    Buyer->>CartSvc: 1.添加商品到购物车(sku_id, qty)
+    CartSvc->>ProductSvc: 查询 SKU 信息与实时价格
+    ProductSvc-->>CartSvc: SKU 详情 + 价格
+    CartSvc->>CartSvc: 更新购物车（Redis + DB）
+    CartSvc-->>Buyer: 购物车最新快照
+
+    %% Step 2: 从购物车创建订单
+    Buyer->>OrderSvc: 2.提交订单(address_id, coupon_id)
+    OrderSvc->>CartSvc: 获取选中商品列表
+    CartSvc-->>OrderSvc: CartItem 列表
+    OrderSvc->>OrderSvc: 计算订单金额（商品小计）
+    OrderSvc->>PromoSvc: 计算优惠（优惠券 + 满减）
+    PromoSvc-->>OrderSvc: 优惠明细 + 最终应付金额
+    OrderSvc->>InvSvc: 锁定库存(order_no, items)
+    InvSvc->>InvSvc: 乐观锁更新 sku.available_stock<br/>UPDATE ... WHERE stock >= qty<br/>AND version = old_version
+    alt 库存不足
+        InvSvc-->>OrderSvc: 失败
+        OrderSvc-->>Buyer: 订单创建失败，提示库存不足
+    else 锁定成功
+        InvSvc-->>OrderSvc: 成功
+        OrderSvc->>OrderSvc: 创建订单记录 + OrderLog
+        OrderSvc->>CartSvc: 清除购物车中已购买的商品
+        OrderSvc-->>Buyer: 订单详情（状态：待支付）
+
+        %% Step 3: 支付
+        Buyer->>PaySvc: 3.发起支付(order_id, channel=ALIPAY)
+        PaySvc->>OrderSvc: 校验订单状态与金额
+        OrderSvc-->>PaySvc: 订单信息确认
+        PaySvc->>PaySvc: 创建支付单(Payment)
+        PaySvc->>Alipay: 调用支付宝统一下单接口
+        Alipay-->>PaySvc: 支付表单/二维码 URL
+        PaySvc-->>Buyer: 支付信息（form/QR code）
+
+        %% Step 4: 支付宝异步回调
+        Alipay->>PaySvc: 4.支付成功回调(trade_no, pay_data)
+        PaySvc->>PaySvc: 验证签名 + 幂等性检查(pay_no)
+        PaySvc->>PaySvc: 更新 Payment 状态 → PAID
+        PaySvc->>OrderSvc: 通知订单支付成功
+        OrderSvc->>OrderSvc: 订单状态 → PENDING_SHIPMENT<br/>更新 paid_at + OrderLog
+        OrderSvc->>InvSvc: 支付成功，扣减库存<br/>（锁定库存转已售）
+        InvSvc->>InvSvc: available - 0（已在锁定中）<br/>locked_stock - qty<br/>sold_stock + qty<br/>写入 InventoryChange 流水
+        OrderSvc->>OrderSvc: 发领域事件：OrderPaid
+        OrderSvc-->>PaySvc: 返回处理成功
+        PaySvc-->>Alipay: 返回 SUCCESS（通知确认）
+
+        %% Step 5: 卖家发货
+        Seller->>ShipSvc: 5.发货(order_id, company, logistics_no)
+        ShipSvc->>OrderSvc: 校验订单状态（必须是 PENDING_SHIPMENT）
+        OrderSvc-->>ShipSvc: 校验通过
+        ShipSvc->>ShipSvc: 创建物流单
+        ShipSvc->>OrderSvc: 更新订单状态 → SHIPPED<br/>更新时间 shipped_at
+        OrderSvc-->>ShipSvc: 成功
+        ShipSvc-->>Seller: 物流单详情
+
+        %% Step 6: 买家确认收货
+        Buyer->>OrderSvc: 6.确认收货(order_id)
+        OrderSvc->>OrderSvc: 订单状态 → RECEIVED → COMPLETED<br/>更新 completed_at + OrderLog
+        OrderSvc-->>Buyer: 订单完成
+
+        %% Step 7: 评价（可选）
+        Buyer->>ReviewSvc: 7.发表评价(order_id, product_id, rating, content)
+        ReviewSvc->>OrderSvc: 校验订单已完成且未评价
+        OrderSvc-->>ReviewSvc: 校验通过
+        ReviewSvc->>ReviewSvc: 创建评价记录
+        ReviewSvc-->>Buyer: 评价成功
+    end

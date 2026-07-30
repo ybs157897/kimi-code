@@ -147,11 +147,15 @@ export class HttpClient {
     body: FormData,
   ): Promise<T> {
     const url = this.url(path);
+    const headers = new Headers({ accept: 'application/json' });
+    if (this.opts.token !== undefined) {
+      headers.set('authorization', `Bearer ${this.opts.token}`);
+    }
     const res = await fetchWithReport(
       url,
       {
         method,
-        headers: { accept: 'application/json' },
+        headers,
         body,
       },
       {

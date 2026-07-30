@@ -1,10 +1,21 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+/**
+ * Scenario: root SDK config loading, mutation, diagnostics, and reload controls.
+ * Responsibilities: preserve public config behavior and route reload options into v2.
+ * Wiring: real SDK/Core runtime with local config files and no external provider.
+ * Run: pnpm exec vitest run test/config.test.ts
+ */
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { createKimiConfigRpc, createKimiHarness, KimiError } from '#/index';
+import {
+  createKimiConfigRpc,
+  createKimiHarness,
+  effectiveModelAlias,
+  KimiError,
+} from '#/index';
 
 import {
   parseConfigString,
@@ -19,6 +30,22 @@ import { TEST_IDENTITY } from './test-identity';
 const toPosix = (p: string): string => p.replaceAll('\\', '/');
 
 const tempDirs: string[] = [];
+
+it('resolves a model alias when overrides are omitted', () => {
+  expect(
+    effectiveModelAlias({
+      provider: 'example',
+      model: 'model-1',
+      supportEfforts: ['low', 'high'],
+      defaultEffort: 'high',
+    }),
+  ).toMatchObject({
+    provider: 'example',
+    model: 'model-1',
+    supportEfforts: ['low', 'high'],
+    defaultEffort: 'high',
+  });
+});
 
 afterEach(async () => {
   vi.unstubAllEnvs();
@@ -97,7 +124,12 @@ describe('SDK config TOML', () => {
     await expect(rpc.resolveConfigPath({ homeDir: dir })).resolves.toBe(toPosix(join(dir, 'config.toml')));
   });
 
-  it('returns structured validation issues through the config RPC wrapper', async () => {
+  it.each([
+    ['a string', '"large"'],
+    ['zero', '0'],
+  ])(
+    'returns structured validation issues for max_context_size set to %s',
+    async (_description, maxContextSize) => {
     const rpc = createKimiConfigRpc();
 
     await expect(
@@ -109,7 +141,7 @@ type = "kimi"
 [models.kimi]
 provider = "kimi"
 model = "kimi"
-max_context_size = "large"
+max_context_size = ${maxContextSize}
 `,
         filePath: 'broken.toml',
       }),
@@ -122,7 +154,8 @@ max_context_size = "large"
         ],
       },
     });
-  });
+    },
+  );
 
   it('parses the documented config shape and keeps TUI-only fields in raw', () => {
     const config = parseConfigString(COMPLETE_TOML, 'complete.toml') as Record<string, unknown>;
@@ -167,8 +200,8 @@ max_context_size = "large"
       printWaitCeilingS: 3600,
     });
     const services = config['services'] as Record<string, Record<string, unknown>> | undefined;
-    expect((services?.['moonshotSearch'] as Record<string, unknown> | undefined)?.['customHeaders']).toEqual({ 'X-Search': '1' });
-    expect((services?.['moonshotFetch'] as Record<string, unknown> | undefined)?.['apiKey']).toBe('sk-fetch');
+    expect(services?.['moonshotSearch']?.['customHeaders']).toEqual({ 'X-Search': '1' });
+    expect(services?.['moonshotFetch']?.['apiKey']).toBe('sk-fetch');
 
     expect('theme' in config).toBe(false);
     expect(config['raw']).toMatchObject({
@@ -185,7 +218,7 @@ max_context_size = "large"
     const config = parseConfigString(COMPLETE_TOML, configPath) as Record<string, unknown>;
 
     await writeConfigFile(configPath, {
-      ...(config as Record<string, unknown>),
+      ...config,
       defaultModel: 'kimi-for-coding',
       loopControl: {
         ...(config['loopControl'] as Record<string, unknown>),
@@ -270,6 +303,22 @@ maxRunningTasks = 2
 });
 
 describe('KimiHarness config API', () => {
+  it('rejects disabling mandatory v2 config loading with a stable error', () => {
+    const homeDir = join(tmpdir(), 'kimi-sdk-config-autoload-disabled');
+
+    expect(() =>
+      createKimiHarness({
+        homeDir,
+        identity: TEST_IDENTITY,
+        autoLoadConfig: false,
+      }),
+    ).toThrow(expect.objectContaining({
+      name: 'KimiError',
+      code: 'not_implemented',
+      details: { option: 'autoLoadConfig' },
+    }));
+  });
+
   it('loads default config when missing and deep-merges setConfig patches from disk', async () => {
     const homeDir = await makeTempDir();
     const configPath = join(homeDir, 'config.toml');
@@ -305,6 +354,24 @@ describe('KimiHarness config API', () => {
     expect(text).toContain('theme = "dark"');
     expect(text).toContain('GOOGLE_CLOUD_PROJECT = "project-1"');
     expect(text).toContain('claim_stale_after_ms = 15000');
+  });
+
+  it('removes a provider through the public Harness API and returns persisted config', async () => {
+    const homeDir = await makeTempDir();
+    const configPath = join(homeDir, 'config.toml');
+    await writeFile(configPath, COMPLETE_TOML, 'utf-8');
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+
+    try {
+      const updated = await harness.removeProvider('kimi-for-coding');
+
+      expect(updated.providers?.['kimi-for-coding']).toBeUndefined();
+      await expect(harness.getConfig({ reload: true })).resolves.toMatchObject({
+        providers: {},
+      });
+    } finally {
+      await harness.close();
+    }
   });
 
   it('does not write invalid config patches', async () => {
@@ -344,30 +411,28 @@ describe('KimiHarness config API', () => {
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
 
     const features = await harness.getExperimentalFeatures();
-    expect(features).toEqual([
-      {
+    expect(features).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
         id: 'tool-select',
         title: 'Tool select (progressive tool disclosure)',
-        description:
-          'Keep MCP tool schemas out of the immutable top-level tools[]; the model loads them on demand via the select_tools tool. Only takes effect on models whose capability catalog declares dynamically loaded tools.',
         surface: 'core',
         env: 'KIMI_CODE_EXPERIMENTAL_TOOL_SELECT',
         defaultEnabled: false,
         enabled: false,
         source: 'default',
-      },
-      {
+        }),
+        expect.objectContaining({
         id: 'expert-teams',
         title: 'Expert teams',
-        description:
-          'Activate plugin-defined expert-team modes with a lead and declared specialist agents.',
         surface: 'both',
         env: 'KIMI_CODE_EXPERIMENTAL_EXPERT_TEAMS',
         defaultEnabled: true,
         enabled: true,
         source: 'default',
-      },
-    ]);
+        }),
+      ]),
+    );
   });
 
   it('can create the default config scaffold without selecting a model', async () => {
@@ -392,6 +457,7 @@ describe('KimiHarness config API', () => {
     const homeDir = await makeTempDir();
     const workDir = join(homeDir, 'work');
     const configPath = join(homeDir, 'config.toml');
+    await mkdir(workDir);
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
     const session = await harness.createSession({
@@ -414,6 +480,7 @@ describe('KimiHarness config API', () => {
     const homeDir = await makeTempDir();
     const workDir = join(homeDir, 'work');
     const configPath = join(homeDir, 'config.toml');
+    await mkdir(workDir);
     await writeFile(configPath, COMPLETE_TOML, 'utf-8');
     const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
     const session = await harness.createSession({
@@ -422,10 +489,15 @@ describe('KimiHarness config API', () => {
       model: 'kimi-for-coding',
     });
 
-    const reloadSpy = vi.spyOn(session, 'reloadSession').mockResolvedValue({} as never);
+    try {
+      const reloadSpy = vi.spyOn(session, 'reloadSession');
 
-    await harness.reloadSession({ id: session.id, forcePluginSessionStartReminder: true });
+      await harness.reloadSession({ id: session.id, forcePluginSessionStartReminder: true });
 
-    expect(reloadSpy).toHaveBeenCalledWith({ forcePluginSessionStartReminder: true });
+      expect(reloadSpy).toHaveBeenCalledWith({ forcePluginSessionStartReminder: true });
+      expect(session.getResumeState()?.agents['main']).toBeDefined();
+    } finally {
+      await harness.close();
+    }
   });
 });

@@ -316,10 +316,9 @@ export function registerSessionsRoutes(app: SessionRouteHost, core: Scope): void
 
         const handle = await core.accessor.get(ISessionLifecycleService).create({
           workDir,
+          title: body.title,
+          metadata: customMetadataFromWire(body.metadata),
         });
-        if (typeof body.title === 'string') {
-          await handle.accessor.get(ISessionMetadata).setTitle(body.title);
-        }
         const meta = await handle.accessor.get(ISessionMetadata).read();
         const session = toWireSession(
           { ...meta, workspaceId: touched.id },
@@ -1176,6 +1175,14 @@ function buildWireMetadata(
   if (custom === undefined) return { cwd };
   const { goal: _drop, ...rest } = custom as { goal?: unknown; [key: string]: unknown };
   return { ...rest, cwd };
+}
+
+function customMetadataFromWire(
+  metadata: { cwd: string; [key: string]: unknown } | undefined,
+): Record<string, unknown> | undefined {
+  if (metadata === undefined) return undefined;
+  const { cwd: _drop, ...custom } = metadata;
+  return Object.keys(custom).length === 0 ? undefined : custom;
 }
 
 function buildValidationEnvelope(

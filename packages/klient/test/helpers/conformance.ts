@@ -5,7 +5,7 @@
  * differs per file.
  */
 
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -69,11 +69,156 @@ export function defineKlientConformance(
       expect(await workspaces.get(created.id)).toBeUndefined();
     });
 
+    it('workspace skill listing is session-less across transports', async () => {
+      const sessionsBefore = await target.klient.global.sessions.list({});
+      const skillName = `workspace-skill-${transport.replaceAll(/[^a-zA-Z0-9_-]/g, '-')}`;
+      const skillDir = join(target.workDir, '.kimi-code', 'skills', skillName);
+      await mkdir(skillDir, { recursive: true });
+      await writeFile(
+        join(skillDir, 'SKILL.md'),
+        `---\nname: ${skillName}\ndescription: Workspace skill conformance fixture.\n---\n\nPrivate fixture content.\n`,
+        'utf8',
+      );
+
+      const skills = await target.klient.global.skills.listWorkspace(target.workDir);
+      const sessionsAfter = await target.klient.global.sessions.list({});
+
+      expect(skills).toContainEqual(
+        expect.objectContaining({
+          name: skillName,
+          description: 'Workspace skill conformance fixture.',
+          source: 'project',
+        }),
+      );
+      expect(skills.find((skill) => skill.name === skillName)).not.toHaveProperty(
+        'content',
+      );
+      expect(sessionsAfter.items.map((session) => session.id)).toEqual(
+        sessionsBefore.items.map((session) => session.id),
+      );
+    });
+
     it('sessions index responds with a page shape', async () => {
       const page = await target.klient.global.sessions.list({});
       expect(Array.isArray(page.items)).toBe(true);
       const count = await target.klient.global.sessions.countActive(['no-such-workspace']);
       expect(typeof count).toBe('number');
+    });
+
+    it('explicit session identity and initial metadata are identical across transports', async () => {
+      const id = `session_explicit_${transport.replaceAll(/[^a-zA-Z0-9_-]/g, '_')}`;
+      const meta = await target.klient.global.sessions.create({
+        id,
+        workDir: target.workDir,
+        title: 'Explicit session',
+        metadata: { owner: 'example' },
+      });
+      try {
+        expect(meta).toMatchObject({
+          id,
+          title: 'Explicit session',
+          isCustomTitle: true,
+          custom: { owner: 'example' },
+        });
+      } finally {
+        await target.klient.session(id).close();
+      }
+    });
+
+    it('MCP catalog OAuth marker CRUD is identical across transports', async () => {
+      const catalog = target.klient.global.mcp.catalog;
+      const originalName = `mcp-catalog-${transport}`;
+      const renamedName = `${originalName}-renamed`;
+      const config = {
+        transport: 'http' as const,
+        url: 'https://mcp.example.test/rpc',
+        auth: 'oauth' as const,
+      };
+      let activeName = originalName;
+
+      try {
+        await expect(
+          catalog.add({ name: originalName, config }),
+        ).resolves.toMatchObject({
+          name: originalName,
+          config,
+          source: 'user',
+        });
+        await expect(catalog.get(originalName)).resolves.toMatchObject({
+          name: originalName,
+          config,
+        });
+
+        const updatedConfig = {
+          ...config,
+          toolTimeoutMs: 5_000,
+        };
+        await expect(
+          catalog.update({ name: originalName, config: updatedConfig }),
+        ).resolves.toMatchObject({
+          name: originalName,
+          config: updatedConfig,
+        });
+        await expect(
+          catalog.rename({ oldName: originalName, newName: renamedName }),
+        ).resolves.toMatchObject({
+          name: renamedName,
+          config: updatedConfig,
+        });
+        activeName = renamedName;
+        expect((await catalog.list()).some((entry) => entry.name === renamedName)).toBe(
+          true,
+        );
+
+        await catalog.remove(renamedName);
+        activeName = '';
+        await expect(catalog.get(renamedName)).resolves.toBeUndefined();
+      } finally {
+        if (activeName !== '' && (await catalog.get(activeName)) !== undefined) {
+          await catalog.remove(activeName);
+        }
+      }
+    });
+
+    it('MCP OAuth cancellation is identical across transports', async () => {
+      await expect(
+        target.klient.global.mcp.oauth.cancel('missing-flow'),
+      ).resolves.toBeUndefined();
+    });
+
+    it('MCP probe failures are identical across transports', async () => {
+      await expect(
+        target.klient.global.mcp.probe.run({
+          serverName: 'missing-server',
+          config: {
+            transport: 'stdio',
+            command: '/example/missing-mcp-command',
+            startupTimeoutMs: 100,
+          },
+          cwd: target.workDir,
+        }),
+      ).resolves.toMatchObject({
+        serverName: 'missing-server',
+        success: false,
+        toolCount: 0,
+        error: expect.any(String),
+      });
+    });
+
+    it('session snapshot deletion is identical across transports', async () => {
+      const meta = await target.klient.global.sessions.create({
+        workDir: target.workDir,
+        title: `snapshot-delete-${transport}`,
+      });
+      const summary = await target.klient.global.sessions.get(meta.id);
+      expect(summary).toBeDefined();
+
+      await target.klient.global.sessionStore.delete({
+        workspaceId: summary!.workspaceId,
+        sessionId: meta.id,
+      });
+
+      await expect(target.klient.global.sessions.get(meta.id)).resolves.toBeUndefined();
     });
 
     it('exports a session archive identically across transports', async () => {
@@ -156,6 +301,9 @@ export function defineKlientConformance(
             name: 'missing',
           }),
         ).resolves.toBe(false);
+        await expect(
+          session.agent('main').plugins.refreshSessionStartReminder(),
+        ).resolves.toBeUndefined();
       } finally {
         await session.close();
       }
@@ -170,6 +318,7 @@ export function defineKlientConformance(
       try {
         await expect(session.cron.list()).resolves.toEqual([]);
         await expect(session.cron.getNextFireTime()).resolves.toBeNull();
+        await expect(session.cron.getNextFireForTask('missing')).resolves.toBeNull();
       } finally {
         await session.close();
       }
@@ -248,6 +397,63 @@ export function defineKlientConformance(
       const session = target.klient.session(meta.id);
       try {
         await expect(session.warnings.list()).resolves.toEqual([]);
+      } finally {
+        await session.close();
+      }
+    });
+
+    it('session todos are identical across transports', async () => {
+      const meta = await target.klient.global.sessions.create({
+        workDir: target.workDir,
+        title: `todos-${transport}`,
+      });
+      const session = target.klient.session(meta.id);
+      const todos = [
+        { title: 'Connect the public facade', status: 'in_progress' as const },
+        { title: 'Verify both transports', status: 'pending' as const },
+      ];
+      try {
+        // Until lifecycle resume/create owns main-agent materialization, enter
+        // the agent facade once so the session Todo service has its wire owner.
+        await session.agent('main').replay.read();
+        await expect(session.todos.list()).resolves.toEqual([]);
+        await session.todos.replace(todos);
+        await expect(session.todos.list()).resolves.toEqual(todos);
+        await expect(session.agent('main').replay.read()).resolves.toMatchObject({
+          todos,
+        });
+        await session.todos.clear();
+        await expect(session.todos.list()).resolves.toEqual([]);
+      } finally {
+        await session.close();
+      }
+    });
+
+    it('agent context commands are identical across transports', async () => {
+      const meta = await target.klient.global.sessions.create({
+        workDir: target.workDir,
+        title: `context-command-${transport}`,
+      });
+      const session = target.klient.session(meta.id);
+      const agent = session.agent('main');
+      try {
+        await agent.importContext({
+          content: 'Imported <context>',
+          source: 'conformance-example',
+        });
+        await expect(agent.getContext()).resolves.toMatchObject({
+          history: [
+            {
+              role: 'user',
+              content: [{ type: 'text', text: 'Imported &lt;context&gt;' }],
+              origin: { kind: 'injection', variant: 'context_import' },
+              note: 'conformance-example',
+            },
+          ],
+        });
+
+        await agent.clearContext();
+        await expect(agent.getContext()).resolves.toMatchObject({ history: [] });
       } finally {
         await session.close();
       }

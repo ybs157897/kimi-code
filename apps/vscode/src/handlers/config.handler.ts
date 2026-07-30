@@ -39,7 +39,7 @@ const SLASH_COMMANDS: SlashCommandInfo[] = [
 const saveConfig: Handler<SessionConfig, { ok: boolean }> = async (params, ctx) => {
   const effort = sessionConfigEffort(params);
   const effortChanged = params.effortChanged !== false;
-  const config = await ctx.harness.getConfig({ reload: true });
+  const config = await ctx.host.getConfig({ reload: true });
   const model = config.models?.[params.model];
   const full = thinkingConfig(
     effort,
@@ -54,7 +54,7 @@ const saveConfig: Handler<SessionConfig, { ok: boolean }> = async (params, ctx) 
     || config.thinking?.enabled !== patch.enabled
     || (effortChanged && config.thinking?.effort !== patch.effort)
   ) {
-    await ctx.harness.setConfig({
+    await ctx.host.setConfig({
       defaultModel: params.model,
       thinking: patch,
     });
@@ -79,14 +79,14 @@ const openSettings: Handler<void, { ok: boolean }> = async () => {
 };
 
 const getModels: Handler<void, WebviewKimiConfig> = async (_, ctx) => {
-  const config = await ctx.harness.getConfig({ reload: true });
+  const config = await ctx.host.getConfig({ reload: true });
   return toWebviewConfig(config);
 };
 
 const getSlashCommands: Handler<void, SlashCommandInfo[]> = async (_, ctx) => {
   if (!ctx.workDir) return SLASH_COMMANDS;
   try {
-    const skills = await ctx.harness.listWorkspaceSkills(ctx.workDir);
+    const skills = await ctx.host.listWorkspaceSkills(ctx.workDir);
     const skillCommands = skills
       .filter((skill) => isUserActivatableSkill(skill.type))
       .toSorted((left, right) => left.name.localeCompare(right.name))

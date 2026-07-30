@@ -11,12 +11,15 @@
  * untouched. For a full fork (`userVisibleTurnIndex` absent) the entire agent
  * wire log is copied and a forked marker appended. For an indexed fork
  * (`userVisibleTurnIndex` present), only records up to (and including) that
- * turn are retained — the caller must then clean up subagents, tasks,
- * interactions, and cron entries that reference records past the cutoff.
+ * turn are retained. The Store prunes subagents whose persisted lifetime starts
+ * after the cutoff, removes retained Agents' copied task/cron runtime state,
+ * and returns the cutoff so the lifecycle can filter App-scoped cron entries.
  *
- * `delete()` performs a hard delete by tombstones the session and removing its
- * persisted artifacts. The operation is idempotent: repeating it after a
- * partial or complete prior deletion succeeds without error.
+ * `delete()` removes the query projection, every legacy discovery record, and
+ * then the persisted session directory. The operation is idempotent: repeating
+ * it after a partial or complete prior deletion succeeds without error.
+ * Retryable tombstones/reconciliation are a separate lifecycle concern and
+ * are not implied by this Store contract.
  *
  * App-scoped — the Store operates on persisted data independent of any live
  * session scope. Callers must drain/close a live session before calling
@@ -63,12 +66,14 @@ export interface ForkSnapshotResult {
    * materialized or `state.json` was never written). Callers use this to seed
    * the target title, last prompt, and custom metadata. */
   readonly sourceMeta: SessionSnapshotMeta | undefined;
-  /** The ids of every agent whose wire log was copied to the target. */
+  /** The ids of every agent whose wire log was retained in the target. */
   readonly agentIds: readonly string[];
   /** For an indexed fork, the epoch-ms timestamp of the last retained record;
-   * undefined for a full fork. Callers use this to clean up subagents, tasks,
-   * interactions, and cron entries that reference records past the cutoff. */
+   * undefined for a full fork. Callers use this to filter derived App-scoped
+   * state such as persisted cron entries. */
   readonly cutoffTime?: number;
+  /** The selected main-agent turn's prompt text for an indexed fork. */
+  readonly lastPrompt?: string;
 }
 
 export interface DeleteSnapshotInput {

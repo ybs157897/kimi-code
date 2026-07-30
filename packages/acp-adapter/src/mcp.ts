@@ -26,22 +26,10 @@
  */
 
 import type { McpServer, McpServerStdio } from '@agentclientprotocol/sdk';
+import type { McpServerConfig } from '@moonshot-ai/agent-core-v2';
 import { log } from '@moonshot-ai/kimi-code-sdk';
 
-/**
- * Minimal `McpServerConfig` type — mirrors the subset of fields the ACP
- * adapter actually projects when converting ACP MCP server entries into
- * the kernel-native config map. The canonical type and schema live in
- * `@moonshot-ai/agent-core-v2`'s `McpServerConfigSchema`.
- */
-interface McpServerConfig {
-  readonly transport: string;
-  readonly url?: string;
-  readonly headers?: Record<string, string>;
-  readonly command?: string;
-  readonly args?: readonly string[];
-  readonly env?: Record<string, string>;
-}
+export type { McpServerConfig } from '@moonshot-ai/agent-core-v2';
 
 /**
  * Convert an ACP `McpServer[]` into the kernel-native
@@ -78,7 +66,7 @@ function acpMcpServerToConfig(
     const config: McpServerConfig = {
       transport: 'stdio',
       command: stdio.command,
-      args: stdio.args,
+      args: [...stdio.args],
       env: envArrayToRecord(stdio.env),
     };
     return { name: stdio.name, config };
@@ -100,7 +88,6 @@ function acpMcpServerToConfig(
       };
       return { name: server.name, config };
     }
-    case 'acp':
     default: {
       // Defensive: future ACP transports land here too. The cast is the
       // narrowest way to read `name`/`type` off the leftover variant

@@ -12,6 +12,7 @@ import { BaselineManager, type BaselineSession } from "./managers/baseline.manag
 import { FileManager } from "./managers/file.manager";
 import { KimiRuntime } from "./runtime/kimi-runtime";
 import type { SessionRuntime } from "./runtime/session-runtime";
+import type { VscodeHostPort } from "./runtime/v2-host";
 import { areSameFsPath } from "./utils/fs-path";
 import {
   isWorkspacePathContained,
@@ -36,6 +37,7 @@ export class BridgeHandler {
     private readonly reloadWebview: ReloadWebviewFn,
     private readonly showLogs: ShowLogsFn,
     private readonly writeLog: (message: string) => void,
+    host?: VscodeHostPort,
   ) {
     this.runtime = new KimiRuntime({
       version: VSCodeSettings.getExtensionConfig().version,
@@ -44,8 +46,10 @@ export class BridgeHandler {
         this.captureFileBaseline(session, filePath, webviewIds);
       },
       log: (message, error) => this.logRuntimeError(message, error),
+      homeDir: host?.homeDir,
+      host,
     });
-    this.baselineManager = new BaselineManager(globalStoragePath, this.runtime.harness.homeDir);
+    this.baselineManager = new BaselineManager(globalStoragePath, this.runtime.homeDir);
     this.fileManager = new FileManager(this.baselineManager, broadcast);
   }
 
@@ -145,7 +149,7 @@ export class BridgeHandler {
       fileManager: this.fileManager,
       baselineManager: this.baselineManager,
       runtime: this.runtime,
-      harness: this.runtime.harness,
+      host: this.runtime.requireHost(),
       reloadWebview: () => this.reloadWebview(webviewId),
       showLogs: this.showLogs,
       logError: (message, error) => this.logRuntimeError(message, error),
@@ -167,7 +171,7 @@ export class BridgeHandler {
         const current = this.runtime.getSession(sessionId);
         const session =
           current?.session ??
-          (await this.runtime.harness.resumeSession({ id: sessionId, includeSubagents: true }));
+          (await this.runtime.requireHost().resumeSession({ id: sessionId }));
         if (!areSameFsPath(session.workDir, this.requireWorkDir(webviewId))) {
           if (current === undefined) {
             await session.close().catch((error: unknown) => {
@@ -282,7 +286,7 @@ export class BridgeHandler {
 
   async getBaselineContent(sessionId: string, filePath: string): Promise<string> {
     const active = this.runtime.getSession(sessionId)?.summary;
-    const summary = active ?? (await this.runtime.harness.listSessions({ sessionId }))[0];
+    const summary = active ?? (await this.runtime.requireHost().listSessions({ sessionId }))[0];
     if (summary === undefined) throw new Error("Session was not found.");
     return this.baselineManager.getContent(baselineSummary(summary), filePath);
   }

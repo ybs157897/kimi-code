@@ -43,7 +43,7 @@ A Service method is directly exposable iff **all** hold:
 3. Errors are `KimiError` (coded).
 4. It is a command/query, not a factory, stream, byte-store, or sink.
 
-If any fail → wrap in a **facade** (a Service that takes ids, returns data, throws `KimiError`) and expose the facade. The repo already ships a wire-shaped facade in `rpc/core-api.ts` (`CoreAPI` / `SessionAPI` / `AgentAPI`) behind `IAgentRPCService` / `ISessionRPCService` — prefer building the HTTP edge on top of it rather than re-deriving a new one.
+If any fail → wrap in a **facade** (a Service that takes ids, returns data, throws `KimiError`) and expose the facade. The repo ships an Agent-scoped wire facade in `rpc/core-api.ts` (`AgentAPI`) behind `IAgentRPCService`. Session- and App-scoped capabilities stay in their owning domain Services and are composed by Klient; do not introduce a second monolithic Session/Core RPC facade.
 
 ## 3. Per-scope `resource:action` map
 

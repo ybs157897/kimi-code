@@ -9,6 +9,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 
 export interface IAgentPluginService {
   readonly _serviceBrand: undefined;
+  appendFreshSessionStartReminder(): Promise<void>;
 }
 
 export const IAgentPluginService: ServiceIdentifier<IAgentPluginService> =

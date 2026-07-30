@@ -23,18 +23,18 @@ import {
   applyCatalogProvider,
   catalogProviderModels,
   CatalogFetchError,
-  createKimiHarness,
   DEFAULT_CATALOG_URL,
   fetchCatalog,
   resolveCatalogImport,
   type Catalog,
   type CatalogProviderEntry,
   type KimiConfig,
-  type KimiHarness,
 } from '@moonshot-ai/kimi-code-sdk';
 import type { Command } from 'commander';
 
-import { createKimiCodeHostIdentity, createKimiCodeUserAgent } from '#/cli/version';
+import type { CLIOptions } from '#/cli/options';
+import { createKimiCodeUserAgent, getVersion } from '#/cli/version';
+import { createCliV2Runtime } from '#/cli/v2/create-v2-runtime';
 import {
   applyCustomEndpointProvider,
   DEFAULT_CUSTOM_ENDPOINT_CONTEXT_SIZE,
@@ -46,11 +46,19 @@ interface WritableLike {
 }
 
 export interface ProviderDeps {
-  readonly getHarness: () => KimiHarness;
+  readonly getConfigHost: () => ProviderConfigHost;
+  readonly close?: () => Promise<void>;
   readonly stdout: WritableLike;
   readonly stderr: WritableLike;
   readonly env: NodeJS.ProcessEnv;
   readonly exit: (code: number) => never;
+}
+
+export interface ProviderConfigHost {
+  ensureConfigFile(): Promise<void>;
+  getConfig(): Promise<KimiConfig>;
+  setConfig(patch: Partial<KimiConfig>): Promise<KimiConfig>;
+  removeProvider(providerId: string): Promise<KimiConfig>;
 }
 
 interface AddOptions {
@@ -108,7 +116,7 @@ export async function handleProviderAdd(
     apiKey,
   };
 
-  const harness = deps.getHarness();
+  const harness = deps.getConfigHost();
   await harness.ensureConfigFile();
 
   let entries: Awaited<ReturnType<typeof fetchCustomRegistry>>;
@@ -132,8 +140,9 @@ export async function handleProviderAdd(
   // persisted. Drop every stale id up front in a single batch instead, then
   // apply against the resulting fresh config.
   let config = await harness.getConfig();
+  const providers = config.providers ?? {};
   const staleIds = entryList
-    .filter((entry) => config.providers[entry.id] !== undefined)
+    .filter((entry) => providers[entry.id] !== undefined)
     .map((entry) => entry.id);
   for (const id of staleIds) {
     config = await harness.removeProvider(id);
@@ -165,10 +174,10 @@ export async function handleProviderRemove(
   deps: ProviderDeps,
   providerId: string,
 ): Promise<void> {
-  const harness = deps.getHarness();
+  const harness = deps.getConfigHost();
   await harness.ensureConfigFile();
   const config = await harness.getConfig();
-  if (config.providers[providerId] === undefined) {
+  if ((config.providers ?? {})[providerId] === undefined) {
     deps.stderr.write(`Provider "${providerId}" not found.\n`);
     deps.exit(1);
   }
@@ -189,7 +198,7 @@ export async function handleEndpointAdd(
     deps.exit(1);
   }
 
-  const harness = deps.getHarness();
+  const harness = deps.getConfigHost();
   await harness.ensureConfigFile();
   const config = await harness.getConfig();
   let applied: ReturnType<typeof applyCustomEndpointProvider>;
@@ -222,7 +231,7 @@ export async function handleProviderList(
   deps: ProviderDeps,
   opts: ListOptions,
 ): Promise<void> {
-  const harness = deps.getHarness();
+  const harness = deps.getConfigHost();
   await harness.ensureConfigFile();
   const config = await harness.getConfig();
 
@@ -240,14 +249,15 @@ export async function handleProviderList(
     modelsByProvider.set(model.provider, list);
   }
 
-  const providerIds = Object.keys(config.providers).toSorted();
+  const providers = config.providers ?? {};
+  const providerIds = Object.keys(providers).toSorted();
   if (providerIds.length === 0) {
     deps.stdout.write('No providers configured.\n');
     return;
   }
 
   for (const id of providerIds) {
-    const provider = config.providers[id]!;
+    const provider = providers[id]!;
     const aliases = modelsByProvider.get(id) ?? [];
     const sourceLabel = providerSourceLabel(provider);
     deps.stdout.write(
@@ -417,7 +427,7 @@ export async function handleCatalogAdd(
     deps.exit(1);
   }
 
-  const harness = deps.getHarness();
+  const harness = deps.getConfigHost();
   await harness.ensureConfigFile();
 
   let config = await harness.getConfig();
@@ -430,7 +440,7 @@ export async function handleCatalogAdd(
   const previousDefaultModel = config.defaultModel;
   const previousThinking = config.thinking;
 
-  if (config.providers[providerId] !== undefined) {
+  if ((config.providers ?? {})[providerId] !== undefined) {
     config = await harness.removeProvider(providerId);
   }
 
@@ -513,6 +523,8 @@ export function registerProviderCommand(parent: Command, deps?: Partial<Provider
     } catch (error) {
       resolved.stderr.write(`${errorMessage(error)}\n`);
       resolved.exit(1);
+    } finally {
+      await resolved.close?.();
     }
   };
 
@@ -640,19 +652,104 @@ export function registerProviderCommand(parent: Command, deps?: Partial<Provider
 }
 
 function resolveDeps(overrides: Partial<ProviderDeps> = {}): ProviderDeps {
-  let harness: KimiHarness | undefined;
-  const identity = createKimiCodeHostIdentity();
+  let runtimePromise:
+    | Promise<Awaited<ReturnType<typeof createCliV2Runtime>>['runtime']>
+    | undefined;
+  const getRuntime = () => {
+    runtimePromise ??= createCliV2Runtime(
+      PROVIDER_CLI_OPTIONS,
+      getVersion(),
+      'shell',
+      'default',
+    ).then(({ runtime }) => runtime);
+    return runtimePromise;
+  };
+  const host = createProviderConfigHost(getRuntime);
   return {
-    getHarness:
-      overrides.getHarness ??
-      (() => {
-        harness ??= createKimiHarness({ identity });
-        return harness;
+    getConfigHost: overrides.getConfigHost ?? (() => host),
+    close:
+      overrides.close ??
+      (async () => {
+        if (runtimePromise !== undefined) {
+          await (await runtimePromise).close();
+        }
       }),
     stdout: overrides.stdout ?? process.stdout,
     stderr: overrides.stderr ?? process.stderr,
     env: overrides.env ?? process.env,
     exit: overrides.exit ?? ((code: number) => process.exit(code)),
+  };
+}
+
+const PROVIDER_CLI_OPTIONS: CLIOptions = {
+  session: undefined,
+  continue: false,
+  yolo: false,
+  auto: false,
+  plan: false,
+  model: undefined,
+  outputFormat: undefined,
+  prompt: undefined,
+  skillsDirs: [],
+  agent: undefined,
+  agentFiles: [],
+};
+
+type ProviderRuntime = Awaited<ReturnType<typeof createCliV2Runtime>>['runtime'];
+
+function createProviderConfigHost(
+  getRuntime: () => Promise<ProviderRuntime>,
+): ProviderConfigHost {
+  const getConfig = async (): Promise<KimiConfig> => {
+    const runtime = await getRuntime();
+    return { ...(await runtime.klient.global.config.getAll()) } as KimiConfig;
+  };
+
+  return {
+    ensureConfigFile: async () => {
+      await getConfig();
+    },
+    getConfig,
+    setConfig: async (patch) => {
+      const runtime = await getRuntime();
+      for (const [domain, value] of Object.entries(patch)) {
+        if (value !== undefined) {
+          await runtime.klient.global.config.replace({ domain, value });
+        }
+      }
+      return getConfig();
+    },
+    removeProvider: async (providerId) => {
+      const runtime = await getRuntime();
+      const config = await getConfig();
+      const providers = { ...config.providers };
+      if (providers[providerId] === undefined) return config;
+      delete providers[providerId];
+
+      const models = { ...config.models };
+      let removedDefault = false;
+      for (const [alias, model] of Object.entries(models)) {
+        if (model.provider !== providerId) continue;
+        delete models[alias];
+        removedDefault ||= config.defaultModel === alias;
+      }
+
+      await runtime.klient.global.config.replace({
+        domain: 'providers',
+        value: providers,
+      });
+      await runtime.klient.global.config.replace({
+        domain: 'models',
+        value: models,
+      });
+      if (removedDefault) {
+        await runtime.klient.global.config.replace({
+          domain: 'defaultModel',
+          value: undefined,
+        });
+      }
+      return getConfig();
+    },
   };
 }
 
@@ -677,7 +774,7 @@ function asManaged(config: KimiConfig): ManagedKimiConfigShape {
   return config as unknown as ManagedKimiConfigShape;
 }
 
-function providerSourceLabel(provider: KimiConfig['providers'][string]): string {
+function providerSourceLabel(provider: NonNullable<KimiConfig['providers']>[string]): string {
   const source = provider.source;
   if (source !== undefined) {
     if (source['kind'] === 'apiJson' && typeof source['url'] === 'string') {

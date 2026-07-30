@@ -22,7 +22,6 @@ import {
   type PromptPart,
   type QuestionAnswers,
   type QuestionRequest,
-  type Session,
   type SessionStatus,
   type SessionUsage,
 } from '@moonshot-ai/kimi-code-sdk';
@@ -37,8 +36,10 @@ import {
   ACP_BUILTIN_SLASH_COMMANDS,
   type AcpBuiltinSlashCommandName,
 } from './builtin-commands';
-import { buildSessionConfigOptions } from './config-options';
+import { buildSessionConfigOptionsFromModels } from './config-options';
+import type { IAcpSessionHost } from './iacp-session-host';
 import { listModelsFromHarness } from './model-catalog';
+import type { AcpHost, AcpModelEntry } from './types';
 import { acpBlocksToPromptParts, compressPromptImageParts } from './convert';
 import {
   acpToolCallId,
@@ -165,7 +166,7 @@ export class AcpSession {
 
   constructor(
     readonly conn: AgentSideConnection,
-    readonly session: Session,
+    readonly session: IAcpSessionHost,
     /**
      * Capabilities the client declared during `initialize`. Passed in
      * by `AcpServer.newSession` so `prompt()` can decide whether to
@@ -203,7 +204,9 @@ export class AcpSession {
      * introduces this so the model + mode picker funnel can refresh
      * the full SessionConfigOption[] snapshot on every change.
      */
-    private readonly harness?: KimiHarness,
+    private readonly modelCatalog?:
+      | Pick<AcpHost, 'imageLimits' | 'listAvailableModels'>
+      | KimiHarness,
     /**
      * Initial value of the adapter-side thinking effort, supplied
      * by the server when creating / loading the session from the
@@ -421,8 +424,8 @@ export class AcpSession {
    * acceptance rules.
    */
   private async resolveEffortForCurrentModel(effort: string): Promise<string> {
-    if (!this.harness) return effort;
-    const models = await listModelsFromHarness(this.harness);
+    if (!this.modelCatalog) return effort;
+    const models = await this.listModels();
     const entry = models.find((m) => m.id === this.currentModelIdInternal);
     if (effort === 'on') return entry?.defaultThinkingEffort ?? 'on';
     if (effort === 'off') return 'off';
@@ -462,8 +465,8 @@ export class AcpSession {
    * longer clamps an explicit off request here.
    */
   private async thinkingOnEffort(): Promise<string> {
-    if (!this.harness) return 'on';
-    const models = await listModelsFromHarness(this.harness);
+    if (!this.modelCatalog) return 'on';
+    const models = await this.listModels();
     return models.find((m) => m.id === this.currentModelIdInternal)?.defaultThinkingEffort ?? 'on';
   }
 
@@ -533,10 +536,10 @@ export class AcpSession {
    * that triggered it.
    */
   private async emitConfigOptionUpdate(): Promise<void> {
-    if (!this.harness) return;
+    if (!this.modelCatalog) return;
     try {
-      const snapshot = await buildSessionConfigOptions(
-        this.harness,
+      const snapshot = buildSessionConfigOptionsFromModels(
+        await this.listModels(),
         this.currentModelIdInternal,
         this.currentThinkingEffortInternal,
         this.currentModeIdInternal,
@@ -548,6 +551,14 @@ export class AcpSession {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  private async listModels(): Promise<readonly AcpModelEntry[]> {
+    if (this.modelCatalog === undefined) return [];
+    if ('listAvailableModels' in this.modelCatalog) {
+      return this.modelCatalog.listAvailableModels();
+    }
+    return listModelsFromHarness(this.modelCatalog);
   }
 
   /**
@@ -593,7 +604,13 @@ export class AcpSession {
   async replayHistory(agentId: string = MAIN_AGENT_ID): Promise<void> {
     const sessionId = this.id;
     const conn = this.conn;
-    const resumeState = this.session.getResumeState?.();
+    const resumeState = await this.session.getResumeState?.() as
+      | {
+          readonly agents?: Readonly<Record<string, {
+            readonly context: { readonly history: readonly ContextMessage[] };
+          }>>;
+        }
+      | undefined;
     if (!resumeState) {
       log.warn('acp: replayHistory called on session without resume state', { sessionId });
       return;
@@ -807,7 +824,7 @@ export class AcpSession {
       parts = await compressPromptImageParts(acpBlocksToPromptParts(blocks), {
         originalsDir:
           sessionDir === undefined ? undefined : sessionMediaOriginalsDir(sessionDir),
-        maxImageEdgePx: this.harness?.imageLimits?.maxEdgePx(),
+        maxImageEdgePx: this.modelCatalog?.imageLimits?.maxEdgePx,
         telemetry:
           track === undefined
             ? undefined

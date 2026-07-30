@@ -33,6 +33,7 @@ export function applyCustomEndpointProvider(
   const normalized = normalizeCustomEndpointInput(input);
   const alias = `${normalized.providerId}/${normalized.modelId}`;
 
+  config.providers ??= {};
   config.providers[normalized.providerId] = {
     type: normalized.providerType,
     baseUrl: normalized.baseUrl,

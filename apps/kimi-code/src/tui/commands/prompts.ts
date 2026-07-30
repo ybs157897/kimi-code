@@ -218,7 +218,7 @@ export async function promptModelSelectionForCatalog(
 ): Promise<{ model: CatalogModel; thinking: ThinkingEffort } | undefined> {
   const modelDict: Record<string, RuntimeModelCatalogModel> = {};
   for (const m of models) {
-    modelDict[`${providerId}/${m.id}`] = catalogModelToAlias(providerId, m);
+    modelDict[`${providerId}/${m.id}`] = catalogModelToAlias(providerId, m) as unknown as RuntimeModelCatalogModel;
   }
   const selection = await runModelSelector(host, modelDict);
   if (selection === undefined) return undefined;

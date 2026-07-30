@@ -339,6 +339,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
       handles.set(agentId, createdHandle);
       return createdHandle;
     }),
+    restore: vi.fn(async (agentId) => handles.get(agentId)),
     notifyAgentTaskStopped: vi.fn(),
     fork: vi.fn(async () => {
       throw new Error('unexpected fork');

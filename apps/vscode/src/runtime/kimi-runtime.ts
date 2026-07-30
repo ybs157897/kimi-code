@@ -1,10 +1,14 @@
 import {
-  createKimiHarness,
-  type KimiHarness,
-  type Session,
-  type SessionSummary,
-  type ThinkingEffort,
+  KimiAuthFacade,
+  resolveConfigPath,
+  resolveKimiHome,
 } from "@moonshot-ai/kimi-code-sdk";
+import {
+  createKimiDefaultHeaders,
+  createKimiDeviceId,
+  KIMI_CODE_PROVIDER_NAME,
+} from "@moonshot-ai/kimi-code-oauth";
+import { createKimiV2Runtime } from "@moonshot-ai/kimi-code-sdk/v2";
 
 import type { RuntimeBroadcast } from "./session-runtime";
 import {
@@ -16,19 +20,28 @@ import {
   type LegacyApprovalFlags,
 } from "./legacy-approval";
 import { SessionRuntime } from "./session-runtime";
+import {
+  VscodeV2Host,
+  type VscodeHostPort,
+  type VscodeSessionHostPort,
+  type VscodeSessionPort,
+  type VscodeSessionSummary,
+} from "./v2-host";
 import { areSameFsPath } from "../utils/fs-path";
 
 export interface KimiRuntimeOptions {
   readonly version: string;
   readonly broadcast: RuntimeBroadcast;
   readonly captureBaseline: (
-    session: Pick<SessionSummary, "id" | "workDir" | "metadata">,
+    session: Pick<VscodeSessionSummary, "id" | "workDir" | "metadata">,
     filePath: string,
     webviewIds: readonly string[],
   ) => void;
   readonly log: (message: string, error?: unknown) => void;
   readonly homeDir?: string;
-  readonly harness?: KimiHarness;
+  /** Compatibility injection used by the legacy Node-SDK fixture tests only. */
+  readonly harness?: VscodeSessionHostPort;
+  readonly host?: VscodeHostPort;
 }
 
 export interface OpenSessionOptions {
@@ -40,10 +53,12 @@ export interface OpenSessionOptions {
   readonly yoloMode: boolean;
 }
 
-/** Extension-host owner for one in-process Node SDK harness. */
+/** Extension-host owner for one in-process v2 runtime. */
 export class KimiRuntime {
-  readonly harness: KimiHarness;
+  readonly homeDir: string;
+  readonly host: VscodeHostPort | undefined;
 
+  private readonly sessionHost: VscodeSessionHostPort;
   private readonly broadcast: RuntimeBroadcast;
   private readonly captureBaseline: KimiRuntimeOptions["captureBaseline"];
   private readonly log: KimiRuntimeOptions["log"];
@@ -55,16 +70,45 @@ export class KimiRuntime {
     this.broadcast = options.broadcast;
     this.captureBaseline = options.captureBaseline;
     this.log = options.log;
-    this.harness =
-      options.harness ??
-      createKimiHarness({
-        ...(options.homeDir === undefined ? {} : { homeDir: options.homeDir }),
-        identity: {
-          userAgentProduct: "kimi-code-vscode",
-          version: options.version,
+    this.homeDir = resolveKimiHome(options.homeDir);
+    if (options.harness !== undefined) {
+      this.sessionHost = options.harness;
+      this.host = options.host;
+      return;
+    }
+    const configPath = resolveConfigPath({ homeDir: this.homeDir });
+    const identity = {
+      userAgentProduct: "kimi-code-vscode",
+      version: options.version,
+    };
+    const auth = new KimiAuthFacade({ homeDir: this.homeDir, configPath, identity });
+    this.host =
+      options.host ??
+      new VscodeV2Host(createKimiV2Runtime({
+        homeDir: this.homeDir,
+        configPath,
+        clientVersion: options.version,
+        requestHeaders: createKimiDefaultHeaders({ homeDir: this.homeDir, ...identity }),
+        telemetry: {
+          enabled: true,
+          deviceId: createKimiDeviceId(this.homeDir),
+          appName: "kimi-code-vscode",
+          uiMode: "vscode",
+          getAccessToken: async () =>
+            (await auth.getCachedAccessToken(KIMI_CODE_PROVIDER_NAME)) ?? null,
         },
-        uiMode: "vscode",
-      });
+      }), this.homeDir);
+    this.sessionHost = this.host;
+  }
+
+  requireHost(): VscodeHostPort {
+    if (this.host === undefined) throw new Error("The v2 host is unavailable in this fixture.");
+    return this.host;
+  }
+
+  /** Legacy integration-fixture alias; production bridge code uses {@link requireHost}. */
+  get harness(): VscodeHostPort {
+    return this.host ?? this.sessionHost as VscodeHostPort;
   }
 
   getSessionForView(webviewId: string): SessionRuntime | undefined {
@@ -100,14 +144,14 @@ export class KimiRuntime {
       const defaultApproval: LegacyApprovalFlags = { yolo: options.yoloMode, afk: false };
       const session =
         requestedId === undefined
-          ? await this.harness.createSession({
+          ? await this.sessionHost.createSession({
               workDir: options.workDir,
               model: options.model || undefined,
               thinking: normalizeEffort(options.effort),
               permission: corePermissionForLegacyApproval(defaultApproval),
               metadata: legacyApprovalMetadata(defaultApproval),
             })
-          : await this.harness.resumeSession({ id: requestedId, includeSubagents: true });
+          : await this.sessionHost.resumeSession({ id: requestedId });
       try {
         assertSessionWorkDir(session, options.workDir);
         const storedApproval = readLegacyApprovalFlags(session.summary?.metadata);
@@ -136,7 +180,7 @@ export class KimiRuntime {
 
   async attachResumedSession(
     webviewId: string,
-    session: Session,
+    session: VscodeSessionPort,
     defaultYoloMode = false,
   ): Promise<SessionRuntime> {
     const existing = this.sessions.get(session.id);
@@ -191,7 +235,7 @@ export class KimiRuntime {
   async closeSession(id: string): Promise<void> {
     const runtime = this.sessions.get(id);
     if (runtime === undefined) {
-      await this.harness.closeSession(id);
+      await this.sessionHost.closeSession(id);
       return;
     }
     this.sessions.delete(id);
@@ -203,7 +247,7 @@ export class KimiRuntime {
 
   async deleteSession(id: string): Promise<void> {
     await this.closeSession(id);
-    await this.harness.deleteSession(id);
+    await this.sessionHost.deleteSession(id);
   }
 
   async setYoloModeForActiveSessions(enabled: boolean): Promise<void> {
@@ -218,10 +262,10 @@ export class KimiRuntime {
     await Promise.all([...this.sessions.values()].map((session) => session.close()));
     this.sessions.clear();
     this.sessionByView.clear();
-    await this.harness.close();
+    await this.sessionHost.close();
   }
 
-  private wrapSession(session: Session, legacyApproval: LegacyApprovalFlags): SessionRuntime {
+  private wrapSession(session: VscodeSessionPort, legacyApproval: LegacyApprovalFlags): SessionRuntime {
     const runtime = new SessionRuntime({
       session,
       legacyApproval,
@@ -234,7 +278,7 @@ export class KimiRuntime {
   }
 
   private async readMigratedLegacyApproval(
-    session: Session,
+    session: VscodeSessionPort,
   ): Promise<LegacyApprovalFlags | undefined> {
     const metadata = session.summary?.metadata;
     try {
@@ -251,7 +295,7 @@ export class KimiRuntime {
 }
 
 async function applySessionSettings(
-  session: Session,
+  session: VscodeSessionPort,
   options: OpenSessionOptions,
   legacyApproval: LegacyApprovalFlags,
 ): Promise<void> {
@@ -267,15 +311,18 @@ async function applySessionSettings(
   }
 }
 
-export function normalizeEffort(effort: string): ThinkingEffort {
-  return (effort.trim() || "off") as ThinkingEffort;
+export function normalizeEffort(effort: string): string {
+  return effort.trim() || "off";
 }
 
 function flagsDiffer(a: LegacyApprovalFlags, b: LegacyApprovalFlags): boolean {
   return a.yolo !== b.yolo || a.afk !== b.afk;
 }
 
-function assertSessionWorkDir(session: Pick<Session, "workDir">, expectedWorkDir: string): void {
+function assertSessionWorkDir(
+  session: Pick<VscodeSessionPort, "workDir">,
+  expectedWorkDir: string,
+): void {
   if (!areSameFsPath(session.workDir, expectedWorkDir)) {
     throw new Error("The selected session belongs to a different working directory.");
   }

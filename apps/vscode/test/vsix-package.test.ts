@@ -128,6 +128,25 @@ describe('VSIX verifier CLI (package contract and failure details)', () => {
     expect(result.stderr).toContain('Bare runtime dependency "left-pad"');
   });
 
+  it('accepts an instance require method when it is application logic', async () => {
+    const fixture = await makeVsixFixture('linux-x64');
+    await writeFile(
+      join(fixture, 'extension', 'dist', 'extension.js'),
+      'class Registry { require(name) { return name; } }\n' +
+        'export function activate() { return new Registry().require("osKind"); }\n',
+    );
+
+    const result = runNode(verifierScript, [
+      '--target',
+      'linux-x64',
+      '--directory',
+      fixture,
+    ]);
+
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain('static audit and entry import smoke passed (package-only)');
+  });
+
   it('rejects generated session state inside the package', async () => {
     const fixture = await makeVsixFixture('win32-arm64');
     const stateDir = join(fixture, 'extension', 'runtime', 'profile');

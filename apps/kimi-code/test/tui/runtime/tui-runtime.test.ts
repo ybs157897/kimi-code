@@ -74,6 +74,7 @@ describe('TUI runtime (process-level port composition)', () => {
     const track = vi.fn();
     const replace = vi.fn(async () => undefined);
     const removeProvider = vi.fn(async () => undefined);
+    const persistOriginalImage = vi.fn(async () => '/tmp/original.png');
     const agent = {};
     const session = {
       agent: vi.fn(() => agent),
@@ -88,9 +89,11 @@ describe('TUI runtime (process-level port composition)', () => {
             reload: vi.fn(async () => undefined),
             set: vi.fn(async () => undefined),
             replace,
-            get: vi.fn(async (domain: string) =>
-              domain === 'defaultModel' ? 'klient-model' : undefined,
-            ),
+            get: vi.fn(async (domain: string) => {
+              if (domain === 'defaultModel') return 'klient-model';
+              if (domain === 'image') return { maxEdgePx: 1440 };
+              return undefined;
+            }),
           },
           kosong: {
             removeProvider,
@@ -120,6 +123,7 @@ describe('TUI runtime (process-level port composition)', () => {
         track,
         setContext: vi.fn(),
       },
+      localMedia: { persistOriginalImage },
       close: vi.fn(async () => undefined),
     };
 
@@ -133,6 +137,12 @@ describe('TUI runtime (process-level port composition)', () => {
     await runtime.modelConfig.removeProvider('klient-provider');
     const sessions = await runtime.sessionControl.sessions.list();
     const bound = runtime.bindSession('session-klient');
+    const maxImageEdgePx = await runtime.localMedia.getImageMaxEdgePx();
+    const originalPath = await runtime.localMedia.persistOriginalImage({
+      bytes: new Uint8Array([1, 2, 3]),
+      mimeType: 'image/png',
+      sessionId: 'session-klient',
+    });
 
     expect(runtime.environment.homeDir).toBe('/tmp/kimi-v2');
     expect(catalog.defaultModel).toBe('klient-model');
@@ -145,6 +155,13 @@ describe('TUI runtime (process-level port composition)', () => {
     });
     expect(removeProvider).toHaveBeenCalledExactlyOnceWith('klient-provider');
     expect(track).toHaveBeenCalledWith('runtime_ready', { engine: 'klient' });
+    expect(maxImageEdgePx).toBe(1440);
+    expect(originalPath).toBe('/tmp/original.png');
+    expect(persistOriginalImage).toHaveBeenCalledExactlyOnceWith({
+      bytes: new Uint8Array([1, 2, 3]),
+      mimeType: 'image/png',
+      sessionId: 'session-klient',
+    });
     expect(sessions).toEqual([
       {
         id: 'session-klient',

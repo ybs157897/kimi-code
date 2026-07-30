@@ -27,7 +27,13 @@ class TestSessionStore {
   async rename(id: string, newTitle: string): Promise<void> {
     const sessions = await this.listAll();
     const session = sessions.find(s => s.id === id);
-    if (!session) throw makeError('session.not_found', `Session "${id}" does not exist`);
+    if (!session) {
+      throw makeError(
+        'session.not_found',
+        `Session "${id}" does not exist`,
+        { sessionId: id },
+      );
+    }
     const filePath = join(session.sessionDir, 'state.json');
     let raw: string;
     try {
@@ -81,10 +87,18 @@ async function readSimpleState(sessionDir: string): Promise<Record<string, unkno
   } catch { return undefined; }
 }
 
-function makeError(code: string, message: string): Error {
-  const err = new Error(message) as Error & { code: string };
+function makeError(
+  code: string,
+  message: string,
+  details?: Record<string, unknown>,
+): Error {
+  const err = new Error(message) as Error & {
+    code: string;
+    details?: Record<string, unknown>;
+  };
   err.name = 'KimiError';
   err.code = code;
+  err.details = details;
   return err;
 }
 

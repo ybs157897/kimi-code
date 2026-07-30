@@ -14,7 +14,13 @@
  * hold Klient instead of the legacy `KimiHarness` / `Session`.
  */
 
-import type { Klient } from '@moonshot-ai/klient';
+import type {
+  AgentEventPayloads,
+  Klient,
+  ResumedAgentState,
+} from '@moonshot-ai/klient';
+import type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
+import type { PermissionMode } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
 import type { ApprovalRequest, ApprovalResponse, QuestionRequest, QuestionResult } from '@moonshot-ai/kimi-code-sdk';
 
 import type { IAcpSessionHost } from './iacp-session-host';
@@ -48,10 +54,8 @@ export class V2SessionAdapter implements IAcpSessionHost {
 
   private readonly klient: Klient;
   private readonly sessionId: string;
-  private readonly agentScope: { readonly sessionId: string; readonly agentId: string };
-
   private sessionMeta: SessionMeta | undefined;
-  private resumeState: unknown | undefined;
+  private readonly replayState: Promise<ResumedAgentState | undefined>;
   private closed = false;
 
   constructor(
@@ -62,12 +66,9 @@ export class V2SessionAdapter implements IAcpSessionHost {
     this.klient = klient;
     this.sessionId = sessionId;
     this.id = sessionId;
-    this.agentScope = { sessionId, agentId: 'main' };
     this.sessionMeta = sessionDir !== undefined ? { id: sessionId, sessionDir } : undefined;
 
-    // Eagerly load resume state so getResumeState() can return it synchronously
-    // when called shortly after construction (load/resume flow).
-    this.loadResumeState();
+    this.replayState = this.loadReplayState();
   }
 
   private get agent() {
@@ -78,32 +79,27 @@ export class V2SessionAdapter implements IAcpSessionHost {
     return this.klient.session(this.sessionId);
   }
 
-  private async loadResumeState(): Promise<void> {
+  private async loadReplayState(): Promise<ResumedAgentState | undefined> {
     try {
-      const state = await this.agent.replay.read();
-      // Project into the shape AcpSession.replayHistory expects:
-      // { agents: { [agentId]: { context: { history, tokenCount }, config? } } }
-      const stateRecord = state as unknown as Record<string, unknown> | undefined;
-      const contextRecord = (stateRecord?.['context'] as Record<string, unknown> | undefined) ?? {};
-      const history = (contextRecord['history'] as readonly unknown[]) ?? [];
-      const tokenCount = typeof contextRecord['tokenCount'] === 'number' ? contextRecord['tokenCount'] : 0;
-      this.resumeState = {
-        agents: {
-          main: {
-            context: { history, tokenCount },
-            ...(stateRecord !== undefined && stateRecord['config'] !== undefined ? { config: stateRecord['config'] } : {}),
-          },
-        },
-      };
+      return await this.agent.replay.read();
     } catch {
-      this.resumeState = undefined;
+      return undefined;
     }
   }
 
   // ── Resume state ─────────────────────────────────────────────────
 
-  getResumeState(): unknown {
-    return this.resumeState;
+  async getResumeState(): Promise<unknown> {
+    const state = await this.replayState;
+    if (state === undefined) return undefined;
+    return {
+      agents: {
+        main: {
+          context: state.context,
+          config: state.config,
+        },
+      },
+    };
   }
 
   get summary(): { readonly sessionDir?: string } | undefined {
@@ -116,7 +112,10 @@ export class V2SessionAdapter implements IAcpSessionHost {
     if (this.closed) {
       throw Object.assign(new Error('session is closed'), { code: 'session.closed' });
     }
-    return this.agent.prompt(input as any);
+    if (!Array.isArray(input)) {
+      throw new TypeError('prompt input must be an array');
+    }
+    return this.agent.prompt({ input: input as readonly ContentPart[] });
   }
 
   async activateSkill(name: string, args?: string): Promise<unknown> {
@@ -157,23 +156,27 @@ export class V2SessionAdapter implements IAcpSessionHost {
   }
 
   async setPermission(mode: string): Promise<void> {
-    await this.agent.setPermission(mode as any);
+    if (!isPermissionMode(mode)) {
+      throw new TypeError(`unsupported permission mode: ${mode}`);
+    }
+    await this.agent.setPermission(mode);
   }
 
   // ── Status / Usage ─────────────────────────────────────────────────
 
   async getStatus(): Promise<any> {
-    const [model, permission, plan, usage, context] = await Promise.all([
+    const [model, permission, plan, usage, context, replay] = await Promise.all([
       this.agent.getModel().catch(() => undefined),
       this.agent.getPermission().catch(() => undefined),
       this.agent.getPlan().catch(() => undefined),
       this.agent.getUsage().catch(() => undefined),
       this.agent.getContext().catch(() => undefined),
+      this.replayState,
     ]);
 
-    const contextTokens = (context as { tokenCount?: number } | undefined)?.tokenCount ?? 0;
+    const contextTokens = context?.tokenCount ?? 0;
     const maxContextTokens =
-      (context as { maxTokens?: number } | undefined)?.maxTokens ?? 0;
+      replay?.config.modelCapabilities?.max_context_tokens ?? 0;
     const contextUsage = maxContextTokens > 0 ? contextTokens / maxContextTokens : 0;
 
     // Derive thinking effort from the agent's profile
@@ -229,7 +232,7 @@ export class V2SessionAdapter implements IAcpSessionHost {
     // handler. The Klient agent events already carry a `type` discriminator
     // matching the legacy SDK `Event.type`, so the AcpSession dispatch
     // works unchanged.
-    const eventNames: readonly (keyof import('@moonshot-ai/klient').AgentEventPayloads)[] = [
+    const eventNames: readonly (keyof AgentEventPayloads)[] = [
       'turn.started',
       'turn.ended',
       'turn.step.started',
@@ -274,7 +277,7 @@ export class V2SessionAdapter implements IAcpSessionHost {
 
     for (const name of eventNames) {
       if (this.closed) break;
-      const disposable = this.agent.events.on(name as any, (payload: any) => {
+      const disposable = this.agent.events.on(name, (payload) => {
         if (this.closed) return;
         listener(payload as AgentEvent);
       });
@@ -329,7 +332,7 @@ export class V2SessionAdapter implements IAcpSessionHost {
     this.interactionSubscribed = true;
 
     try {
-      this.session.events.on('interactions.changed' as any, (interactions: unknown) => {
+      this.session.events.on('interactions.changed', (interactions) => {
         if (this.closed) return;
         void this.processInteractionChanges(interactions);
       });
@@ -391,11 +394,11 @@ export class V2SessionAdapter implements IAcpSessionHost {
     try {
       const response = await handler(approvalRequest);
       // Send the response back to the engine via session approvals service
-      await this.session.approvals.decide(interaction.id, response as any);
-    } catch (err) {
+      await this.session.approvals.decide(interaction.id, response);
+    } catch {
       // Handler error: reject the approval with a graceful error
       try {
-        await this.session.approvals.decide(interaction.id, { decision: 'rejected' } as any);
+        await this.session.approvals.decide(interaction.id, { decision: 'rejected' });
       } catch {
         // Best-effort cleanup
       }
@@ -412,20 +415,15 @@ export class V2SessionAdapter implements IAcpSessionHost {
     const toolCallId = typeof payload?.['toolCallId'] === 'string' ? payload['toolCallId'] : interaction.id;
 
     const questionRequest: QuestionRequest = {
-      questions: questions.map((q: any) => ({
-        question: typeof q.question === 'string' ? q.question : '',
-        options: Array.isArray(q.options) ? q.options : [],
-        ...(typeof q.id === 'string' ? { id: q.id } : {}),
-        ...(q.multiSelect === true ? { multiSelect: true } : {}),
-      })),
+      questions: questions.map(toQuestionItem),
       toolCallId,
     };
 
     try {
-      const result = await handler(questionRequest as QuestionRequest);
+      const result = await handler(questionRequest);
       // Send the answer back to the engine
       if (result !== null) {
-        await this.session.questions.answer(interaction.id, result as any);
+        await this.session.questions.answer(interaction.id, result);
       } else {
         await this.session.questions.dismiss(interaction.id);
       }
@@ -449,4 +447,34 @@ export class V2SessionAdapter implements IAcpSessionHost {
   get isClosed(): boolean {
     return this.closed;
   }
+}
+
+function isPermissionMode(mode: string): mode is PermissionMode {
+  return mode === 'manual' || mode === 'auto' || mode === 'yolo';
+}
+
+function toQuestionItem(value: unknown): QuestionRequest['questions'][number] {
+  const item =
+    typeof value === 'object' && value !== null
+      ? value as Record<string, unknown>
+      : {};
+  return {
+    question: typeof item['question'] === 'string' ? item['question'] : '',
+    options: Array.isArray(item['options'])
+      ? item['options'].filter(isQuestionOption)
+      : [],
+    ...(typeof item['id'] === 'string' ? { id: item['id'] } : {}),
+    ...(item['multiSelect'] === true ? { multiSelect: true } : {}),
+  };
+}
+
+function isQuestionOption(
+  value: unknown,
+): value is QuestionRequest['questions'][number]['options'][number] {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    'label' in value &&
+    typeof value.label === 'string'
+  );
 }

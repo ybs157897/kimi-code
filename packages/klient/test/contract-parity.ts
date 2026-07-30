@@ -23,6 +23,10 @@ import type {
 } from '@moonshot-ai/agent-core-v2/agent/activityView/activityView';
 import type { AgentContextData } from '@moonshot-ai/agent-core-v2/agent/contextMemory/types';
 import type {
+  ContextImportInput,
+  IAgentContextCommandService,
+} from '@moonshot-ai/agent-core-v2/agent/contextCommand/contextCommand';
+import type {
   ActivateExtensionCommandInput,
   IAgentExtensionService,
 } from '@moonshot-ai/agent-core-v2/agent/extension/agentExtension';
@@ -42,9 +46,11 @@ import type {
   GoalToolResult,
 } from '@moonshot-ai/agent-core-v2/agent/goal/types';
 import type { TurnEndReason } from '@moonshot-ai/agent-core-v2/agent/loop/turnEvents';
+import type { McpServerConfig } from '@moonshot-ai/agent-core-v2/agent/mcp/config-schema';
 import type { McpServerEntry } from '@moonshot-ai/agent-core-v2/session/mcp/connection-manager';
 import type { IAgentMcpService } from '@moonshot-ai/agent-core-v2/agent/mcp/mcp';
 import type { IAgentPermissionModeService } from '@moonshot-ai/agent-core-v2/agent/permissionMode/permissionMode';
+import type { IAgentPluginService } from '@moonshot-ai/agent-core-v2/agent/plugin/agentPlugin';
 import type {
   IAgentSwarmService,
   SwarmModeTrigger,
@@ -81,7 +87,9 @@ import type { ISessionScopeHandle } from '@moonshot-ai/agent-core-v2/_base/di/sc
 import type {
   CreateChildSessionOptions,
   CreateSessionOptions,
+  DeleteSessionOptions,
   ForkSessionOptions,
+  ResumeSessionOptions,
 } from '@moonshot-ai/agent-core-v2/app/sessionLifecycle/sessionLifecycle';
 import type {
   ApprovalRequest,
@@ -143,6 +151,7 @@ import type { ModelCapability } from '@moonshot-ai/agent-core-v2/kosong/contract
 import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
 import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
 import type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
+import type { IWorkspaceSkillCatalogService } from '@moonshot-ai/agent-core-v2/app/skillCatalog/workspaceSkillCatalog';
 import type {
   GetPluginInfoInput,
   InstallPluginInput,
@@ -167,6 +176,25 @@ import type {
   SessionSummary,
 } from '@moonshot-ai/agent-core-v2/app/sessionIndex/sessionIndex';
 import type {
+  DeleteSnapshotInput,
+  ForkSnapshotInput,
+  ForkSnapshotResult,
+  ISessionSnapshotStore,
+} from '@moonshot-ai/agent-core-v2/app/sessionStore/sessionSnapshotStore';
+import type {
+  IMcpCatalogService,
+  McpCatalogEntry,
+} from '@moonshot-ai/agent-core-v2/app/mcpCatalog/mcpCatalog';
+import type {
+  IMcpOAuthService,
+  McpBeginAuthorizationFlowResult,
+} from '@moonshot-ai/agent-core-v2/app/mcpOAuth/mcpOAuth';
+import type {
+  IMcpProbeService,
+  McpProbeResult,
+} from '@moonshot-ai/agent-core-v2/app/mcpProbe/mcpProbe';
+import type { DomainEvent } from '@moonshot-ai/agent-core-v2/app/event/eventBus';
+import type {
   ExportSessionManifest,
   ExportSessionPayload,
   ExportSessionResult,
@@ -190,6 +218,8 @@ import type {
 import type { ISessionInitService } from '@moonshot-ai/agent-core-v2/session/sessionInit/sessionInit';
 import type { ISessionBtwService } from '@moonshot-ai/agent-core-v2/session/btw/btw';
 import type { ISessionSkillCatalog } from '@moonshot-ai/agent-core-v2/session/sessionSkillCatalog/skillCatalog';
+import type { ISessionTodoService } from '@moonshot-ai/agent-core-v2/session/todo/sessionTodo';
+import type { TodoItem } from '@moonshot-ai/agent-core-v2/session/todo/todoItem';
 // Test-only: `@moonshot-ai/protocol` is a devDependency; importing its types
 // here (never in `src/`) strengthens parity for the agent event stream.
 import type {
@@ -206,6 +236,7 @@ import type {
   PluginCommandActivatedEvent,
   PromptAbortedEvent,
   PromptCompletedEvent,
+  ShellCompletedEvent,
   ShellOutputEvent,
   ShellStartedEvent,
   SkillActivatedEvent,
@@ -254,6 +285,10 @@ import {
   resumeGoalInputSchema,
 } from '../src/contract/agent/goal.js';
 import {
+  agentContextCommandContract,
+  contextImportInputSchema,
+} from '../src/contract/agent/contextCommand.js';
+import {
   activatePluginCommandPayloadSchema,
   activateSkillPayloadSchema,
   agentRpcContract,
@@ -283,6 +318,7 @@ import {
 import {
   agentFullCompactionContract,
   agentMcpContract,
+  agentPluginContract,
   agentReplayViewContract,
   agentTaskContract,
   bindAgentInputSchema,
@@ -311,6 +347,8 @@ import {
   pluginCommandActivatedEventSchema,
   promptAbortedEventSchema,
   promptCompletedEventSchema,
+  promptSteeredEventSchema,
+  shellCompletedEventSchema,
   shellOutputEventSchema,
   shellStartedEventSchema,
   skillActivatedEventSchema,
@@ -347,7 +385,9 @@ import {
 import {
   createChildSessionOptionsSchema,
   createSessionOptionsSchema,
+  deleteSessionOptionsSchema,
   forkSessionOptionsSchema,
+  resumeSessionOptionsSchema,
   handleWireSchema,
 } from '../src/contract/session/lifecycle.js';
 import {
@@ -389,6 +429,10 @@ import {
   questionResponseSchema,
   questionResultSchema,
 } from '../src/contract/session/question.js';
+import {
+  sessionTodoContract,
+  todoItemSchema,
+} from '../src/contract/session/todo.js';
 import {
   sessionSkillCatalogContract,
   skillSummarySchema,
@@ -459,6 +503,21 @@ import {
 } from '../src/contract/global/plugins.js';
 import { providerConfigSchema } from '../src/contract/global/providers.js';
 import {
+  mcpBeginAuthorizationFlowResultSchema,
+  mcpCatalogContract,
+  mcpCatalogEntrySchema,
+  mcpOAuthContract,
+  mcpProbeContract,
+  mcpProbeResultSchema,
+} from '../src/contract/global/mcp.js';
+import { mcpServerConfigSchema } from '../src/contract/mcp.js';
+import {
+  deleteSnapshotInputSchema,
+  forkSnapshotInputSchema,
+  forkSnapshotResultSchema,
+  sessionStoreContract,
+} from '../src/contract/global/session-store.js';
+import {
   sessionListQuerySchema,
   sessionSummarySchema,
 } from '../src/contract/global/sessions.js';
@@ -473,6 +532,7 @@ import {
   workspaceSchema,
   workspaceUpdateSchema,
 } from '../src/contract/global/workspaces.js';
+import { workspaceSkillCatalogContract } from '../src/contract/global/skills.js';
 
 import type { AssertWire, MutableDeep } from './helpers/typeAssert.js';
 
@@ -519,6 +579,117 @@ type ConfigTargetValues = `${ConfigTarget}`;
 // sessions.ts
 const _sessionSummary: AssertWire<typeof sessionSummarySchema, SessionSummary> = true;
 const _sessionListQuery: AssertWire<typeof sessionListQuerySchema, SessionListQuery> = true;
+
+// session-store.ts
+const _forkSnapshotInput: AssertWire<typeof forkSnapshotInputSchema, ForkSnapshotInput> = true;
+// `sourceMeta` is required-but-undefined in the engine type; JSON omits that
+// property, so the wire schema intentionally accepts the omitted form.
+const _forkSnapshotResult: AssertEngineToWire<
+  typeof forkSnapshotResultSchema,
+  ForkSnapshotResult
+> = true;
+const _deleteSnapshotInput: AssertWire<typeof deleteSnapshotInputSchema, DeleteSnapshotInput> = true;
+const _sessionStoreForkInput: AssertTypeEqual<
+  z.infer<typeof sessionStoreContract.fork.input>,
+  Parameters<ISessionSnapshotStore['fork']>
+> = true;
+const _sessionStoreForkOutput: AssertEngineToWire<
+  typeof sessionStoreContract.fork.output,
+  Awaited<ReturnType<ISessionSnapshotStore['fork']>>
+> = true;
+
+// mcp.ts
+const _mcpServerConfig: AssertWire<typeof mcpServerConfigSchema, McpServerConfig> = true;
+const _mcpCatalogEntry: AssertWire<typeof mcpCatalogEntrySchema, McpCatalogEntry> = true;
+const _mcpCatalogListInput: AssertTypeEqual<
+  z.infer<typeof mcpCatalogContract.list.input>,
+  Parameters<IMcpCatalogService['list']>
+> = true;
+const _mcpCatalogListOutput: AssertWire<
+  typeof mcpCatalogContract.list.output,
+  Awaited<ReturnType<IMcpCatalogService['list']>>
+> = true;
+const _mcpCatalogGetInput: AssertTypeEqual<
+  z.infer<typeof mcpCatalogContract.get.input>,
+  Parameters<IMcpCatalogService['get']>
+> = true;
+const _mcpCatalogGetOutput: AssertWire<
+  typeof mcpCatalogContract.get.output,
+  Awaited<ReturnType<IMcpCatalogService['get']>>
+> = true;
+const _mcpCatalogAddInput: AssertTypeEqual<
+  z.infer<typeof mcpCatalogContract.add.input>,
+  Parameters<IMcpCatalogService['add']>
+> = true;
+const _mcpCatalogUpdateInput: AssertTypeEqual<
+  z.infer<typeof mcpCatalogContract.update.input>,
+  Parameters<IMcpCatalogService['update']>
+> = true;
+const _mcpCatalogRenameInput: AssertTypeEqual<
+  z.infer<typeof mcpCatalogContract.rename.input>,
+  Parameters<IMcpCatalogService['rename']>
+> = true;
+const _mcpCatalogRemoveInput: AssertTypeEqual<
+  z.infer<typeof mcpCatalogContract.remove.input>,
+  Parameters<IMcpCatalogService['remove']>
+> = true;
+const _mcpCatalogRemoveOutput: AssertWireToEngine<
+  typeof mcpCatalogContract.remove.output,
+  Awaited<ReturnType<IMcpCatalogService['remove']>>
+> = true;
+const _mcpCatalogResetInput: AssertTypeEqual<
+  z.infer<typeof mcpCatalogContract.reset.input>,
+  Parameters<IMcpCatalogService['reset']>
+> = true;
+const _mcpCatalogResetOutput: AssertWireToEngine<
+  typeof mcpCatalogContract.reset.output,
+  Awaited<ReturnType<IMcpCatalogService['reset']>>
+> = true;
+const _mcpBeginAuthorizationFlowResult: AssertWire<
+  typeof mcpBeginAuthorizationFlowResultSchema,
+  McpBeginAuthorizationFlowResult
+> = true;
+const _mcpOAuthBeginInput: AssertWireToEngine<
+  typeof mcpOAuthContract.beginAuthorizationWithFlowId.input,
+  Parameters<IMcpOAuthService['beginAuthorizationWithFlowId']>
+> = true;
+const _mcpOAuthBeginOutput: AssertWire<
+  typeof mcpOAuthContract.beginAuthorizationWithFlowId.output,
+  Awaited<ReturnType<IMcpOAuthService['beginAuthorizationWithFlowId']>>
+> = true;
+const _mcpOAuthCompleteInput: AssertWireToEngine<
+  typeof mcpOAuthContract.completeAuthorization.input,
+  Parameters<IMcpOAuthService['completeAuthorization']>
+> = true;
+const _mcpOAuthCompleteOutput: AssertWireToEngine<
+  typeof mcpOAuthContract.completeAuthorization.output,
+  Awaited<ReturnType<IMcpOAuthService['completeAuthorization']>>
+> = true;
+const _mcpProbeResult: AssertWire<typeof mcpProbeResultSchema, McpProbeResult> = true;
+const _mcpProbeInput: AssertTypeEqual<
+  z.infer<typeof mcpProbeContract.probe.input>,
+  Parameters<IMcpProbeService['probe']>
+> = true;
+const _mcpProbeOutput: AssertWire<
+  typeof mcpProbeContract.probe.output,
+  Awaited<ReturnType<IMcpProbeService['probe']>>
+> = true;
+const _mcpOAuthCancelInput: AssertTypeEqual<
+  z.infer<typeof mcpOAuthContract.cancelAuthorization.input>,
+  Parameters<IMcpOAuthService['cancelAuthorization']>
+> = true;
+const _mcpOAuthCancelOutput: AssertWireToEngine<
+  typeof mcpOAuthContract.cancelAuthorization.output,
+  Awaited<ReturnType<IMcpOAuthService['cancelAuthorization']>>
+> = true;
+const _mcpOAuthInvalidateInput: AssertWireToEngine<
+  typeof mcpOAuthContract.invalidate.input,
+  Parameters<IMcpOAuthService['invalidate']>
+> = true;
+const _mcpOAuthInvalidateOutput: AssertWireToEngine<
+  typeof mcpOAuthContract.invalidate.output,
+  Awaited<ReturnType<IMcpOAuthService['invalidate']>>
+> = true;
 
 // session-export.ts — the App-scope wire method exposes only the serializable
 // request payload, not the service's process-local options.
@@ -717,9 +888,40 @@ const _sessionMetadataChangedEvent: AssertWire<
   SessionMetadataChangedEvent
 > = true;
 
+// session/todo.ts
+const _todoItem: AssertWire<typeof todoItemSchema, TodoItem> = true;
+const _sessionTodoGetOutput: AssertWire<
+  typeof sessionTodoContract.getTodos.output,
+  ReturnType<ISessionTodoService['getTodos']>
+> = true;
+const _sessionTodoSetInput: AssertTypeEqual<
+  z.infer<typeof sessionTodoContract.setTodos.input>,
+  [MutableDeep<Parameters<ISessionTodoService['setTodos']>[0]>]
+> = true;
+const _sessionTodoSetOutput: AssertWireToEngine<
+  typeof sessionTodoContract.setTodos.output,
+  ReturnType<ISessionTodoService['setTodos']>
+> = true;
+const _sessionTodoClearInput: AssertTypeEqual<
+  z.infer<typeof sessionTodoContract.clear.input>,
+  Parameters<ISessionTodoService['clear']>
+> = true;
+const _sessionTodoClearOutput: AssertWireToEngine<
+  typeof sessionTodoContract.clear.output,
+  ReturnType<ISessionTodoService['clear']>
+> = true;
+
 // session/lifecycle.ts
 const _createSessionOptions: AssertWire<typeof createSessionOptionsSchema, CreateSessionOptions> =
   true;
+const _resumeSessionOptions: AssertWire<
+  typeof resumeSessionOptionsSchema,
+  ResumeSessionOptions
+> = true;
+const _deleteSessionOptions: AssertWire<
+  typeof deleteSessionOptionsSchema,
+  DeleteSessionOptions
+> = true;
 const _forkSessionOptions: AssertWire<typeof forkSessionOptionsSchema, ForkSessionOptions> = true;
 const _createChildSessionOptions: AssertWire<
   typeof createChildSessionOptionsSchema,
@@ -824,6 +1026,14 @@ const _sessionCronNextFireInput: AssertTypeEqual<
 const _sessionCronNextFireResult: AssertWire<
   typeof sessionCronContract.getNextFireTime.output,
   ReturnType<ISessionCronService['getNextFireTime']>
+> = true;
+const _sessionCronTaskNextFireInput: AssertTypeEqual<
+  z.infer<typeof sessionCronContract.getNextFireForTask.input>,
+  Parameters<ISessionCronService['getNextFireForTask']>
+> = true;
+const _sessionCronTaskNextFireResult: AssertWire<
+  typeof sessionCronContract.getNextFireForTask.output,
+  ReturnType<ISessionCronService['getNextFireForTask']>
 > = true;
 
 // session/goal-queue.ts
@@ -991,6 +1201,16 @@ const _mcpReconnectResult: AssertWireToEngine<
   Awaited<ReturnType<IAgentMcpService['reconnect']>>
 > = true;
 
+// agent/plugin.ts — the host may explicitly refresh persisted session-start guidance.
+const _pluginRefreshInput: AssertTypeEqual<
+  z.infer<typeof agentPluginContract.appendFreshSessionStartReminder.input>,
+  Parameters<IAgentPluginService['appendFreshSessionStartReminder']>
+> = true;
+const _pluginRefreshResult: AssertWireToEngine<
+  typeof agentPluginContract.appendFreshSessionStartReminder.output,
+  Awaited<ReturnType<IAgentPluginService['appendFreshSessionStartReminder']>>
+> = true;
+
 // agent/permission.ts — the mutation remains on AgentRPC; this service exposes
 // only the current wire-safe mode.
 const _permissionModeInput: AssertTypeEqual<
@@ -1109,6 +1329,14 @@ const _sessionWarningResult: AssertWire<
 
 // session/skill.ts + agent/rpc.ts
 const _skillSummary: AssertWire<typeof skillSummarySchema, SkillSummary> = true;
+const _workspaceSkillListInput: AssertTypeEqual<
+  z.infer<typeof workspaceSkillCatalogContract.list.input>,
+  Parameters<IWorkspaceSkillCatalogService['list']>
+> = true;
+const _workspaceSkillListOutput: AssertWire<
+  typeof workspaceSkillCatalogContract.list.output,
+  Awaited<ReturnType<IWorkspaceSkillCatalogService['list']>>
+> = true;
 const _sessionSkillReloadInput: AssertTypeEqual<
   z.infer<typeof sessionSkillCatalogContract.reload.input>,
   Parameters<ISessionSkillCatalog['reload']>
@@ -1147,6 +1375,25 @@ const _agentActivityState: AssertEngineToWire<typeof agentActivityStateSchema, A
   true;
 
 // ── agent scope (rpc.ts) ────────────────────────────────────────────────────
+
+// agent/contextCommand.ts
+const _contextImportInput: AssertWire<typeof contextImportInputSchema, ContextImportInput> = true;
+const _agentContextImportInput: AssertTypeEqual<
+  z.infer<typeof agentContextCommandContract.importContext.input>,
+  Parameters<IAgentContextCommandService['importContext']>
+> = true;
+const _agentContextClearInput: AssertTypeEqual<
+  z.infer<typeof agentContextCommandContract.clear.input>,
+  Parameters<IAgentContextCommandService['clear']>
+> = true;
+const _agentContextImportOutput: AssertWireToEngine<
+  typeof agentContextCommandContract.importContext.output,
+  ReturnType<IAgentContextCommandService['importContext']>
+> = true;
+const _agentContextClearOutput: AssertWireToEngine<
+  typeof agentContextCommandContract.clear.output,
+  ReturnType<IAgentContextCommandService['clear']>
+> = true;
 // Payload/result types for the remaining `AgentAPI` methods are reached
 // through the interface so the assertions track the exact methods the
 // contract mirrors; payloads of the domain services the facade calls
@@ -1255,10 +1502,17 @@ const _toolCallStartedEvent: AssertEngineToWire<
 const _toolProgressEvent: AssertWire<typeof toolProgressEventSchema, ToolProgressEvent> = true;
 const _shellOutputEvent: AssertWire<typeof shellOutputEventSchema, ShellOutputEvent> = true;
 const _shellStartedEvent: AssertWire<typeof shellStartedEventSchema, ShellStartedEvent> = true;
+const _shellCompletedEvent: AssertWire<typeof shellCompletedEventSchema, ShellCompletedEvent> =
+  true;
 const _toolResultEvent: AssertWire<typeof toolResultEventSchema, ToolResultEvent> = true;
 const _promptCompletedEvent: AssertWire<typeof promptCompletedEventSchema, PromptCompletedEvent> =
   true;
 const _promptAbortedEvent: AssertWire<typeof promptAbortedEventSchema, PromptAbortedEvent> = true;
+type PromptSteeredDomainEvent = Extract<DomainEvent, { type: 'prompt.steered' }>;
+const _promptSteeredEvent: AssertWire<
+  typeof promptSteeredEventSchema,
+  PromptSteeredDomainEvent
+> = true;
 const _goalUpdatedEvent: AssertWire<typeof goalUpdatedEventSchema, GoalUpdatedEvent> = true;
 const _skillActivatedEvent: AssertWire<typeof skillActivatedEventSchema, SkillActivatedEvent> =
   true;

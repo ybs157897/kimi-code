@@ -127,6 +127,9 @@ const DOMAIN_LAYER = new Map([
   ['config', 2],
   ['projectLocalConfig', 2],
   ['sessionFs', 2],
+  // `workspaceFs` adapts the App bootstrap path resolver and host filesystem
+  // bridge into the L2 workspace-bound `LocalWorkspaceFs` implementation.
+  ['workspaceFs', 2],
   ['process', 2],
   ['workspace', 2],
   ['workspaceAliases', 2],
@@ -216,6 +219,15 @@ const DOMAIN_LAYER = new Map([
   ['agentTask', 5],
   ['replayView', 5],
   ['mcp', 5],
+  // MCP catalog, OAuth, and probe are App-scoped control-plane services.
+  // Their implementations reuse the existing L5 MCP config/connection/OAuth
+  // machinery, so they sit at the same layer.
+  ['mcpCatalog', 5],
+  ['mcpOAuth', 5],
+  ['mcpProbe', 5],
+  // `contextCommand` coordinates quiescence checks and the existing L4
+  // context/profile services behind an Agent-scoped command boundary.
+  ['contextCommand', 5],
   ['cron', 5],
   // `btw` forks a single side-question sub-agent via `agentLifecycle`,
   // parallel to how the `Agent` tool spawns child agents. Agent-scope, L5.

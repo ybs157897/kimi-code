@@ -39,6 +39,16 @@ import type { ModelRecord } from '@moonshot-ai/agent-core-v2/kosong/model/model'
 import type { IModelCatalog } from '@moonshot-ai/agent-core-v2/kosong/model/catalog';
 import type { IProviderDiscoveryService } from '@moonshot-ai/agent-core-v2/app/kosongConfig/discovery';
 import type { BindAgentInput } from '@moonshot-ai/agent-core-v2/agent/profile/profile';
+import type { McpServerConfig } from '@moonshot-ai/agent-core-v2/agent/mcp/config-schema';
+import type {
+  DeleteSnapshotInput,
+  ForkSnapshotInput,
+  ForkSnapshotResult,
+} from '@moonshot-ai/agent-core-v2/app/sessionStore/sessionSnapshotStore';
+import type { McpCatalogEntry } from '@moonshot-ai/agent-core-v2/app/mcpCatalog/mcpCatalog';
+import type { McpBeginAuthorizationFlowResult } from '@moonshot-ai/agent-core-v2/app/mcpOAuth/mcpOAuth';
+import type { McpProbeResult } from '@moonshot-ai/agent-core-v2/app/mcpProbe/mcpProbe';
+import type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
 
 import type { AnonymousProviderInput, GenerateEvent, GenerateInput, GenerateParams, ProviderInput } from './kosong-types.js';
 import type {
@@ -124,15 +134,61 @@ export interface GlobalSessionsFacade {
    * lifecycle creation, before tool and extension activation.
    */
   create(input: {
+    id?: string;
     workDir: string;
     additionalDirs?: readonly string[];
+    mcpServers?: Readonly<Record<string, McpServerConfig>>;
     mainAgentBinding?: BindAgentInput;
     title?: string;
+    metadata?: Record<string, unknown>;
   }): Promise<SessionMeta>;
 }
 
 export interface GlobalSessionExportFacade {
   export(input: ExportSessionPayload): Promise<ExportSessionResult>;
+}
+
+export interface GlobalSessionStoreFacade {
+  fork(input: ForkSnapshotInput): Promise<ForkSnapshotResult>;
+  delete(input: DeleteSnapshotInput): Promise<void>;
+}
+
+export interface GlobalMcpCatalogFacade {
+  list(): Promise<readonly McpCatalogEntry[]>;
+  get(name: string): Promise<McpCatalogEntry | undefined>;
+  add(input: { name: string; config: McpServerConfig }): Promise<McpCatalogEntry>;
+  update(input: { name: string; config: McpServerConfig }): Promise<McpCatalogEntry>;
+  rename(input: { oldName: string; newName: string }): Promise<McpCatalogEntry>;
+  remove(name: string): Promise<void>;
+  reset(): Promise<void>;
+}
+
+export interface GlobalMcpOAuthFacade {
+  begin(input: {
+    serverName: string;
+    serverUrl: string;
+  }): Promise<McpBeginAuthorizationFlowResult>;
+  complete(input: { flowId: string; timeoutMs?: number }): Promise<void>;
+  cancel(flowId: string): Promise<void>;
+  invalidate(input: {
+    serverName: string;
+    serverUrl: string;
+    scope?: 'all' | 'client' | 'tokens' | 'discovery';
+  }): Promise<void>;
+}
+
+export interface GlobalMcpProbeFacade {
+  run(input: {
+    serverName: string;
+    config: McpServerConfig;
+    cwd?: string;
+  }): Promise<McpProbeResult>;
+}
+
+export interface GlobalMcpFacade {
+  readonly catalog: GlobalMcpCatalogFacade;
+  readonly oauth: GlobalMcpOAuthFacade;
+  readonly probe: GlobalMcpProbeFacade;
 }
 
 export interface GlobalWorkspacesFacade {
@@ -141,6 +197,10 @@ export interface GlobalWorkspacesFacade {
   createOrTouch(input: { root: string; name?: string }): Promise<Workspace>;
   update(input: { id: string; patch: WorkspaceUpdate }): Promise<Workspace | undefined>;
   delete(id: string): Promise<void>;
+}
+
+export interface GlobalSkillsFacade {
+  listWorkspace(workDir: string): Promise<readonly SkillSummary[]>;
 }
 
 export interface GlobalConfigFacade {
@@ -252,6 +312,9 @@ export interface KlientEnvInfo {
 export interface GlobalFacade {
   readonly sessions: GlobalSessionsFacade;
   readonly sessionExport: GlobalSessionExportFacade;
+  readonly sessionStore: GlobalSessionStoreFacade;
+  readonly mcp: GlobalMcpFacade;
+  readonly skills: GlobalSkillsFacade;
   readonly workspaces: GlobalWorkspacesFacade;
   readonly config: GlobalConfigFacade;
   readonly kosong: GlobalKosongFacade;
@@ -308,14 +371,27 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
       get: (id) => call('sessionIndex', 'get', [id]) as Promise<SessionSummary | undefined>,
       countActive: (workspaceIds) =>
         call('sessionIndex', 'countActive', [workspaceIds]) as Promise<number>,
-      create: async ({ workDir, additionalDirs, mainAgentBinding, title }) => {
+      create: async ({
+        id,
+        workDir,
+        additionalDirs,
+        mcpServers,
+        mainAgentBinding,
+        title,
+        metadata,
+      }) => {
         const handle = (await scoped({}, 'sessionLifecycleService', 'create', [
-          { workDir, additionalDirs, mainAgentBinding },
+          {
+            sessionId: id,
+            workDir,
+            additionalDirs,
+            mcpServers,
+            mainAgentBinding,
+            title,
+            metadata,
+          },
         ])) as { id: string };
         const scope = { sessionId: handle.id };
-        if (title !== undefined) {
-          await scoped(scope, 'sessionMetadata', 'setTitle', [title]);
-        }
         return scoped(scope, 'sessionMetadata', 'read', []) as Promise<SessionMeta>;
       },
     },
@@ -323,6 +399,62 @@ export function createGlobalFacade(scoped: ScopedCaller, scopedStream: ScopedStr
     sessionExport: {
       export: (input) =>
         call('sessionExportService', 'export', [input]) as Promise<ExportSessionResult>,
+    },
+
+    sessionStore: {
+      fork: (input) =>
+        call('sessionSnapshotStore', 'fork', [input]) as Promise<ForkSnapshotResult>,
+      delete: (input) =>
+        call('sessionLifecycleService', 'delete', [input]) as Promise<void>,
+    },
+
+    mcp: {
+      catalog: {
+        list: () =>
+          call('mcpCatalogService', 'list', []) as Promise<readonly McpCatalogEntry[]>,
+        get: (name) =>
+          call('mcpCatalogService', 'get', [name]) as Promise<McpCatalogEntry | undefined>,
+        add: ({ name, config }) =>
+          call('mcpCatalogService', 'add', [name, config]) as Promise<McpCatalogEntry>,
+        update: ({ name, config }) =>
+          call('mcpCatalogService', 'update', [name, config]) as Promise<McpCatalogEntry>,
+        rename: ({ oldName, newName }) =>
+          call('mcpCatalogService', 'rename', [oldName, newName]) as Promise<McpCatalogEntry>,
+        remove: (name) =>
+          call('mcpCatalogService', 'remove', [name]) as Promise<void>,
+        reset: () => call('mcpCatalogService', 'reset', []) as Promise<void>,
+      },
+      oauth: {
+        begin: ({ serverName, serverUrl }) =>
+          call('mcpOAuthService', 'beginAuthorizationWithFlowId', [
+            serverName,
+            serverUrl,
+          ]) as Promise<McpBeginAuthorizationFlowResult>,
+        complete: ({ flowId, timeoutMs }) =>
+          call('mcpOAuthService', 'completeAuthorization', [
+            flowId,
+            { timeoutMs },
+          ]) as Promise<void>,
+        cancel: (flowId) =>
+          call('mcpOAuthService', 'cancelAuthorization', [flowId]) as Promise<void>,
+        invalidate: ({ serverName, serverUrl, scope }) =>
+          call('mcpOAuthService', 'invalidate', [
+            serverName,
+            serverUrl,
+            scope,
+          ]) as Promise<void>,
+      },
+      probe: {
+        run: ({ serverName, config, cwd }) =>
+          call('mcpProbeService', 'probe', [serverName, config, { cwd }]) as Promise<McpProbeResult>,
+      },
+    },
+
+    skills: {
+      listWorkspace: (workDir) =>
+        call('workspaceSkillCatalogService', 'list', [workDir]) as Promise<
+          readonly SkillSummary[]
+        >,
     },
 
     workspaces: {

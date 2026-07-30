@@ -1,18 +1,17 @@
 /**
- * Output rendering for `kimi -p` (print mode) — shared by the v1 driver
- * (`run-prompt.ts`) and the v2 host (`v2/run-v2-print.ts`).
+ * Output rendering for `kimi -p` (print mode) — shared by the root-SDK
+ * compatibility driver (`run-prompt.ts`) and the direct-v2 host
+ * (`v2/run-v2-print.ts`).
  *
- * Both engines feed the same writer classes: v1 via the SDK `Event` stream and
- * v2 via Klient events. Keeping the writers here lets both paths reuse
- * rendering while v1's `runPromptTurn` keeps its own completion flow.
+ * Both entrypoints feed the same writer classes: the compatibility facade via
+ * its SDK `Event` stream and direct v2 via Klient events.
  */
 
 import type { PromptOutputFormat } from './options';
 
 /**
- * Structural hook-result shape the renderer reads. Both the v1 SDK
- * `HookResultEvent` and the v2 Klient `hook.result` event satisfy it, so the
- * renderer stays engine-agnostic without depending on either definition.
+ * Structural hook-result shape the renderer reads. Both the compatibility SDK
+ * `HookResultEvent` and the Klient `hook.result` event satisfy it.
  */
 interface HookResultEventLike {
   readonly hookEvent: string;
@@ -21,11 +20,11 @@ interface HookResultEventLike {
 }
 
 /**
- * Structural retry shape the renderer reads. Mirrors the v1 SDK
+ * Structural retry shape the renderer reads. Mirrors the compatibility SDK
  * `turn.step.retrying` event fields the stream-json meta line surfaces. Both
- * drivers forward retries to `writeRetrying`: v1 from its SDK event stream,
- * v2 from the native `turn.step.retrying` `DomainEvent` (same field names),
- * after discarding the failed attempt's partial output.
+ * drivers forward retries to `writeRetrying`: the facade from its SDK event
+ * stream and direct v2 from the native `turn.step.retrying` `DomainEvent`
+ * (same field names), after discarding the failed attempt's partial output.
  */
 interface RetryingEventLike {
   readonly failedAttempt: number;
@@ -358,30 +357,6 @@ interface PromptJsonResumeMetaMessage {
   session_id: string;
   command: string;
   content: string;
-}
-
-interface PromptJsonVersionMetaMessage {
-  role: 'meta';
-  type: 'system.version';
-  version: string;
-}
-
-export function writeExperimentalVersion(
-  version: string,
-  outputFormat: PromptOutputFormat,
-  stdout: PromptOutput,
-  stderr: PromptOutput,
-): void {
-  if (outputFormat === 'stream-json') {
-    const message: PromptJsonVersionMetaMessage = {
-      role: 'meta',
-      type: 'system.version',
-      version,
-    };
-    stdout.write(`${JSON.stringify(message)}\n`);
-    return;
-  }
-  stderr.write(`kimi version ${version}\n`);
 }
 
 export function writeResumeHint(

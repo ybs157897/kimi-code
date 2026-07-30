@@ -1,17 +1,29 @@
 # syntax=docker/dockerfile:1.7
 #
-# klient e2e docker-run image.
+# Klient e2e docker-run image.
 #
-# This image layers server-e2e defaults on top of the repository server dev
-# image. Source code and node_modules are still provided by bind mounts from
+# Source code and node_modules are provided by bind mounts from
 # scripts/run-docker-e2e.sh, so host edits are picked up without rebuilding.
+# Keep the image self-contained: the repository does not have a root
+# Dockerfile, and the credential-free CI gate must not depend on a locally
+# prebuilt server image.
 #
 # The launcher intentionally does not pass -p/--publish to docker run. The
 # server binds inside the container only, so this workflow can run alongside the
 # docker-compose.yml server that publishes host port 7878.
 
-ARG BASE_IMAGE=kimi-server:dev
-FROM ${BASE_IMAGE}
+FROM node:24.15.0-bookworm
+
+RUN apt-get update \
+    && apt-get install --yes --no-install-recommends \
+        ca-certificates \
+        curl \
+        g++ \
+        git \
+        make \
+        python3 \
+    && npm install --global pnpm@10.33.0 \
+    && apt-get clean
 
 ENV KIMI_CODE_HOME=/data/docker-e2e/kimi-code-home \
     KIMI_SERVER_URL=http://127.0.0.1:7878 \

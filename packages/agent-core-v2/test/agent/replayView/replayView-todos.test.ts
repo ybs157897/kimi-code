@@ -186,10 +186,7 @@ describe('AgentReplayView todos projection', () => {
     expect(snapshot.todos).toEqual([]);
   });
 
-  // TODO(CORE-103): wire ISessionTodoService into AgentReplayViewService so
-  // that the replay snapshot includes the current todo items.  The tests below
-  // will then expect the populated `todoItems` from the service stub.
-  it('returns empty todos until ISessionTodoService is wired', async () => {
+  it('projects the current session todo list', async () => {
     todoItems = [
       { title: 'Design API', status: 'pending' },
       { title: 'Write tests', status: 'in_progress' },
@@ -197,21 +194,21 @@ describe('AgentReplayView todos projection', () => {
     ];
     const svc = ix.get(IAgentReplayView);
     const snapshot = await svc.read();
-    expect(snapshot.todos).toEqual([]);
+    expect(snapshot.todos).toEqual(todoItems);
   });
 
-  it('returns empty todos until ISessionTodoService is wired (fresh read)', async () => {
+  it('reads a fresh todo snapshot on every call', async () => {
     const svc = ix.get(IAgentReplayView);
 
     todoItems = [{ title: 'First', status: 'pending' }];
     const first = await svc.read();
-    expect(first.todos).toEqual([]);
+    expect(first.todos).toEqual(todoItems);
 
     todoItems = [
       { title: 'First', status: 'done' },
       { title: 'Second', status: 'pending' },
     ];
     const second = await svc.read();
-    expect(second.todos).toEqual([]);
+    expect(second.todos).toEqual(todoItems);
   });
 });

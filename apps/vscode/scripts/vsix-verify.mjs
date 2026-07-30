@@ -297,7 +297,11 @@ function walkSyntax(value, visit) {
 function isRuntimeRequire(callee) {
   if (callee?.type === 'Identifier') return /^(?:__)?require\d*$/.test(callee.name);
   if (callee?.type !== 'MemberExpression' || callee.computed === true) return false;
-  return callee.property?.type === 'Identifier' && callee.property.name === 'require';
+  return (
+    callee.object?.type === 'Identifier' &&
+    callee.property?.type === 'Identifier' &&
+    callee.property.name === 'require'
+  );
 }
 
 function literalString(node) {

@@ -2,6 +2,10 @@
  * Tests for `IMcpProbeService` — one-shot MCP server connectivity probing.
  */
 
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -14,6 +18,7 @@ import {
 } from '#/app/mcpProbe/mcpProbe';
 import { McpProbeServiceImpl } from '#/app/mcpProbe/mcpProbeService';
 import { registerLogServices } from '../../_base/log/stubs';
+import { cwdStdioFixture } from '../../session/mcp/stubs';
 
 describe('McpProbeService', () => {
   let disposables: DisposableStore;
@@ -57,4 +62,29 @@ describe('McpProbeService', () => {
     expect(result.serverName).toBe('missing-cmd');
     expect(result.error).toBeDefined();
   });
+
+  it('uses the caller cwd as the stdio default without changing the server config', async () => {
+    const cwd = await mkdtemp(join(tmpdir(), 'kimi-mcp-probe-cwd-'));
+    try {
+      const svc = ix.get(IMcpProbeService);
+      const result = await svc.probe(
+        'cwd',
+        {
+          transport: 'stdio',
+          command: process.execPath,
+          args: [cwdStdioFixture],
+          env: { EXPECTED_CWD: cwd },
+        },
+        { cwd },
+      );
+
+      expect(result).toEqual({
+        serverName: 'cwd',
+        success: true,
+        toolCount: 1,
+      });
+    } finally {
+      await rm(cwd, { recursive: true, force: true });
+    }
+  }, 15_000);
 });

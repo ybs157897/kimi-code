@@ -35,7 +35,10 @@ export default defineConfig({
   },
   deps: {
     onlyBundle: false,
-    alwaysBundle: [/^@moonshot-ai\/(kimi-code-sdk|migration-legacy)$/, 'zod'],
+    alwaysBundle: [
+      /^@moonshot-ai\/(kimi-code-oauth|kimi-code-sdk|klient|migration-legacy)(?:\/|$)/,
+      'zod',
+    ],
     neverBundle: ['vscode'],
   },
   outputOptions: {

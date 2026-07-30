@@ -258,7 +258,7 @@ export function buildPermissionToolCallUpdate(
   req: ApprovalRequest,
 ): ToolCallUpdate {
   const toolCallId =
-    turnId !== undefined ? acpToolCallId(turnId, req.toolCallId) : req.toolCallId;
+    turnId !== undefined ? acpToolCallId(turnId, req.toolCallId!) : req.toolCallId!;
   const content: ToolCallContent[] = [];
   // Diff entry first — diffs and file-io previews carry the most
   // context and should land at the top of the approval card. Phase 13.2

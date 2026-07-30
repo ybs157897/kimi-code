@@ -1,15 +1,15 @@
 /**
- * `sessionStore` — App-scoped session fork and hard-delete operations.
+ * `sessionStore` — App-scoped durable session fork operation.
  *
  * Mirrors `agent-core-v2/app/sessionStore/sessionSnapshotStore.ts`.
- * Consumed by `sessionLifecycleService` and directly for CORE-104 physical
- * delete.  The `fork` method supports both full fork (no turnIndex) and
- * turn-index fork (with `userVisibleTurnIndex`).
+ * The `fork` method supports both full fork (no turnIndex) and turn-index fork
+ * (with `userVisibleTurnIndex`). Physical delete remains an internal Store
+ * operation and is exposed publicly only through `sessionLifecycleService`, so
+ * a live Session scope cannot be bypassed.
  */
 
 import { z } from 'zod';
 
-import { noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
 
 export const forkSnapshotInputSchema = z.object({
@@ -33,6 +33,7 @@ export const forkSnapshotResultSchema = z.object({
     .optional(),
   agentIds: z.array(z.string()),
   cutoffTime: z.number().optional(),
+  lastPrompt: z.string().optional(),
 });
 
 export const deleteSnapshotInputSchema = z.object({
@@ -42,5 +43,4 @@ export const deleteSnapshotInputSchema = z.object({
 
 export const sessionStoreContract = {
   fork: { input: z.tuple([forkSnapshotInputSchema]), output: forkSnapshotResultSchema },
-  delete: { input: z.tuple([deleteSnapshotInputSchema]), output: noResult },
 } satisfies ServiceContract;

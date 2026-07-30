@@ -226,6 +226,53 @@ const SKILL = {
 };
 
 describe('facade routing', () => {
+  it('forwards explicit fork identity through the lifecycle facade', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.results.set('sessionLifecycleService.fork', {
+      id: 'session-target',
+      kind: 1,
+    });
+    channel.results.set('sessionMetadata.read', {
+      ...SUMMARY,
+      id: 'session-target',
+    });
+
+    await expect(
+      klient.session('session-source').fork({
+        newSessionId: 'session-target',
+        title: 'Forked session',
+        metadata: { source: 'example' },
+        userVisibleTurnIndex: 2,
+      }),
+    ).resolves.toMatchObject({
+      id: 'session-target',
+    });
+
+    expect(channel.calls).toEqual([
+      {
+        scope: {},
+        service: 'sessionLifecycleService',
+        method: 'fork',
+        args: [
+          {
+            sourceSessionId: 'session-source',
+            newSessionId: 'session-target',
+            title: 'Forked session',
+            metadata: { source: 'example' },
+            userVisibleTurnIndex: 2,
+          },
+        ],
+      },
+      {
+        scope: { sessionId: 'session-target' },
+        service: 'sessionMetadata',
+        method: 'read',
+        args: [],
+      },
+    ]);
+  });
+
   it('creates a main agent with its profile bound before activation', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
@@ -247,16 +294,67 @@ describe('facade routing', () => {
       method: 'create',
       args: [
         {
+          sessionId: undefined,
           workDir: '/workspace',
           additionalDirs: undefined,
+          mcpServers: undefined,
           mainAgentBinding: {
             profile: 'reviewer',
             model: 'stub',
             thinking: 'off',
           },
+          title: undefined,
+          metadata: undefined,
         },
       ],
     });
+  });
+
+  it('maps the public session id and initial metadata into lifecycle creation', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.results.set('sessionLifecycleService.create', {
+      id: 'session-explicit',
+      kind: 1,
+    });
+    channel.results.set('sessionMetadata.read', {
+      ...SUMMARY,
+      id: 'session-explicit',
+      title: 'Ready',
+      custom: { owner: 'example' },
+    });
+
+    const result = await klient.global.sessions.create({
+      id: 'session-explicit',
+      workDir: '/workspace',
+      title: 'Ready',
+      metadata: { owner: 'example' },
+    });
+
+    expect(result).toMatchObject({
+      id: 'session-explicit',
+      title: 'Ready',
+      custom: { owner: 'example' },
+    });
+    expect(channel.calls[0]).toMatchObject({
+      service: 'sessionLifecycleService',
+      method: 'create',
+      args: [
+        {
+          sessionId: 'session-explicit',
+          workDir: '/workspace',
+          title: 'Ready',
+          metadata: { owner: 'example' },
+        },
+      ],
+    });
+    expect(
+      channel.calls.some(
+        (call) =>
+          call.service === 'sessionMetadata' &&
+          call.method === 'setTitle',
+      ),
+    ).toBe(false);
   });
 
   it('reshapes single-object params into positional wire args', async () => {
@@ -332,6 +430,25 @@ describe('facade routing', () => {
       method: 'activateCommand',
       args: [{ extensionId: 'example', name: 'hello', args: 'world' }],
     });
+  });
+
+  it('routes workspace skill listing through the fixed app scope', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.result = [SKILL];
+
+    await expect(
+      klient.global.skills.listWorkspace('/workspace'),
+    ).resolves.toEqual([SKILL]);
+
+    expect(channel.calls).toEqual([
+      {
+        scope: {},
+        service: 'workspaceSkillCatalogService',
+        method: 'list',
+        args: ['/workspace'],
+      },
+    ]);
   });
 
   it('returns managed usage unchanged through the fixed app scope', async () => {
@@ -449,6 +566,212 @@ describe('facade routing', () => {
     ]);
   });
 
+  it('routes session snapshot operations through the fixed app scope', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const forkInput = {
+      sourceWorkspaceId: 'workspace-source',
+      sourceSessionId: 'session-source',
+      targetWorkspaceId: 'workspace-target',
+      targetSessionId: 'session-target',
+      userVisibleTurnIndex: 2,
+    };
+    const forkResult = {
+      sourceMeta: { title: 'Source session' },
+      agentIds: ['main'],
+      cutoffTime: 1_000,
+    };
+    channel.result = forkResult;
+
+    await expect(klient.global.sessionStore.fork(forkInput)).resolves.toEqual(
+      forkResult,
+    );
+
+    channel.result = undefined;
+    await klient.global.sessionStore.delete({
+      workspaceId: 'workspace-target',
+      sessionId: 'session-target',
+    });
+
+    expect(channel.calls).toEqual([
+      {
+        scope: {},
+        service: 'sessionSnapshotStore',
+        method: 'fork',
+        args: [forkInput],
+      },
+      {
+        scope: {},
+        service: 'sessionLifecycleService',
+        method: 'delete',
+        args: [
+          {
+            workspaceId: 'workspace-target',
+            sessionId: 'session-target',
+          },
+        ],
+      },
+    ]);
+  });
+
+  it('routes MCP catalog operations through the fixed app scope', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const config = {
+      transport: 'stdio' as const,
+      command: 'example-command',
+      args: ['--serve'],
+    };
+    const entry = { name: 'example', config, source: 'user' as const };
+    channel.result = entry;
+
+    await expect(
+      klient.global.mcp.catalog.add({ name: 'example', config }),
+    ).resolves.toEqual(entry);
+
+    channel.result = null;
+    await expect(klient.global.mcp.catalog.get('missing')).resolves.toBeUndefined();
+
+    expect(channel.calls).toEqual([
+      {
+        scope: {},
+        service: 'mcpCatalogService',
+        method: 'add',
+        args: ['example', config],
+      },
+      {
+        scope: {},
+        service: 'mcpCatalogService',
+        method: 'get',
+        args: ['missing'],
+      },
+    ]);
+  });
+
+  it('routes MCP OAuth and probe operations through their fixed app services', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.result = {
+      flowId: 'flow-example',
+      authorizationUrl: 'https://example.test/authorize',
+    };
+
+    await expect(
+      klient.global.mcp.oauth.begin({
+        serverName: 'example',
+        serverUrl: 'https://example.test/mcp',
+      }),
+    ).resolves.toEqual({
+      flowId: 'flow-example',
+      authorizationUrl: 'https://example.test/authorize',
+    });
+
+    channel.result = undefined;
+    await klient.global.mcp.oauth.complete({
+      flowId: 'flow-example',
+      timeoutMs: 5_000,
+    });
+
+    const config = { transport: 'stdio' as const, command: 'example-command' };
+    const probeResult = {
+      serverName: 'example',
+      success: true,
+      toolCount: 2,
+    };
+    channel.result = probeResult;
+    await expect(
+      klient.global.mcp.probe.run({
+        serverName: 'example',
+        config,
+        cwd: '/workspace',
+      }),
+    ).resolves.toEqual(probeResult);
+
+    expect(channel.calls).toEqual([
+      {
+        scope: {},
+        service: 'mcpOAuthService',
+        method: 'beginAuthorizationWithFlowId',
+        args: ['example', 'https://example.test/mcp'],
+      },
+      {
+        scope: {},
+        service: 'mcpOAuthService',
+        method: 'completeAuthorization',
+        args: ['flow-example', { timeoutMs: 5_000 }],
+      },
+      {
+        scope: {},
+        service: 'mcpProbeService',
+        method: 'probe',
+        args: ['example', config, { cwd: '/workspace' }],
+      },
+    ]);
+  });
+
+  it('routes todo mutations through the fixed session scope', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const todos = [{ title: 'Connect the facade', status: 'in_progress' as const }];
+    channel.result = todos;
+
+    await expect(klient.session('s1').todos.list()).resolves.toEqual(todos);
+
+    channel.result = undefined;
+    await klient.session('s1').todos.replace(todos);
+    await klient.session('s1').todos.clear();
+
+    expect(channel.calls).toEqual([
+      {
+        scope: { sessionId: 's1' },
+        service: 'sessionTodoService',
+        method: 'getTodos',
+        args: [],
+      },
+      {
+        scope: { sessionId: 's1' },
+        service: 'sessionTodoService',
+        method: 'setTodos',
+        args: [todos],
+      },
+      {
+        scope: { sessionId: 's1' },
+        service: 'sessionTodoService',
+        method: 'clear',
+        args: [],
+      },
+    ]);
+  });
+
+  it('routes context commands through the fixed agent scope', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('main');
+    const input = {
+      content: 'Imported <context>',
+      source: 'example.test',
+    };
+    channel.result = undefined;
+
+    await agent.importContext(input);
+    await agent.clearContext();
+
+    expect(channel.calls).toEqual([
+      {
+        scope: { sessionId: 's1', agentId: 'main' },
+        service: 'agentContextCommandService',
+        method: 'importContext',
+        args: [input],
+      },
+      {
+        scope: { sessionId: 's1', agentId: 'main' },
+        service: 'agentContextCommandService',
+        method: 'clear',
+        args: [],
+      },
+    ]);
+  });
+
   it('routes goal, cron, and profile calls through their narrow services', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
@@ -459,6 +782,7 @@ describe('facade routing', () => {
     await session.cron.list();
     channel.result = null;
     await session.cron.getNextFireTime();
+    await session.cron.getNextFireForTask('cron-1');
 
     channel.result = { goal: GOAL };
     await expect(agent.goal.get()).resolves.toEqual(GOAL);
@@ -485,6 +809,12 @@ describe('facade routing', () => {
         service: 'sessionCronService',
         method: 'getNextFireTime',
         args: [],
+      },
+      {
+        scope: { sessionId: 's1' },
+        service: 'sessionCronService',
+        method: 'getNextFireForTask',
+        args: ['cron-1'],
       },
       {
         scope: { sessionId: 's1', agentId: 'main' },
@@ -905,6 +1235,26 @@ describe('facade routing', () => {
     ]);
   });
 
+  it('refreshes plugin session-start guidance through the scoped plugin service', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    channel.result = undefined;
+
+    await klient
+      .session('s1')
+      .agent('main')
+      .plugins.refreshSessionStartReminder();
+
+    expect(channel.calls).toEqual([
+      {
+        scope: { sessionId: 's1', agentId: 'main' },
+        service: 'agentPluginService',
+        method: 'appendFreshSessionStartReminder',
+        args: [],
+      },
+    ]);
+  });
+
   it('starts manual compaction through the scoped full-compaction service', async () => {
     const channel = new FakeChannel();
     const klient = createKlientFromChannel(channel);
@@ -1142,6 +1492,8 @@ describe('event hub', () => {
       'tool.progress',
       'shell.output',
       'shell.started',
+      'shell.completed',
+      'prompt.steered',
       'notice',
     ] as const) {
       events.on(name, (event) => {
@@ -1205,6 +1557,19 @@ describe('event hub', () => {
       taskId: 'task-1',
     });
     channel.emit(0, {
+      type: 'shell.completed',
+      commandId: 'shell-1',
+      taskId: 'task-1',
+      isError: false,
+    });
+    channel.emit(0, {
+      type: 'prompt.steered',
+      activePromptId: 'prompt-1',
+      promptIds: ['prompt-2'],
+      content: [{ type: 'text', text: 'Updated prompt' }],
+      steeredAt: '2026-07-29T00:00:00.000Z',
+    });
+    channel.emit(0, {
       type: 'notice',
       message: 'Extension completed.',
       code: 'extension.completed',
@@ -1223,6 +1588,8 @@ describe('event hub', () => {
       'tool.progress',
       'shell.output',
       'shell.started',
+      'shell.completed',
+      'prompt.steered',
       'notice',
     ]);
   });

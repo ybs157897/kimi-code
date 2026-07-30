@@ -11,17 +11,19 @@
   },
   "include": [
     "src/**/*.ts",
+    "../agent-core-v2/src/**/*.ts",
     "../kaos/src/**/*.ts",
+    "../klient/src/**/*.ts",
     "../kosong/src/**/*.ts",
+    "../minidb/src/**/*.ts",
     "../oauth/src/**/*.ts",
-    "../agent-core-v2/src/env.d.ts"
+    "../protocol/src/**/*.ts"
   ],
   "exclude": [
     "dist",
     ".tmp-api-extractor",
     "examples",
     "test",
-    "src/v2",
     "../*/dist",
     "../*/test"
   ]

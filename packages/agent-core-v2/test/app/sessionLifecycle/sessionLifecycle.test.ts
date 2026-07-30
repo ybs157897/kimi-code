@@ -13,11 +13,17 @@ import {
   registerScopedService,
 } from '#/_base/di/scope';
 import { type ScopedTestHost, createScopedTestHost, stubPair } from '#/_base/di/test';
+import { errorInfo } from '#/_base/errors/codes';
 import { Event } from '#/_base/event';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import {
+  IWorkspaceFileSystem,
+  IWorkspaceFileSystemFactory,
+  type WorkspaceFileSystemContext,
+} from '#/os/interface/workspaceFileSystem';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IEventService } from '#/app/event/event';
 import {
@@ -39,8 +45,25 @@ import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
+import {
+  ISessionDeletionStore,
+  type SessionDeletionIntent,
+} from '#/app/sessionStore/sessionDeletionStore';
+import {
+  ISessionLegacyIndexStore,
+  type LegacySessionIndexEntry,
+} from '#/app/sessionStore/sessionLegacyIndexStore';
+import {
+  ISessionSnapshotStore,
+  type ForkSnapshotInput,
+  type ForkSnapshotResult,
+} from '#/app/sessionStore/sessionSnapshotStore';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import {
+  StorageError,
+  StorageErrors,
+} from '#/persistence/interface/storage';
 import { IProjectLocalConfigService } from '#/app/projectLocalConfig/projectLocalConfig';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { SessionWorkspaceContextService } from '#/session/workspaceContext/workspaceContextService';
@@ -51,6 +74,7 @@ import { encodeWorkDirKey } from '#/_base/utils/workdir-slug';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { Error2, ErrorCodes } from '#/errors';
+import { IWireService } from '#/wire/wire';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 
 function bootstrapStub(): IBootstrapService {
@@ -135,6 +159,92 @@ function hostEnvironmentStub(): IHostEnvironment {
   };
 }
 
+function workspaceFileSystemStub(dispose: () => void = () => {}): IWorkspaceFileSystem {
+  return {
+    _serviceBrand: undefined,
+    readText: () => Promise.reject(new Error('not implemented')),
+    writeText: () => Promise.reject(new Error('not implemented')),
+    appendText: () => Promise.reject(new Error('not implemented')),
+    readBytes: () => Promise.reject(new Error('not implemented')),
+    writeBytes: () => Promise.reject(new Error('not implemented')),
+    readLines: async function* () {},
+    stat: () => Promise.reject(new Error('not implemented')),
+    lstat: () => Promise.reject(new Error('not implemented')),
+    readdir: () => Promise.reject(new Error('not implemented')),
+    mkdir: () => Promise.reject(new Error('not implemented')),
+    remove: () => Promise.reject(new Error('not implemented')),
+    realpath: () => Promise.reject(new Error('not implemented')),
+    dispose,
+  };
+}
+
+function workspaceFileSystemFactoryStub(
+  create: (
+    context: WorkspaceFileSystemContext,
+  ) => IWorkspaceFileSystem = () => workspaceFileSystemStub(),
+): IWorkspaceFileSystemFactory {
+  return {
+    _serviceBrand: undefined,
+    create,
+  };
+}
+
+function sessionSnapshotStoreStub(
+  fork: (
+    input: ForkSnapshotInput,
+  ) => Promise<ForkSnapshotResult> = () =>
+    Promise.resolve({ sourceMeta: undefined, agentIds: [] }),
+  deleteSnapshot: (input: {
+    readonly workspaceId: string;
+    readonly sessionId: string;
+  }) => Promise<void> = () => Promise.resolve(),
+): ISessionSnapshotStore {
+  return {
+    _serviceBrand: undefined,
+    fork,
+    delete: deleteSnapshot,
+  };
+}
+
+type MutableSessionDeletionStore = ISessionDeletionStore & {
+  readonly intents: Map<string, SessionDeletionIntent>;
+};
+
+function sessionDeletionStoreStub(
+  initial: readonly SessionDeletionIntent[] = [],
+): MutableSessionDeletionStore {
+  const intents = new Map(initial.map((intent) => [intent.sessionId, intent]));
+  return {
+    _serviceBrand: undefined,
+    intents,
+    begin: async (input) => {
+      const current = intents.get(input.sessionId);
+      if (current?.state === 'pending' || current?.state === 'completed') return;
+      intents.set(input.sessionId, { ...input, state: 'pending' });
+    },
+    complete: async (input) => {
+      intents.set(input.sessionId, { ...input, state: 'completed' });
+    },
+    clear: async (sessionId) => {
+      intents.delete(sessionId);
+    },
+    get: async (sessionId) => intents.get(sessionId),
+    list: async () => [...intents.values()],
+    listPending: async () =>
+      [...intents.values()].filter((intent) => intent.state === 'pending'),
+  };
+}
+
+function sessionLegacyIndexStoreStub(
+  append: (entry: LegacySessionIndexEntry) => Promise<void> = () => Promise.resolve(),
+): ISessionLegacyIndexStore {
+  return {
+    _serviceBrand: undefined,
+    append,
+    remove: () => Promise.resolve(),
+  };
+}
+
 function skillCatalogStub(): ISessionSkillCatalog {
   return {
     _serviceBrand: undefined,
@@ -177,7 +287,7 @@ function workspaceStub(): IWorkspaceService {
     list: () => Promise.resolve([]),
     get: () => Promise.resolve(undefined),
     createOrTouch: (root, name) =>
-      Promise.resolve<Workspace>({
+      Promise.resolve({
         id: 'wd_stub',
         root,
         name: name ?? 'stub',
@@ -304,6 +414,7 @@ function agentLifecycleStub(): IAgentLifecycleService {
     onDidCreate: () => ({ dispose: () => {} }),
     onDidDispose: () => ({ dispose: () => {} }),
     create: () => Promise.reject(new Error('not implemented')),
+    restore: () => Promise.resolve(undefined),
     fork: () => Promise.reject(new Error('not implemented')),
     get: () => undefined,
     list: () => [],
@@ -339,6 +450,31 @@ function agentLifecycleWithMainStub(): IAgentLifecycleService {
     ...agentLifecycleStub(),
     get: (id) => (id === MAIN_AGENT_ID ? main : undefined),
   };
+}
+
+function activeAgentHandle(): IAgentScopeHandle {
+  return {
+    id: MAIN_AGENT_ID,
+    kind: LifecycleScope.Agent,
+    accessor: {
+      get: (token: unknown) => {
+        if (token === IWireService) {
+          return { flush: () => Promise.resolve() };
+        }
+        if (token === IAgentActivityView) {
+          return {
+            state: () => ({
+              lifecycle: 'ready',
+              turn: { turnId: 0 },
+              background: [],
+            }),
+          };
+        }
+        throw new Error('unexpected service access');
+      },
+    },
+    dispose: () => {},
+  } as unknown as IAgentScopeHandle;
 }
 
 function configStub(values: Record<string, unknown> = {}): IConfigService {
@@ -451,6 +587,20 @@ describe('SessionLifecycleService', () => {
       ScopeActivation.OnDemand,
       'hostFs',
     );
+    registerScopedService(
+      LifecycleScope.Session,
+      ISessionStateService,
+      SessionStateService,
+      ScopeActivation.OnScopeCreated,
+      'state',
+    );
+    registerScopedService(
+      LifecycleScope.Session,
+      ISessionWorkspaceContext,
+      SessionWorkspaceContextService,
+      ScopeActivation.OnDemand,
+      'workspaceContext',
+    );
   });
 
   afterEach(async () => {
@@ -471,6 +621,10 @@ describe('SessionLifecycleService', () => {
       stubPair(ISessionIndex, sessionIndexStub()),
       stubPair(IAppendLogStore, appendLogStoreStub()),
       stubPair(IAtomicDocumentStore, atomicDocumentStoreStub()),
+      stubPair(ISessionDeletionStore, sessionDeletionStoreStub()),
+      stubPair(ISessionLegacyIndexStore, sessionLegacyIndexStoreStub()),
+      stubPair(ISessionSnapshotStore, sessionSnapshotStoreStub()),
+      stubPair(IWorkspaceFileSystemFactory, workspaceFileSystemFactoryStub()),
       stubPair(IEventService, eventStub()),
       stubPair(IAgentLifecycleService, agentLifecycleStub()),
       stubPair(ISessionMcpService, sessionMcpServiceStub()),
@@ -505,10 +659,145 @@ describe('SessionLifecycleService', () => {
     expect(svc.get('s1')).toBeUndefined();
   });
 
+  it('rejects an explicit id that is already live or indexed', async () => {
+    const live = build();
+    await live.create({ sessionId: 's1', workDir: '/tmp/proj' });
+
+    await expect(
+      live.create({ sessionId: 's1', workDir: '/tmp/proj' }),
+    ).rejects.toMatchObject({ code: ErrorCodes.SESSION_ALREADY_EXISTS });
+
+    host?.dispose();
+    host = undefined;
+    const indexed = build([
+      stubPair(ISessionIndex, sessionIndexWithSummary('s2', '/tmp/proj', 'wd_stub')),
+    ]);
+    await expect(
+      indexed.create({ sessionId: 's2', workDir: '/tmp/proj' }),
+    ).rejects.toMatchObject({ code: ErrorCodes.SESSION_ALREADY_EXISTS });
+  });
+
+  it('does not delete a pre-existing directory when create detects an id collision', async () => {
+    const root = await makeTmpRoot();
+    const sessionDir = join(root, 'sessions', 'wd_stub', 's1');
+    const sentinel = join(sessionDir, 'sentinel.txt');
+    await mkdir(sessionDir, { recursive: true });
+    await writeFile(sentinel, 'keep');
+    const deleteSnapshot = vi.fn(() => Promise.resolve());
+    const svc = build([
+      stubPair(IBootstrapService, tmpBootstrapStub(root)),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
+    ]);
+
+    await expect(
+      svc.create({ sessionId: 's1', workDir: '/tmp/proj' }),
+    ).rejects.toMatchObject({ code: ErrorCodes.SESSION_ALREADY_EXISTS });
+
+    await expect(readFile(sentinel, 'utf8')).resolves.toBe('keep');
+    expect(deleteSnapshot).not.toHaveBeenCalled();
+  });
+
   it('create seeds identity and materializes metadata', async () => {
     const svc = build();
     const h = await svc.create({ sessionId: 's1', workDir: '/tmp/proj' });
     expect(h.kind).toBe(LifecycleScope.Session);
+  });
+
+  it('publishes create after the initial title and metadata are materialized', async () => {
+    let data = {
+      id: 's1',
+      createdAt: 1,
+      updatedAt: 1,
+      archived: false,
+      custom: {},
+    };
+    const metadata = {
+      ...metadataStub(),
+      read: () => Promise.resolve(data),
+      update: (patch: Record<string, unknown>) => {
+        data = { ...data, ...patch };
+        return Promise.resolve();
+      },
+    } as ISessionMetadata;
+    const svc = build([stubPair(ISessionMetadata, metadata)]);
+    let observed: unknown;
+    svc.hooks.onDidCreateSession.register('test', async (event, next) => {
+      observed = await event.handle.accessor.get(ISessionMetadata).read();
+      await next();
+    });
+
+    await svc.create({
+      sessionId: 's1',
+      workDir: '/tmp/proj',
+      title: 'Ready',
+      metadata: { owner: 'example' },
+    });
+
+    expect(observed).toMatchObject({
+      title: 'Ready',
+      isCustomTitle: true,
+      custom: { owner: 'example' },
+    });
+  });
+
+  it('seeds one workspace filesystem per session and disposes it with that session', async () => {
+    const filesystems: IWorkspaceFileSystem[] = [];
+    const disposals: Array<ReturnType<typeof vi.fn>> = [];
+    const factory = workspaceFileSystemFactoryStub(() => {
+      const dispose = vi.fn();
+      const filesystem = workspaceFileSystemStub(dispose);
+      filesystems.push(filesystem);
+      disposals.push(dispose);
+      return filesystem;
+    });
+    const svc = build([stubPair(IWorkspaceFileSystemFactory, factory)]);
+
+    const first = await svc.create({ sessionId: 'first', workDir: '/tmp/proj' });
+    const second = await svc.create({ sessionId: 'second', workDir: '/tmp/proj' });
+
+    expect(first.accessor.get(IWorkspaceFileSystem)).toBe(filesystems[0]);
+    expect(second.accessor.get(IWorkspaceFileSystem)).toBe(filesystems[1]);
+    expect(filesystems[0]).not.toBe(filesystems[1]);
+
+    await svc.close('first');
+    expect(disposals[0]).toHaveBeenCalledOnce();
+    expect(disposals[1]).not.toHaveBeenCalled();
+
+    await svc.close('second');
+    expect(disposals[1]).toHaveBeenCalledOnce();
+  });
+
+  it('uses the host workspace filesystem factory without exposing it in create options', async () => {
+    const defaultCreate = vi.fn(() => workspaceFileSystemStub());
+    const hostedCreate = vi.fn(() => workspaceFileSystemStub());
+    const svc = build([
+      stubPair(
+        IWorkspaceFileSystemFactory,
+        workspaceFileSystemFactoryStub(defaultCreate),
+      ),
+    ]);
+
+    await svc.create(
+      {
+        sessionId: 's1',
+        workDir: '/tmp/proj',
+        additionalDirs: ['/tmp/extra'],
+      },
+      {
+        workspaceFileSystemFactory:
+          workspaceFileSystemFactoryStub(hostedCreate),
+      },
+    );
+
+    expect(defaultCreate).not.toHaveBeenCalled();
+    expect(hostedCreate).toHaveBeenCalledWith({
+      sessionId: 's1',
+      workDir: '/tmp/proj',
+      additionalDirs: ['/tmp/extra'],
+    });
   });
 
   it('create forwards caller-supplied MCP servers to the session MCP initial load', async () => {
@@ -524,12 +813,13 @@ describe('SessionLifecycleService', () => {
   it('create appends the session to the shared session_index.jsonl', async () => {
     const appended: unknown[] = [];
     const svc = build([
-      stubPair(IAppendLogStore, {
-        ...appendLogStoreStub(),
-        append: (scope: string, key: string, record: unknown) => {
-          appended.push({ scope, key, record });
-        },
-      }),
+      stubPair(
+        ISessionLegacyIndexStore,
+        sessionLegacyIndexStoreStub((entry) => {
+          appended.push(entry);
+          return Promise.resolve();
+        }),
+      ),
     ]);
 
     const handle = await svc.create({ sessionId: 's1', workDir: '/tmp/proj' });
@@ -541,27 +831,29 @@ describe('SessionLifecycleService', () => {
     const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
     expect(appended).toEqual([
       {
-        scope: '',
-        key: 'session_index.jsonl',
-        record: {
-          sessionId: 's1',
-          sessionDir: `/tmp/sessions/${workspaceId}/s1`,
-          workDir: '/tmp/proj',
-        },
+        sessionId: 's1',
+        sessionDir: `/tmp/sessions/${workspaceId}/s1`,
+        workDir: '/tmp/proj',
       },
     ]);
   });
 
   it('does not index and removes a fresh session when initial agent binding fails', async () => {
     const appended: unknown[] = [];
-    const remove = vi.fn(() => Promise.resolve());
+    const deleteSnapshot = vi.fn(() => Promise.resolve());
     const create = vi.fn(() => Promise.reject(new Error('Unknown agent profile')));
     const svc = build([
-      stubPair(IAppendLogStore, {
-        ...appendLogStoreStub(),
-        append: (_scope: string, _key: string, record: unknown) => appended.push(record),
-      }),
-      stubPair(IHostFileSystem, { remove } as unknown as IHostFileSystem),
+      stubPair(
+        ISessionLegacyIndexStore,
+        sessionLegacyIndexStoreStub((entry) => {
+          appended.push(entry);
+          return Promise.resolve();
+        }),
+      ),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
       stubPair(IAgentLifecycleService, {
         ...agentLifecycleStub(),
         create,
@@ -578,18 +870,22 @@ describe('SessionLifecycleService', () => {
 
     expect(appended).toEqual([]);
     expect(svc.get('s1')).toBeUndefined();
-    expect(remove).toHaveBeenCalledOnce();
+    expect(deleteSnapshot).toHaveBeenCalledWith({
+      workspaceId: 'wd_stub',
+      sessionId: 's1',
+    });
   });
 
   it('indexes the session under the registry-resolved id when the workDir is an alias spelling', async () => {
     const appended: unknown[] = [];
     const svc = build([
-      stubPair(IAppendLogStore, {
-        ...appendLogStoreStub(),
-        append: (scope: string, key: string, record: unknown) => {
-          appended.push({ scope, key, record });
-        },
-      }),
+      stubPair(
+        ISessionLegacyIndexStore,
+        sessionLegacyIndexStoreStub((entry) => {
+          appended.push(entry);
+          return Promise.resolve();
+        }),
+      ),
       stubPair(IWorkspaceService, {
         ...workspaceStub(),
         // As the real registry does after folding: the id minted for the
@@ -610,13 +906,9 @@ describe('SessionLifecycleService', () => {
     expect(handle.accessor.get(ISessionContext).workspaceId).toBe('wd_first_spelling');
     expect(appended).toEqual([
       {
-        scope: '',
-        key: 'session_index.jsonl',
-        record: {
-          sessionId: 's1',
-          sessionDir: '/tmp/sessions/wd_first_spelling/s1',
-          workDir: 'c:\\users\\foo\\proj',
-        },
+        sessionId: 's1',
+        sessionDir: '/tmp/sessions/wd_first_spelling/s1',
+        workDir: 'c:\\users\\foo\\proj',
       },
     ]);
   });
@@ -627,7 +919,7 @@ describe('SessionLifecycleService', () => {
     const sessionIndex = sessionIndexWithSummary('s1', workDir);
     const first = build([
       stubPair(IWorkspaceService, workspaces),
-      stubPair(ISessionIndex, sessionIndex),
+      stubPair(ISessionIndex, sessionIndexStub()),
     ]);
 
     await first.create({ sessionId: 's1', workDir });
@@ -662,6 +954,36 @@ describe('SessionLifecycleService', () => {
     expect(resumed?.accessor.get(ISessionContext).workspaceId).toBe(encodeWorkDirKey(workDir));
   });
 
+  it('applies caller MCP and hosted workspace overrides during a cold resume', async () => {
+    const ensureMcpReady = vi.fn(() => Promise.resolve());
+    const createWorkspaceFileSystem = vi.fn(() => workspaceFileSystemStub());
+    const workDir = '/tmp/proj';
+    const svc = build([
+      stubPair(ISessionIndex, sessionIndexWithSummary('s1', workDir)),
+      stubPair(IAgentLifecycleService, agentLifecycleWithMainStub()),
+      stubPair(ISessionMcpService, sessionMcpServiceStub(ensureMcpReady)),
+    ]);
+    const mcpServers = {
+      docs: { transport: 'http', url: 'https://mcp.example.com' },
+    } as const;
+
+    await svc.resume(
+      's1',
+      { additionalDirs: ['/tmp/shared'], mcpServers },
+      {
+        workspaceFileSystemFactory:
+          workspaceFileSystemFactoryStub(createWorkspaceFileSystem),
+      },
+    );
+
+    expect(ensureMcpReady).toHaveBeenCalledWith(mcpServers);
+    expect(createWorkspaceFileSystem).toHaveBeenCalledWith({
+      sessionId: 's1',
+      workDir,
+      additionalDirs: ['/tmp/shared'],
+    });
+  });
+
   it('does not cache a session whose tool policy fails to initialize', async () => {
     const svc = build([
       stubPair(ISessionIndex, sessionIndexWithSummary('s1', '/tmp/proj')),
@@ -674,6 +996,28 @@ describe('SessionLifecycleService', () => {
     await expect(svc.resume('s1')).rejects.toThrow('invalid tool policy');
     expect(svc.get('s1')).toBeUndefined();
     await expect(svc.resume('s1')).rejects.toThrow('invalid tool policy');
+  });
+
+  it('disposes a cold scope when restoring its main agent fails', async () => {
+    const disposeWorkspaceFileSystem = vi.fn();
+    const svc = build([
+      stubPair(ISessionIndex, sessionIndexWithSummary('s1', '/tmp/proj')),
+      stubPair(IAgentLifecycleService, {
+        ...agentLifecycleStub(),
+        create: () => Promise.reject(new Error('invalid main agent')),
+      }),
+      stubPair(
+        IWorkspaceFileSystemFactory,
+        workspaceFileSystemFactoryStub(() =>
+          workspaceFileSystemStub(disposeWorkspaceFileSystem),
+        ),
+      ),
+    ]);
+
+    await expect(svc.resume('s1')).rejects.toThrow('invalid main agent');
+
+    expect(svc.get('s1')).toBeUndefined();
+    expect(disposeWorkspaceFileSystem).toHaveBeenCalledOnce();
   });
 
   it('resumes with the persisted cwd and indexed workspace id when the registry root is stale', async () => {
@@ -784,26 +1128,303 @@ describe('SessionLifecycleService', () => {
     expect(archived).toBe(false);
   });
 
-  it('forks successfully even while the source has a busy agent (crash-equivalent copy)', async () => {
-    const busyAgent = {
+  it('hard delete drains a live session and is idempotent', async () => {
+    const removed: string[] = [];
+    const agent = {
       id: MAIN_AGENT_ID,
       kind: LifecycleScope.Agent,
-      accessor: {
-        get: (token: unknown) => {
-          if (token === IAgentActivityView) {
-            return {
-              state: () => ({
-                lifecycle: 'ready',
-                turn: { turnId: 0 },
-                background: [],
-              }),
-            };
-          }
-          throw new Error('unexpected service access');
-        },
-      },
+      accessor: { get: () => ({}) },
       dispose: () => {},
-    } as unknown as IAgentScopeHandle;
+    } as IAgentScopeHandle;
+    const deleteSnapshot = vi.fn(() => Promise.resolve());
+    const svc = build([
+      stubPair(IAgentLifecycleService, {
+        ...agentLifecycleStub(),
+        list: () => [agent],
+        remove: (id: string) => {
+          removed.push(id);
+          return Promise.resolve();
+        },
+      }),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
+    ]);
+    await svc.create({ sessionId: 's1', workDir: '/tmp/proj' });
+
+    const input = { workspaceId: 'wd_stub', sessionId: 's1' };
+    await svc.delete(input);
+    await svc.delete(input);
+
+    expect(removed).toEqual([MAIN_AGENT_ID]);
+    expect(deleteSnapshot).toHaveBeenCalledOnce();
+    expect(deleteSnapshot).toHaveBeenCalledWith(input);
+    expect(svc.get('s1')).toBeUndefined();
+  });
+
+  it('hard delete can be retried after a locked snapshot store failure', async () => {
+    const locked = new StorageError(
+      StorageErrors.codes.STORAGE_LOCKED,
+      'locked by test',
+    );
+    const deleteSnapshot = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(locked)
+      .mockResolvedValue(undefined);
+    const svc = build([
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
+    ]);
+    await svc.create({ sessionId: 's1', workDir: '/tmp/proj' });
+    const input = { workspaceId: 'wd_stub', sessionId: 's1' };
+
+    await expect(svc.delete(input)).rejects.toMatchObject({
+      code: ErrorCodes.SESSION_STORE_DELETE_RECONCILIATION_FAILED,
+    });
+    expect(
+      errorInfo(ErrorCodes.SESSION_STORE_DELETE_RECONCILIATION_FAILED).retryable,
+    ).toBe(true);
+    expect(svc.get('s1')).toBeUndefined();
+    await expect(svc.delete(input)).resolves.toBeUndefined();
+    expect(deleteSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a pending-delete live handle unavailable to archive and fork', async () => {
+    const agent = {
+      id: MAIN_AGENT_ID,
+      kind: LifecycleScope.Agent,
+      accessor: { get: () => ({}) },
+      dispose: () => {},
+    } as IAgentScopeHandle;
+    const setArchived = vi.fn(() => Promise.resolve());
+    const forkSnapshot = vi.fn(() =>
+      Promise.resolve({ sourceMeta: undefined, agentIds: [] }),
+    );
+    const svc = build([
+      stubPair(IAgentLifecycleService, {
+        ...agentLifecycleStub(),
+        list: () => [agent],
+        remove: () => Promise.reject(new Error('drain failed')),
+      }),
+      stubPair(ISessionMetadata, {
+        ...metadataStub(),
+        setArchived,
+      }),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(forkSnapshot),
+      ),
+    ]);
+    await svc.create({ sessionId: 's1', workDir: '/tmp/proj' });
+
+    await expect(
+      svc.delete({ workspaceId: 'wd_stub', sessionId: 's1' }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.SESSION_STORE_DELETE_RECONCILIATION_FAILED,
+    });
+    expect(svc.get('s1')).toBeUndefined();
+
+    await expect(svc.archive('s1')).resolves.toBeUndefined();
+    expect(setArchived).not.toHaveBeenCalled();
+    await expect(
+      svc.fork({ sourceSessionId: 's1', newSessionId: 's2' }),
+    ).rejects.toMatchObject({ code: ErrorCodes.SESSION_NOT_FOUND });
+    expect(forkSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('clears a completed tombstone before safely reusing a deleted session id', async () => {
+    const deletions = sessionDeletionStoreStub();
+    const svc = build([
+      stubPair(ISessionDeletionStore, deletions),
+    ]);
+    const first = await svc.create({ sessionId: 's1', workDir: '/tmp/proj' });
+
+    await svc.delete({ workspaceId: 'wd_stub', sessionId: 's1' });
+    expect(deletions.intents.get('s1')?.state).toBe('completed');
+
+    const replacement = await svc.create({
+      sessionId: 's1',
+      workDir: '/tmp/proj',
+    });
+
+    expect(replacement).not.toBe(first);
+    expect(svc.get('s1')).toBe(replacement);
+    expect(deletions.intents.has('s1')).toBe(false);
+  });
+
+  it('does not reuse an id while another process still owns a pending delete', async () => {
+    const deletions = sessionDeletionStoreStub();
+    const svc = build([
+      stubPair(ISessionDeletionStore, deletions),
+    ]);
+    await expect(svc.resume('missing')).resolves.toBeUndefined();
+    deletions.intents.set('s1', {
+      workspaceId: 'wd_stub',
+      sessionId: 's1',
+      state: 'pending',
+    });
+
+    await expect(
+      svc.create({ sessionId: 's1', workDir: '/tmp/proj' }),
+    ).rejects.toMatchObject({ code: ErrorCodes.SESSION_ALREADY_EXISTS });
+    expect(deletions.intents.get('s1')?.state).toBe('pending');
+  });
+
+  it('does not tear down live state when the durable delete intent cannot be written', async () => {
+    const ioFailure = new StorageError(
+      StorageErrors.codes.STORAGE_IO_FAILED,
+      'intent write failed',
+    );
+    const base = sessionDeletionStoreStub();
+    const begin = vi.fn(() => Promise.reject(ioFailure));
+    const deleteSnapshot = vi.fn(() => Promise.resolve());
+    const svc = build([
+      stubPair(ISessionDeletionStore, { ...base, begin }),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
+    ]);
+    const handle = await svc.create({ sessionId: 's1', workDir: '/tmp/proj' });
+
+    await expect(
+      svc.delete({ workspaceId: 'wd_stub', sessionId: 's1' }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.SESSION_STORE_DELETE_INTENT_FAILED,
+    });
+    expect(begin).toHaveBeenCalledOnce();
+    expect(deleteSnapshot).not.toHaveBeenCalled();
+    expect(svc.get('s1')).toBe(handle);
+    expect(errorInfo(ErrorCodes.SESSION_STORE_DELETE_INTENT_FAILED).retryable).toBe(true);
+  });
+
+  it('startup reconciliation completes a pending delete once across repeated starts', async () => {
+    const deletions = sessionDeletionStoreStub([
+      { workspaceId: 'wd_stub', sessionId: 's1', state: 'pending' },
+    ]);
+    const deleteSnapshot = vi.fn(() => Promise.resolve());
+    let svc = build([
+      stubPair(ISessionDeletionStore, deletions),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
+    ]);
+
+    await expect(svc.resume('missing')).resolves.toBeUndefined();
+    expect(deletions.intents.get('s1')?.state).toBe('completed');
+    expect(deleteSnapshot).toHaveBeenCalledOnce();
+
+    host?.dispose();
+    host = undefined;
+    svc = build([
+      stubPair(ISessionDeletionStore, deletions),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
+    ]);
+
+    await expect(svc.resume('missing')).resolves.toBeUndefined();
+    expect(deleteSnapshot).toHaveBeenCalledOnce();
+  });
+
+  it('a new process retries startup reconciliation after a locked store failure', async () => {
+    const locked = new StorageError(
+      StorageErrors.codes.STORAGE_LOCKED,
+      'locked by test',
+    );
+    const deletions = sessionDeletionStoreStub([
+      { workspaceId: 'wd_stub', sessionId: 's1', state: 'pending' },
+    ]);
+    const deleteSnapshot = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(locked)
+      .mockResolvedValue(undefined);
+    let svc = build([
+      stubPair(ISessionDeletionStore, deletions),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
+    ]);
+
+    await expect(svc.resume('missing')).rejects.toMatchObject({
+      code: ErrorCodes.SESSION_STORE_DELETE_RECONCILIATION_FAILED,
+    });
+    expect(deletions.intents.get('s1')?.state).toBe('pending');
+
+    host?.dispose();
+    host = undefined;
+    svc = build([
+      stubPair(ISessionDeletionStore, deletions),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
+    ]);
+
+    await expect(svc.resume('missing')).resolves.toBeUndefined();
+    expect(deletions.intents.get('s1')?.state).toBe('completed');
+    expect(deleteSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('a new process retries after physical deletion succeeds but completion persistence fails', async () => {
+    const ioFailure = new StorageError(
+      StorageErrors.codes.STORAGE_IO_FAILED,
+      'completion write failed',
+    );
+    const base = sessionDeletionStoreStub();
+    const completeBase = base.complete.bind(base);
+    let failComplete = true;
+    const deletions: MutableSessionDeletionStore = {
+      ...base,
+      complete: async (input) => {
+        if (failComplete) {
+          failComplete = false;
+          throw ioFailure;
+        }
+        await completeBase(input);
+      },
+    };
+    const deleteSnapshot = vi.fn(() => Promise.resolve());
+    let svc = build([
+      stubPair(ISessionDeletionStore, deletions),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
+    ]);
+    await svc.create({ sessionId: 's1', workDir: '/tmp/proj' });
+
+    await expect(
+      svc.delete({ workspaceId: 'wd_stub', sessionId: 's1' }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.SESSION_STORE_DELETE_RECONCILIATION_FAILED,
+    });
+    expect(deletions.intents.get('s1')?.state).toBe('pending');
+    expect(deleteSnapshot).toHaveBeenCalledOnce();
+
+    host?.dispose();
+    host = undefined;
+    svc = build([
+      stubPair(ISessionDeletionStore, deletions),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(undefined, deleteSnapshot),
+      ),
+    ]);
+
+    await expect(svc.resume('missing')).resolves.toBeUndefined();
+    expect(deletions.intents.get('s1')?.state).toBe('completed');
+    expect(deleteSnapshot).toHaveBeenCalledTimes(2);
+  });
+
+  it('forks successfully even while the source has a busy agent (crash-equivalent copy)', async () => {
+    const busyAgent = activeAgentHandle();
     const svc = build([
       stubPair(IWorkspaceService, {
         ...workspaceStub(),
@@ -828,6 +1449,51 @@ describe('SessionLifecycleService', () => {
     // replay already normalizes that on restore.
     const target = await svc.fork({ sourceSessionId: 'src', newSessionId: 'dst' });
     expect(target.id).toBe('dst');
+  });
+
+  it('rejects an indexed fork while the source has an active turn', async () => {
+    const forkSnapshot = vi.fn(() =>
+      Promise.resolve({ sourceMeta: undefined, agentIds: [] }),
+    );
+    const svc = build([
+      stubPair(IWorkspaceService, {
+        ...workspaceStub(),
+        get: () =>
+          Promise.resolve({
+            id: 'wd_stub',
+            root: '/tmp/proj',
+            name: 'stub',
+            createdAt: 0,
+            lastOpenedAt: 0,
+          }),
+      }),
+      stubPair(IAgentLifecycleService, {
+        ...agentLifecycleStub(),
+        list: () => [activeAgentHandle()],
+      }),
+      stubPair(
+        ISessionSnapshotStore,
+        sessionSnapshotStoreStub(forkSnapshot),
+      ),
+    ]);
+    await svc.create({ sessionId: 'src', workDir: '/tmp/proj' });
+
+    await expect(
+      svc.fork({
+        sourceSessionId: 'src',
+        newSessionId: 'dst',
+        userVisibleTurnIndex: 0,
+      }),
+    ).rejects.toMatchObject({
+      code: ErrorCodes.SESSION_FORK_ACTIVE_TURN,
+      details: {
+        sessionId: 'src',
+        agentId: MAIN_AGENT_ID,
+        userVisibleTurnIndex: 0,
+      },
+    });
+    expect(forkSnapshot).not.toHaveBeenCalled();
+    expect(svc.get('dst')).toBeUndefined();
   });
 
   it('fires onDidCreateSession with the new handle', async () => {
@@ -1010,23 +1676,6 @@ describe('SessionLifecycleService', () => {
   });
 
   describe('additional dirs', () => {
-    beforeEach(() => {
-      registerScopedService(
-        LifecycleScope.Session,
-        ISessionStateService,
-        SessionStateService,
-        ScopeActivation.OnScopeCreated,
-        'state',
-      );
-      registerScopedService(
-        LifecycleScope.Session,
-        ISessionWorkspaceContext,
-        SessionWorkspaceContextService,
-        ScopeActivation.OnDemand,
-        'workspaceContext',
-      );
-    });
-
     function dirsOf(handle: { accessor: { get<T>(id: unknown): T } }): readonly string[] {
       return (handle.accessor.get(ISessionWorkspaceContext) as ISessionWorkspaceContext)
         .additionalDirs;
@@ -1181,56 +1830,43 @@ describe('SessionLifecycleService', () => {
       });
     }
 
-    it('copies blobs, plans, background tasks, and media originals into the fork', async () => {
+    it('delegates the persisted fork to the snapshot store before publishing the target', async () => {
       const root = await makeTmpRoot();
+      const forkSnapshot = vi.fn(() =>
+        Promise.resolve({
+          sourceMeta: { title: 'Source', agents: {} },
+          agentIds: [],
+        }),
+      );
       const svc = build([
         stubPair(IBootstrapService, tmpBootstrapStub(root)),
         workspaceGetStub(),
+        stubPair(
+          ISessionSnapshotStore,
+          sessionSnapshotStoreStub(forkSnapshot),
+        ),
       ]);
       await svc.create({ sessionId: 'src', workDir: '/tmp/proj' });
 
-      const srcDir = join(root, 'sessions', 'wd_stub', 'src');
-      await mkdir(join(srcDir, 'agents', 'main', 'blobs'), { recursive: true });
-      await writeFile(join(srcDir, 'agents', 'main', 'blobs', 'ab12cd'), 'blob-bytes');
-      await mkdir(join(srcDir, 'agents', 'main', 'plans'), { recursive: true });
-      await writeFile(join(srcDir, 'agents', 'main', 'plans', 'p1.md'), '# plan');
-      await mkdir(join(srcDir, 'agents', 'main', 'tasks', 'bash-1'), { recursive: true });
-      await writeFile(join(srcDir, 'agents', 'main', 'tasks', 'bash-1.json'), '{}');
-      await writeFile(join(srcDir, 'agents', 'main', 'tasks', 'bash-1', 'output.log'), 'out');
-      await mkdir(join(srcDir, 'media-originals'), { recursive: true });
-      await writeFile(join(srcDir, 'media-originals', 'x.png'), 'png');
-      await writeFile(join(srcDir, 'state.json'), '{"source":true}');
-      await writeFile(join(srcDir, 'agents', 'main', 'wire.jsonl'), '{"type":"metadata"}\n');
-      await mkdir(join(srcDir, 'logs'), { recursive: true });
-      await writeFile(join(srcDir, 'logs', 'kimi-code.log'), 'log');
+      const target = await svc.fork({
+        sourceSessionId: 'src',
+        newSessionId: 'dst',
+        userVisibleTurnIndex: 2,
+      });
 
-      await svc.fork({ sourceSessionId: 'src', newSessionId: 'dst' });
-
-      const dstDir = join(root, 'sessions', 'wd_stub', 'dst');
-      await expect(
-        readFile(join(dstDir, 'agents', 'main', 'blobs', 'ab12cd'), 'utf8'),
-      ).resolves.toBe('blob-bytes');
-      await expect(
-        readFile(join(dstDir, 'agents', 'main', 'plans', 'p1.md'), 'utf8'),
-      ).resolves.toBe('# plan');
-      await expect(
-        readFile(join(dstDir, 'agents', 'main', 'tasks', 'bash-1.json'), 'utf8'),
-      ).resolves.toBe('{}');
-      await expect(
-        readFile(join(dstDir, 'agents', 'main', 'tasks', 'bash-1', 'output.log'), 'utf8'),
-      ).resolves.toBe('out');
-      await expect(readFile(join(dstDir, 'media-originals', 'x.png'), 'utf8')).resolves.toBe(
-        'png',
-      );
-      await expect(stat(join(dstDir, 'state.json'))).rejects.toThrow();
-      await expect(stat(join(dstDir, 'agents', 'main', 'wire.jsonl'))).rejects.toThrow();
-      await expect(stat(join(dstDir, 'logs'))).rejects.toThrow();
+      expect(target.id).toBe('dst');
+      expect(forkSnapshot).toHaveBeenCalledWith({
+        sourceWorkspaceId: 'wd_stub',
+        sourceSessionId: 'src',
+        targetWorkspaceId: 'wd_stub',
+        targetSessionId: 'dst',
+        userVisibleTurnIndex: 2,
+      });
     });
 
     it('loads the copied session tool policy before returning the fork', async () => {
       const root = await makeTmpRoot();
       const bootstrap = tmpBootstrapStub(root);
-      const srcDir = join(root, 'sessions', 'wd_stub', 'src');
       const dstPolicy = join(root, 'sessions', 'wd_stub', 'dst', 'tool-policy', 'state.json');
       let readyCount = 0;
       let disabledTools: readonly string[] = [];
@@ -1249,10 +1885,16 @@ describe('SessionLifecycleService', () => {
         stubPair(IBootstrapService, bootstrap),
         workspaceGetStub(),
         stubPair(ISessionToolPolicy, policy),
+        stubPair(
+          ISessionSnapshotStore,
+          sessionSnapshotStoreStub(async () => {
+            await mkdir(join(dstPolicy, '..'), { recursive: true });
+            await writeFile(dstPolicy, '{"disabledTools":["Skill"]}');
+            return { sourceMeta: undefined, agentIds: [] };
+          }),
+        ),
       ]);
       await svc.create({ sessionId: 'src', workDir: '/tmp/proj' });
-      await mkdir(join(srcDir, 'tool-policy'), { recursive: true });
-      await writeFile(join(srcDir, 'tool-policy', 'state.json'), '{"disabledTools":["Skill"]}');
 
       const target = await svc.fork({ sourceSessionId: 'src', newSessionId: 'dst' });
 
@@ -1261,22 +1903,28 @@ describe('SessionLifecycleService', () => {
 
     it('rolls back the target session when fork fails after materializing', async () => {
       const root = await makeTmpRoot();
-      const srcDir = join(root, 'sessions', 'wd_stub', 'src');
+      const dstDir = join(root, 'sessions', 'wd_stub', 'dst');
+      const snapshots = sessionSnapshotStoreStub(
+        async () => {
+          await mkdir(dstDir, { recursive: true });
+          return {
+            sourceMeta: { agents: { main: {} } },
+            agentIds: ['main'],
+          };
+        },
+        async ({ workspaceId, sessionId }) => {
+          await rm(
+            join(root, 'sessions', workspaceId, sessionId),
+            { recursive: true, force: true },
+          );
+        },
+      );
       const svc = build([
         stubPair(IBootstrapService, tmpBootstrapStub(root)),
         workspaceGetStub(),
-        stubPair(ISessionMetadata, {
-          ...metadataStub(),
-          read: () =>
-            Promise.resolve({
-              agents: { main: {} },
-            } as never),
-        }),
+        stubPair(ISessionSnapshotStore, snapshots),
       ]);
       await svc.create({ sessionId: 'src', workDir: '/tmp/proj' });
-      await mkdir(join(srcDir, 'agents', 'main', 'plans'), { recursive: true });
-      await writeFile(join(srcDir, 'agents', 'main', 'plans', 'p1.md'), '# plan');
-      const dstDir = join(root, 'sessions', 'wd_stub', 'dst');
 
       await expect(svc.fork({ sourceSessionId: 'src', newSessionId: 'dst' })).rejects.toThrow(
         'not implemented',
@@ -1287,6 +1935,40 @@ describe('SessionLifecycleService', () => {
       await expect(svc.fork({ sourceSessionId: 'src', newSessionId: 'dst' })).rejects.toThrow(
         'not implemented',
       );
+    });
+
+    it('does not delete a pre-existing target when the snapshot store rejects the fork', async () => {
+      const root = await makeTmpRoot();
+      const targetDir = join(root, 'sessions', 'wd_stub', 'dst');
+      const sentinel = join(targetDir, 'sentinel.txt');
+      await mkdir(targetDir, { recursive: true });
+      await writeFile(sentinel, 'keep');
+      const deleteSnapshot = vi.fn(() => Promise.resolve());
+      const svc = build([
+        stubPair(IBootstrapService, tmpBootstrapStub(root)),
+        workspaceGetStub(),
+        stubPair(
+          ISessionSnapshotStore,
+          sessionSnapshotStoreStub(
+            () =>
+              Promise.reject(
+                new Error2(
+                  ErrorCodes.SESSION_ALREADY_EXISTS,
+                  'target already exists',
+                ),
+              ),
+            deleteSnapshot,
+          ),
+        ),
+      ]);
+      await svc.create({ sessionId: 'src', workDir: '/tmp/proj' });
+
+      await expect(
+        svc.fork({ sourceSessionId: 'src', newSessionId: 'dst' }),
+      ).rejects.toMatchObject({ code: ErrorCodes.SESSION_ALREADY_EXISTS });
+
+      await expect(readFile(sentinel, 'utf8')).resolves.toBe('keep');
+      expect(deleteSnapshot).not.toHaveBeenCalled();
     });
 
     it('duplicates the source session cron tasks for the fork', async () => {
@@ -1323,6 +2005,54 @@ describe('SessionLifecycleService', () => {
       expect(clone).toMatchObject({ cron: '0 9 * * *', prompt: 'standup', createdAt: 1 });
       expect(clone!.id).not.toBe('task-src');
       expect(cron.docs.get('task-src')!.tags![CRON_SESSION_TAG]).toBe('src');
+    });
+
+    it('indexed fork duplicates only source cron tasks created by the selected cutoff', async () => {
+      const root = await makeTmpRoot();
+      const cron = cronStoreStub([
+        {
+          id: 'before',
+          cron: '0 9 * * *',
+          prompt: 'before',
+          createdAt: 4,
+          tags: { [CRON_SESSION_TAG]: 'src' },
+        },
+        {
+          id: 'after',
+          cron: '0 10 * * *',
+          prompt: 'after',
+          createdAt: 6,
+          tags: { [CRON_SESSION_TAG]: 'src' },
+        },
+      ]);
+      const svc = build([
+        stubPair(IBootstrapService, tmpBootstrapStub(root)),
+        workspaceGetStub(),
+        stubPair(ICronTaskPersistence, cron),
+        stubPair(
+          ISessionSnapshotStore,
+          sessionSnapshotStoreStub(() =>
+            Promise.resolve({
+              sourceMeta: { agents: {} },
+              agentIds: [],
+              cutoffTime: 5,
+            }),
+          ),
+        ),
+      ]);
+      await svc.create({ sessionId: 'src', workDir: '/tmp/proj' });
+
+      await svc.fork({
+        sourceSessionId: 'src',
+        newSessionId: 'dst',
+        userVisibleTurnIndex: 0,
+      });
+
+      const clones = [...cron.docs.values()].filter(
+        (task) => task.tags?.[CRON_SESSION_TAG] === 'dst',
+      );
+      expect(clones).toHaveLength(1);
+      expect(clones[0]).toMatchObject({ prompt: 'before', createdAt: 4 });
     });
   });
 

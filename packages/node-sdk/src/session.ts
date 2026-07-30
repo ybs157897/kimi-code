@@ -111,9 +111,11 @@ export class Session {
     });
   }
 
-  /** Execute a user-initiated `!` shell command (silent — does not prompt the
-   *  model). Resolves with the command's stdout/stderr for immediate display.
-   *  Pass `commandId` to receive live `shell.output` events for this command. */
+  /**
+   * Execute a user-initiated shell command without prompting the model.
+   * Resolves with stdout and stderr for immediate display. Pass `commandId`
+   * to receive live `shell.output` events for this command.
+   */
   async runShellCommand(
     command: string,
     options?: { commandId?: string },
@@ -126,7 +128,7 @@ export class Session {
     });
   }
 
-  /** Cancel a running `!` shell command by its commandId (e.g. on Esc / Ctrl+C). */
+  /** Cancel a running shell command by its commandId, for example on Escape or Ctrl+C. */
   async cancelShellCommand(commandId: string): Promise<void> {
     this.ensureOpen();
     return this.rpc.cancelShellCommand({ sessionId: this.id, commandId });
@@ -489,8 +491,9 @@ export class Session {
   }
 
   /**
-   * Used by `kimi -p` after the main agent's turn ends with `reason ===
-   * 'completed'`. Returns `'finish'` when the run may exit, or `'continue'` when
+   * Used by `kimi -p` after the main agent's turn ends with
+   * `reason === 'completed'`. Returns `'finish'` when the run may exit, or
+   * `'continue'` when
    * the caller must keep the session alive so a background-task completion can
    * steer the main agent into a new turn. Policy is selected by
    * `background.print_background_mode` (`'exit' | 'drain' | 'steer'`); when unset

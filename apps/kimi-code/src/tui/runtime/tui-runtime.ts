@@ -3,6 +3,7 @@ import type { KimiV2Runtime } from '@moonshot-ai/kimi-code-sdk/v2';
 import { createKlientRuntimeAuthPort } from './klient-runtime-auth-adapter';
 import { createKlientRuntimeEnvironmentPort } from './klient-runtime-environment-adapter';
 import { createKlientRuntimeFeatureFlagsPort } from './klient-runtime-feature-flags-adapter';
+import { createKlientRuntimeLocalMediaPort } from './klient-runtime-local-media-adapter';
 import { createKlientRuntimeModelConfigPort } from './klient-runtime-model-config-adapter';
 import { createKlientRuntimeModelCatalogPort } from './klient-runtime-model-catalog-adapter';
 import { createKlientRuntimeProviderRefreshPort } from './klient-runtime-provider-refresh-adapter';
@@ -12,6 +13,7 @@ import { createKlientSessionControlPort } from './klient-session-control-adapter
 import type { RuntimeAuthPort } from './runtime-auth-port';
 import type { RuntimeEnvironmentPort } from './runtime-environment-port';
 import type { RuntimeFeatureFlagsPort } from './runtime-feature-flags-port';
+import type { RuntimeLocalMediaPort } from './runtime-local-media-port';
 import type { RuntimeModelCatalogPort } from './runtime-model-catalog-port';
 import type { RuntimeModelConfigPort } from './runtime-model-config-port';
 import type { RuntimeProviderRefreshPort } from './runtime-provider-refresh-port';
@@ -25,6 +27,7 @@ export interface TUIRuntime {
   readonly auth: RuntimeAuthPort;
   readonly environment: RuntimeEnvironmentPort;
   readonly featureFlags: RuntimeFeatureFlagsPort;
+  readonly localMedia: RuntimeLocalMediaPort;
   readonly models: RuntimeModelCatalogPort;
   readonly modelConfig: RuntimeModelConfigPort;
   readonly providerRefresh: RuntimeProviderRefreshPort;
@@ -47,6 +50,7 @@ export async function createKlientTUIRuntime(
     auth: createKlientRuntimeAuthPort(runtime),
     environment,
     featureFlags: createKlientRuntimeFeatureFlagsPort(runtime),
+    localMedia: createKlientRuntimeLocalMediaPort(runtime),
     models,
     modelConfig: createKlientRuntimeModelConfigPort(runtime),
     providerRefresh: createKlientRuntimeProviderRefreshPort(runtime),

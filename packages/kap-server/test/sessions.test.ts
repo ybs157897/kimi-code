@@ -302,7 +302,7 @@ describe('server-v2 /api/v1/sessions', () => {
     const cwd = home as string;
     const { status, body } = await postJson<SessionWire>('/api/v1/sessions', {
       title: 'hello',
-      metadata: { cwd },
+      metadata: { cwd, source: 'create-request' },
     });
     expect(status).toBe(200);
     expect(body.code).toBe(0);
@@ -310,6 +310,7 @@ describe('server-v2 /api/v1/sessions', () => {
     expect(typeof body.data.workspace_id).toBe('string');
     expect(body.data.title).toBe('hello');
     expect(body.data.metadata.cwd).toBe(cwd);
+    expect(body.data.metadata['source']).toBe('create-request');
     expect(body.data.busy).toBe(false);
     expect(body.data.main_turn_active).toBe(false);
     expect(body.data.pending_interaction).toBe('none');

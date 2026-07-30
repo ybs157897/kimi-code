@@ -6,9 +6,16 @@
  * RPC boundary is stubbed so no external authorization service is contacted.
  * Run: pnpm exec vitest run packages/node-sdk/test/mcp-config.test.ts
  */
-import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import {
+  mkdtemp,
+  mkdir,
+  readFile,
+  realpath,
+  rm,
+  writeFile,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, relative } from 'node:path';
 
 import {
   createKimiHarness,
@@ -20,7 +27,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 const tempDirs: string[] = [];
 const stdioFixture = join(
   import.meta.dirname,
-  '../../agent-core/test/mcp/fixtures/mock-stdio-server.mjs',
+  '../../agent-core-v2/test/session/mcp/fixtures/mock-stdio-server.mjs',
 );
 
 afterEach(async () => {
@@ -88,7 +95,7 @@ describe('global MCP configuration (persisted user entries)', () => {
       await expect(readMcpConfig(homeDir)).resolves.toEqual({
         custom: { keep: true },
         mcpServers: {
-          existing: { command: 'existing-command' },
+          existing: { transport: 'stdio', command: 'existing-command' },
           added: { transport: 'stdio', command: 'added-command' },
         },
       });
@@ -165,6 +172,37 @@ describe('global MCP configuration (persisted user entries)', () => {
       await harness.close();
     }
   });
+
+  it('returns stable public errors for missing catalog entries', async () => {
+    const homeDir = await makeTempDir();
+    const harness = createKimiHarness({ homeDir });
+    const missing = {
+      name: 'missing',
+      transport: 'stdio' as const,
+      command: 'missing-command',
+    };
+
+    try {
+      await expect(harness.updateMcpServer(missing)).rejects.toMatchObject({
+        name: 'KimiError',
+        code: 'mcp.server_not_found',
+      });
+      await expect(harness.removeMcpServer(missing.name)).rejects.toMatchObject({
+        name: 'KimiError',
+        code: 'mcp.server_not_found',
+      });
+      await expect(harness.testMcpServer(missing.name)).rejects.toMatchObject({
+        name: 'KimiError',
+        code: 'mcp.server_not_found',
+      });
+      await expect(harness.resetMcpServerAuth(missing.name)).rejects.toMatchObject({
+        name: 'KimiError',
+        code: 'mcp.server_not_found',
+      });
+    } finally {
+      await harness.close();
+    }
+  });
 });
 
 describe('standalone MCP check (connection result)', () => {
@@ -208,6 +246,40 @@ describe('standalone MCP check (connection result)', () => {
       await harness.close();
     }
   });
+
+  it('uses the public probe cwd without changing the persisted server config', async () => {
+    const homeDir = await makeTempDir();
+    const probeDir = await makeTempDir();
+    const realProbeDir = await realpath(probeDir);
+    const relativeFixture = relative(realProbeDir, stdioFixture);
+    const harness = createKimiHarness({ homeDir });
+
+    try {
+      await harness.addMcpServer({
+        name: 'relative',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [relativeFixture],
+      });
+
+      await expect(
+        harness.testMcpServer('relative', { cwd: realProbeDir }),
+      ).resolves.toMatchObject({
+        success: true,
+        output: expect.stringContaining('Available tools: 3'),
+      });
+      await expect(harness.listMcpServers()).resolves.toEqual([
+        {
+          name: 'relative',
+          transport: 'stdio',
+          command: process.execPath,
+          args: [relativeFixture],
+        },
+      ]);
+    } finally {
+      await harness.close();
+    }
+  }, 15_000);
 });
 
 describe('MCP OAuth facade (host-controlled browser flow)', () => {

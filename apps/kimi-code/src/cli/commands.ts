@@ -77,7 +77,7 @@ export function createProgram(
     .addOption(
       new Option(
         '--agent <name>',
-        'Agent profile to use for this invocation (v2 engine only). Custom profiles are discovered from agent directories or loaded via --agent-file.',
+        'Agent profile to use in prompt mode. Custom profiles are discovered from agent directories or loaded via --agent-file.',
       )
         .argParser((value: string, previous: string | undefined) => {
           if (previous !== undefined) {
@@ -90,7 +90,7 @@ export function createProgram(
     .addOption(
       new Option(
         '--agent-file <path>',
-        'Load an agent definition from a Markdown file and select it (v2 engine only).',
+        'Load an agent definition from a Markdown file and select it in prompt mode.',
       )
         .argParser((value: string, previous: string[] | undefined) => {
           if ((previous?.length ?? 0) > 0) {

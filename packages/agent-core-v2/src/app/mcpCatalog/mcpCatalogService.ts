@@ -1,5 +1,5 @@
 /**
- * `mcpCatalog` domain (L3) — `IMcpCatalogService` implementation.
+ * `mcpCatalog` domain (L5) — `IMcpCatalogService` implementation.
  *
  * Reads and writes the user-level `mcp.json` file (`<homeDir>/mcp.json`).
  * Reads use the existing `mcp` config loader; writes preserve unknown

@@ -4,13 +4,13 @@ import { join } from 'node:path';
 
 import { flushDiagnosticLogsSync, log } from '@moonshot-ai/kimi-code-sdk';
 
+import { detectPendingMigration } from '#/migration/index';
 import { CHROME_GUTTER } from '#/tui/constant/rendering';
 import { loadTuiConfig, TuiConfigParseError } from '#/tui/config';
 import { KimiTUI } from '#/tui/index';
 import { createKlientTUIRuntime } from '#/tui/runtime/tui-runtime';
 import { currentTheme, getColorPalette } from '#/tui/theme';
 import { combineStartupNotice } from '#/tui/utils/startup';
-import { detectPendingMigration } from '#/migration/index';
 import { toTerminalHyperlink } from '#/utils/terminal-hyperlink';
 import { restoreTerminalModes } from '#/utils/terminal-restore';
 
@@ -21,6 +21,7 @@ import { createCliV2Runtime } from './create-v2-runtime';
 export async function runV2Shell(
   opts: CLIOptions,
   version: string,
+  runOptions: { readonly migrateOnly?: boolean } = {},
 ): Promise<void> {
   const startedAt = Date.now();
   const configStartedAt = startedAt;
@@ -43,52 +44,76 @@ export async function runV2Shell(
     'shell',
     'default',
   );
-  const tuiRuntime = await createKlientTUIRuntime(runtime);
-  for (const warning of await tuiRuntime.environment.getConfigDiagnostics()) {
-    configWarning = combineStartupNotice(configWarning, warning);
-  }
-  const migrationPlan = await detectPendingMigration({
-    sourceHome: join(homedir(), '.kimi'),
-    targetHome: homeDir,
-  });
-  const configMs = Date.now() - configStartedAt;
-  const tui = new KimiTUI(undefined, {
-    cliOptions: opts,
-    additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
-    tuiConfig,
-    version,
-    workDir,
-    startupNotice: configWarning,
-    migrationPlan,
-    runtime: tuiRuntime,
-  });
-
-  log.info('kimi-code starting', {
-    version,
-    uiMode: 'shell',
-    engine: 'v2',
-    nodeVersion: process.version,
-    platform: `${process.platform}/${process.arch}`,
-    workDir,
-  });
-  if (firstLaunch) {
-    runtime.telemetry.track('first_launch');
-  }
-
-  const terminalSafety = installTerminalSafety();
-  tui.onExit = async (exitCode = 0) => {
-    const sessionId = tui.getCurrentSessionId();
-    const hasContent = tui.hasSessionContent();
-    writeExitSummary(tui, sessionId, hasContent);
-    terminalSafety.dispose();
-    if (tui.exitForegroundTask !== undefined) {
-      await tui.exitForegroundTask(exitCode);
+  let closePromise: Promise<void> | undefined;
+  const closeRuntime = (): Promise<void> => {
+    closePromise ??= (async () => {
+      runtime.telemetry.track('exit', { duration_ms: Date.now() - startedAt });
+      await runtime.close();
+    })();
+    return closePromise;
+  };
+  let terminalSafety: TerminalSafety | undefined;
+  try {
+    const tuiRuntime = await createKlientTUIRuntime(runtime);
+    const lifecycleRuntime = {
+      ...tuiRuntime,
+      environment: {
+        ...tuiRuntime.environment,
+        close: closeRuntime,
+      },
+    };
+    for (const warning of await tuiRuntime.environment.getConfigDiagnostics()) {
+      configWarning = combineStartupNotice(configWarning, warning);
+    }
+    const migrationPlan = await detectPendingMigration({
+      sourceHome: join(homedir(), '.kimi'),
+      targetHome: homeDir,
+      ignoreMarker: runOptions.migrateOnly,
+    });
+    if (runOptions.migrateOnly === true && migrationPlan === null) {
+      process.stdout.write('  Nothing to migrate from ~/.kimi/.\n');
+      await closeRuntime();
       return;
     }
-    process.exit(exitCode);
-  };
+    const configMs = Date.now() - configStartedAt;
+    const tui = new KimiTUI({
+      cliOptions: opts,
+      additionalDirs: opts.addDirs?.length ? opts.addDirs : undefined,
+      tuiConfig,
+      version,
+      workDir,
+      startupNotice: configWarning,
+      migrationPlan,
+      migrateOnly: runOptions.migrateOnly,
+      runtime: lifecycleRuntime,
+    });
 
-  try {
+    log.info('kimi-code starting', {
+      version,
+      uiMode: 'shell',
+      engine: 'v2',
+      nodeVersion: process.version,
+      platform: `${process.platform}/${process.arch}`,
+      workDir,
+    });
+    if (firstLaunch) {
+      runtime.telemetry.track('first_launch');
+    }
+
+    terminalSafety = installTerminalSafety();
+    tui.onExit = async (exitCode = 0) => {
+      const sessionId = tui.getCurrentSessionId();
+      const hasContent = tui.hasSessionContent();
+      terminalSafety?.dispose();
+      await closeRuntime();
+      writeExitSummary(tui, sessionId, hasContent);
+      if (tui.exitForegroundTask !== undefined) {
+        await tui.exitForegroundTask(exitCode);
+        return;
+      }
+      process.exit(exitCode);
+    };
+
     const initStartedAt = Date.now();
     await tui.start();
     const initMs = Date.now() - initStartedAt;
@@ -99,8 +124,8 @@ export async function runV2Shell(
       mcp_ms: await tui.getStartupMcpMs(),
     });
   } catch (error) {
-    terminalSafety.dispose();
-    await runtime.close();
+    terminalSafety?.dispose();
+    await closeRuntime();
     throw error;
   }
 }

@@ -1,5 +1,4 @@
-import type { KimiHarness, Session } from '@moonshot-ai/kimi-code-sdk';
-import { compressImageForModel, persistOriginalImage, sessionMediaOriginalsDir } from '@moonshot-ai/kimi-code-sdk';
+import { compressImageForModel } from '@moonshot-ai/kimi-code-sdk';
 
 import { ClipboardMediaError, readClipboardMedia } from '#/utils/clipboard/clipboard-image';
 import { parseImageMeta } from '#/utils/image/image-mime';
@@ -18,19 +17,14 @@ import type { ImageAttachmentStore } from '../utils/image-attachment-store';
 import { extractMediaAttachments } from '../utils/image-placeholder';
 import type { PendingExit, QueuedMessage, SteerInputItem } from '../types';
 import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
+import type { TUIRuntime } from '../runtime/tui-runtime';
 import type { TUIState } from '../tui-state';
 import type { BtwPanelController } from './btw-panel';
 
 export interface EditorKeyboardHost {
   state: TUIState;
-  session: Session | undefined;
+  readonly runtime: Pick<TUIRuntime, 'localMedia'>;
   cancelInFlight: (() => void) | undefined;
-  /**
-   * The host's harness (KimiTUI always has one). Its `imageLimits` drives
-   * paste-time image compression; hosts without one fall back to the
-   * env/built-in default.
-   */
-  harness?: KimiHarness | undefined;
 
   handleUserInput(text: string): void;
   readonly btwPanelController: BtwPanelController;
@@ -470,11 +464,12 @@ export class EditorKeyboardController {
     // session's media-originals dir when known, else the temp-dir fallback)
     // and recorded on the attachment, so submit-time expansion can announce
     // the compression and point the model at the full-fidelity copy.
-    // The edge cap comes from the host harness's [image] config (resolved per
-    // paste so a config reload applies immediately); hosts without a harness
-    // use the env/built-in default.
+    // The edge cap comes from the runtime's env-resolved [image] config. It is
+    // read per paste so a config reload applies immediately; undefined uses
+    // the compressor's built-in default.
+    const maxEdge = await this.host.runtime.localMedia.getImageMaxEdgePx();
     const compressed = await compressImageForModel(media.bytes, meta.mime, {
-      maxEdge: this.host.harness?.imageLimits?.maxEdgePx(),
+      maxEdge,
       telemetry: {
         client: {
           track: (event, properties) => {
@@ -484,7 +479,6 @@ export class EditorKeyboardController {
         source: 'tui_paste',
       },
     });
-    const sessionDir = this.host.session?.summary?.sessionDir;
     // Dimensions come from the compression result, not parseImageMeta: the
     // compressor reports display space (EXIF orientation applied) — the space
     // the sent image, the caption, and ReadMediaFile region readback share —
@@ -496,11 +490,11 @@ export class EditorKeyboardController {
           compressed.width,
           compressed.height,
           {
-            path: await persistOriginalImage(
-              media.bytes,
-              meta.mime,
-              sessionDir === undefined ? {} : { dir: sessionMediaOriginalsDir(sessionDir) },
-            ),
+            path: await this.host.runtime.localMedia.persistOriginalImage({
+              bytes: media.bytes,
+              mimeType: meta.mime,
+              sessionId: this.host.state.appState.sessionId || undefined,
+            }),
             width: compressed.originalWidth,
             height: compressed.originalHeight,
             byteLength: media.bytes.length,

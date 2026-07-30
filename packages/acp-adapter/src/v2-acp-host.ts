@@ -11,6 +11,7 @@
 
 import type { AgentSideConnection } from '@agentclientprotocol/sdk';
 import type { Klient } from '@moonshot-ai/klient';
+import type { IWorkspaceFileSystemFactory } from '@moonshot-ai/agent-core-v2/os/interface/workspaceFileSystem';
 import type {
   AcpHost,
   AcpSessionHost,
@@ -25,16 +26,11 @@ import { listModelsFromKlient } from './model-catalog-v2';
 
 export class V2AcpHost implements AcpHost {
   private workspaceFsFactory: AcpWorkspaceFileSystemFactory | undefined;
-  private readonly runtime: any;
-  private readonly klient: Klient;
 
-  constructor(runtime: any, klient: Klient) {
-    this.runtime = runtime;
-    this.klient = klient;
-  }
+  constructor(private readonly runtime: AcpHostedRuntime) {}
 
   /** Called by AcpServer once the AgentSideConnection is available. */
-  setConnection(conn: AgentSideConnection): void {
+  bindConnection(conn: AgentSideConnection): void {
     this.workspaceFsFactory = new AcpWorkspaceFileSystemFactory(conn);
   }
 
@@ -44,76 +40,187 @@ export class V2AcpHost implements AcpHost {
 
   async checkAuthenticated(): Promise<boolean> {
     try {
-      const status: any = await this.klient.global.auth.status();
-      const providers: readonly any[] = status?.providers ?? [];
-      return providers.some((p: any) => p?.hasToken === true);
+      await this.runtime.klient.global.auth.ensureReady();
+      return true;
     } catch {
       return false;
     }
   }
 
   async createSession(params: AcpCreateSessionParams): Promise<AcpSessionHost> {
-    const ctx = this.fsFactory !== undefined
-      ? { workspaceFileSystemFactory: this.fsFactory }
-      : { workspaceFileSystemFactory: undefined };
-    const result: any = await this.runtime.hostedSessions.create(
+    const result = await this.runtime.hostedSessions.create(
       {
         sessionId: params.sessionId,
         workDir: params.workDir ?? process.cwd(),
-        additionalDirs: undefined,
+        additionalDirs: params.additionalDirs,
         mcpServers: params.mcpServers,
       },
-      ctx,
+      { workspaceFileSystemFactory: this.fsFactory },
     );
-    return new V2SessionAdapter(this.klient, result.id);
+    return new V2SessionAdapter(this.runtime.klient, result.id);
   }
 
   async resumeSession(params: AcpResumeSessionParams): Promise<AcpSessionHost> {
-    const ctx = this.fsFactory !== undefined
-      ? { workspaceFileSystemFactory: this.fsFactory }
-      : { workspaceFileSystemFactory: undefined };
-    const result: any = await this.runtime.hostedSessions.resume(
+    const result = await this.runtime.hostedSessions.resume(
       params.sessionId,
       {
-        additionalDirs: undefined,
+        additionalDirs: params.additionalDirs,
         mcpServers: params.mcpServers,
       },
-      ctx,
+      { workspaceFileSystemFactory: this.fsFactory },
     );
-    if (result === undefined || result === null) {
+    if (result === undefined) {
       throw Object.assign(new Error('session not found'), { code: 'session.not_found' });
     }
-    return new V2SessionAdapter(this.klient, params.sessionId);
+    return new V2SessionAdapter(this.runtime.klient, params.sessionId);
   }
 
   async listSessions(params?: AcpListSessionsParams): Promise<AcpSessionSummary[]> {
-    try {
-      const page: any = await this.klient.global.sessions.list({
-        workDir: params?.workDir,
-        cursor: undefined,
+    const workspaceIds =
+      params?.workDir === undefined
+        ? undefined
+        : (await this.runtime.klient.global.workspaces.list())
+            .filter((workspace) => workspace.root === params.workDir)
+            .map((workspace) => workspace.id);
+    if (workspaceIds !== undefined && workspaceIds.length === 0) return [];
+
+    const summaries: AcpSessionSummary[] = [];
+    let cursor: string | undefined;
+    do {
+      const page = await this.runtime.klient.global.sessions.list({
+        workspaceIds,
+        sessionId: params?.sessionId,
+        cursor,
         limit: 100,
-      } as any);
-      const items: readonly any[] = page?.items ?? [];
-      return items.map((s: any) => ({
-        id: String(s?.id ?? ''),
-        workDir: typeof s?.workDir === 'string' ? s.workDir : undefined,
-        title: typeof s?.title === 'string' ? s.title : null,
-        updatedAt: typeof s?.updatedAt === 'number' ? new Date(s.updatedAt).toISOString() : null,
-      }));
-    } catch {
-      return [];
-    }
+      });
+      summaries.push(
+        ...(await Promise.all(
+          page.items.map(async (session) => {
+            const workDir =
+              session.cwd ??
+              (await this.runtime.klient.global.workspaces.get(session.workspaceId))?.root;
+            if (workDir === undefined) {
+              throw new Error(`Workspace "${session.workspaceId}" is unavailable`);
+            }
+            return {
+              id: session.id,
+              workDir,
+              title: session.title ?? null,
+              updatedAt: new Date(session.updatedAt).toISOString(),
+            };
+          }),
+        )),
+      );
+      cursor = page.nextCursor;
+    } while (cursor !== undefined);
+    return summaries;
   }
 
   async listAvailableModels() {
-    return listModelsFromKlient(this.klient);
+    return listModelsFromKlient(this.runtime.klient);
   }
 
-  imageLimits = undefined;
+  async getDefaultModelId(): Promise<string | undefined> {
+    const modelId =
+      await this.runtime.klient.global.config.get<string | undefined>('defaultModel');
+    return nonEmpty(modelId);
+  }
+
+  async getDefaultThinkingEffort(): Promise<string | undefined> {
+    const [modelId, thinking, models] = await Promise.all([
+      this.getDefaultModelId(),
+      this.runtime.klient.global.config.get<{
+        readonly enabled?: boolean;
+        readonly effort?: string;
+      } | undefined>('thinking'),
+      this.runtime.klient.global.kosong.listModels(),
+    ]);
+    const model = models.find((candidate) => candidate.model === modelId);
+    const capabilities = model?.capabilities ?? [];
+    const alwaysThinking = capabilities.includes('always_thinking');
+    const supportsThinking =
+      alwaysThinking || capabilities.includes('thinking');
+    if (!supportsThinking) return 'off';
+
+    const configured = nonEmpty(thinking?.effort)?.toLowerCase();
+    const modelDefault = nonEmpty(model?.default_effort)?.toLowerCase() ?? 'on';
+    if (thinking?.enabled === false && !alwaysThinking) return 'off';
+    if (configured === 'off' && alwaysThinking) return modelDefault;
+    if (configured !== undefined) {
+      const supportedEfforts = model?.support_efforts ?? [];
+      if (configured === 'on' && supportedEfforts.length > 0) return modelDefault;
+      return configured;
+    }
+    return modelDefault;
+  }
 
   track(event: string, properties?: Record<string, unknown>): void {
-    if (typeof this.runtime.telemetry?.track === 'function') {
-      this.runtime.telemetry.track(event, properties);
-    }
+    this.runtime.telemetry?.track(event, telemetryProperties(properties));
   }
+
+  close(): Promise<void> {
+    return this.runtime.close();
+  }
+}
+
+function nonEmpty(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
+}
+
+export interface AcpHostedRuntime {
+  readonly klient: Klient;
+  readonly hostedSessions: {
+    create(
+      input: AcpHostedCreateInput,
+      overrides: AcpHostedSessionOverrides,
+    ): Promise<{ readonly id: string }>;
+    resume(
+      sessionId: string,
+      input: AcpHostedResumeInput,
+      overrides: AcpHostedSessionOverrides,
+    ): Promise<{ readonly id: string } | undefined>;
+  };
+  readonly telemetry?: {
+    track(
+      event: string,
+      properties?: Readonly<Record<string, string | number | boolean | null | undefined>>,
+    ): void;
+  };
+  close(): Promise<void>;
+}
+
+interface AcpHostedCreateInput {
+  readonly sessionId: string;
+  readonly workDir: string;
+  readonly additionalDirs?: readonly string[];
+  readonly mcpServers?: AcpCreateSessionParams['mcpServers'];
+}
+
+interface AcpHostedResumeInput {
+  readonly additionalDirs?: readonly string[];
+  readonly mcpServers?: AcpResumeSessionParams['mcpServers'];
+}
+
+interface AcpHostedSessionOverrides {
+  readonly workspaceFileSystemFactory?: IWorkspaceFileSystemFactory;
+}
+
+function telemetryProperties(
+  properties: Record<string, unknown> | undefined,
+): Record<string, string | number | boolean | null | undefined> | undefined {
+  if (properties === undefined) return undefined;
+  return Object.fromEntries(
+    Object.entries(properties).filter(
+      (entry): entry is [
+        string,
+        string | number | boolean | null | undefined,
+      ] =>
+        entry[1] === undefined ||
+        entry[1] === null ||
+        typeof entry[1] === 'string' ||
+        typeof entry[1] === 'number' ||
+        typeof entry[1] === 'boolean',
+    ),
+  );
 }

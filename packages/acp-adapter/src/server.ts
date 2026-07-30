@@ -1,9 +1,9 @@
 /**
  * ACP `AgentSideConnection` wrapper.
  *
- * Phase 3 implements `initialize`, `session/new`, and `session/cancel`
- * against {@link KimiHarness}. `prompt` is wired in step 3.4. `initialize`
- * advertises the terminal-auth method (see {@link TERMINAL_AUTH_METHOD}).
+ * Production callers provide the runtime-neutral {@link AcpHost}. The
+ * {@link KimiHarness} overload is retained only as a public compatibility
+ * facade and is converted once through {@link LegacyAcpHost}.
  */
 
 import { Readable, Writable } from 'node:stream';
@@ -44,26 +44,19 @@ import {
   type SetSessionModelResponse,
   type Stream,
 } from '@agentclientprotocol/sdk';
-import type {
-  KimiConfig,
-  KimiHarness,
-  ModelAlias,
-  ProviderConfig,
-  Session,
-  SessionSummary,
-} from '@moonshot-ai/kimi-code-sdk';
+import type { KimiHarness } from '@moonshot-ai/kimi-code-sdk';
 import { log } from '@moonshot-ai/kimi-code-sdk';
-import { LocalKaos, type Kaos } from '@moonshot-ai/kaos';
 
 import { TERMINAL_AUTH_METHOD, buildTerminalAuthMethod } from './auth-methods';
 import { redirectConsoleToStderr } from './log-guard';
-import { AcpKaos } from './kaos-acp';
 import { AcpSession, type TelemetryTrackFn } from './session';
-import { buildSessionConfigOptions } from './config-options';
+import type { IAcpSessionHost } from './iacp-session-host';
+import { buildSessionConfigOptionsFromModels } from './config-options';
 import { availableCommandsUpdateNotification } from './events-map';
 import { acpMcpServersToConfigs } from './mcp';
-import { listModelsFromHarness } from './model-catalog';
+import { LegacyAcpHost } from './legacy-acp-host';
 import { DEFAULT_MODE_ID } from './modes';
+import type { AcpHost, AcpSessionSummary } from './types';
 import { negotiateVersion, type AcpVersionSpec } from './version';
 
 /**
@@ -71,7 +64,7 @@ import { negotiateVersion, type AcpVersionSpec } from './version';
  * `slashCommands` resolver. Carries both what gets advertised in the
  * `available_commands_update` push and the `skillCommandMap` that
  * {@link AcpSession.prompt} consults to intercept `/skill:<name>`
- * inputs and route them to {@link Session.activateSkill}.
+ * inputs and route them through the session host's skill activation port.
  *
  * `skillCommandMap` is optional for backward compatibility: callers
  * that pre-date slash-command routing (or that only advertise builtin
@@ -87,7 +80,7 @@ type SlashCommandsResolver =
   | ReadonlyArray<AvailableCommand>
   | SlashCommandsSnapshot
   | ((
-      session: Session,
+      session: IAcpSessionHost,
     ) =>
       | Promise<ReadonlyArray<AvailableCommand> | SlashCommandsSnapshot>
       | ReadonlyArray<AvailableCommand>
@@ -111,95 +104,6 @@ function toResolvedSlashCommands(
   };
 }
 
-/**
- * Inline auth gate — moved out of `KimiAuthFacade.hasUsableToken()` so
- * the SDK doesn't have to carry an ACP-specific convenience method.
- * OAuth tokens still count as authed, but ACP can also start when the
- * active model resolves to a provider with config-file credentials.
- */
-async function harnessIsAuthed(harness: KimiHarness): Promise<boolean> {
-  const status = await harness.auth.status();
-  if (status.providers.some((entry) => entry.hasToken)) return true;
-  return hasUsableConfiguredDefaultModel(harness);
-}
-
-async function hasUsableConfiguredDefaultModel(harness: KimiHarness): Promise<boolean> {
-  if (typeof harness.getConfig !== 'function') return false;
-  let config: KimiConfig;
-  try {
-    config = await harness.getConfig();
-  } catch (error) {
-    log.warn('acp: harness.getConfig threw during auth gate; requiring terminal auth', {
-      error: error instanceof Error ? error.message : String(error),
-    });
-    return false;
-  }
-
-  if (config.defaultModel === undefined) return false;
-  const alias = config.models?.[config.defaultModel];
-  if (alias === undefined) return false;
-
-  const provider = providerForAlias(config, alias);
-  return provider !== undefined && providerHasNonOAuthCredentials(provider);
-}
-
-function providerForAlias(config: KimiConfig, alias: ModelAlias): ProviderConfig | undefined {
-  const providerName = alias.provider ?? config.defaultProvider;
-  return providerName === undefined ? undefined : config.providers[providerName];
-}
-
-function providerHasNonOAuthCredentials(provider: ProviderConfig): boolean {
-  if (provider.oauth !== undefined) return false;
-  switch (provider.type) {
-    case 'anthropic':
-      return hasProviderValue(provider, 'ANTHROPIC_API_KEY');
-    case 'openai':
-    case 'openai_responses':
-      return hasProviderValue(provider, 'OPENAI_API_KEY');
-    case 'kimi':
-      return hasProviderValue(provider, 'KIMI_API_KEY');
-    case 'google-genai':
-      return hasProviderValue(provider, 'GOOGLE_API_KEY');
-    case 'vertexai':
-      return (
-        hasProviderValue(provider, 'VERTEXAI_API_KEY') ||
-        hasEnvValue(provider, 'GOOGLE_API_KEY') ||
-        (hasEnvValue(provider, 'GOOGLE_CLOUD_PROJECT') &&
-          (hasEnvValue(provider, 'GOOGLE_CLOUD_LOCATION') ||
-            vertexAILocationFromBaseUrl(provider.baseUrl) !== undefined))
-      );
-    default: {
-      const exhaustive: never = provider.type;
-      return exhaustive;
-    }
-  }
-}
-
-function hasProviderValue(provider: ProviderConfig, envKey: string): boolean {
-  return nonEmptyString(provider.apiKey) !== undefined || hasEnvValue(provider, envKey);
-}
-
-function hasEnvValue(provider: ProviderConfig, envKey: string): boolean {
-  return nonEmptyString(provider.env?.[envKey]) !== undefined;
-}
-
-function vertexAILocationFromBaseUrl(baseUrl: string | undefined): string | undefined {
-  const url = nonEmptyString(baseUrl);
-  if (url === undefined) return undefined;
-  try {
-    const host = new URL(url).hostname;
-    const suffix = '-aiplatform.googleapis.com';
-    return host.endsWith(suffix) ? nonEmptyString(host.slice(0, -suffix.length)) : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function nonEmptyString(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
-}
-
 function effortStringOrUndefined(effort: unknown): string | undefined {
   if (typeof effort !== 'string') return undefined;
   const trimmed = effort.trim();
@@ -207,16 +111,11 @@ function effortStringOrUndefined(effort: unknown): string | undefined {
 }
 
 /**
- * Agent-side ACP handler. Routes `initialize` + `session/new` + `session/cancel`
- * into {@link KimiHarness}; refuses methods that are not yet wired with a
- * JSON-RPC "method not found" error so clients see a structured failure
- * rather than a silent hang.
- *
- * The harness is captured eagerly so Phase 3 routes `session/new`,
- * `session/cancel` (and Phase 3.4: `session/prompt`) into it without
- * changing the public constructor. The {@link AgentSideConnection} (if
- * supplied) is forwarded to every {@link AcpSession} so the session can
- * push `session/update` chunks back to the client.
+ * Agent-side ACP handler backed by an {@link AcpHost}. The host is normalized
+ * eagerly so every route uses the same runtime-neutral contract. The
+ * {@link AgentSideConnection} (if supplied) is forwarded to every
+ * {@link AcpSession} so the session can push `session/update` chunks back to
+ * the client.
  */
 export class AcpServer implements Agent {
   private negotiated: AcpVersionSpec | undefined;
@@ -226,18 +125,12 @@ export class AcpServer implements Agent {
   private readonly terminalAuthEnv: Readonly<Record<string, string>> | undefined;
   private readonly terminalAuthLegacyCommand: string | undefined;
   private readonly resolveSlashCommands: (
-    session: Session,
+    session: IAcpSessionHost,
   ) => Promise<ResolvedSlashCommands>;
-  /**
-   * Lazily-built inner {@link Kaos} (a {@link LocalKaos}) used as the
-   * delegate target for every {@link AcpKaos} this server hands out.
-   * One per server (not per session) so we don't re-probe the
-   * environment for every `session/new` call.
-   */
-  private innerKaos: Kaos | undefined = undefined;
+  private readonly host: AcpHost;
 
   constructor(
-    private readonly harness: KimiHarness,
+    host: AcpHost | KimiHarness,
     private readonly conn?: AgentSideConnection | undefined,
     opts?: {
       agentInfo?: Implementation;
@@ -262,14 +155,14 @@ export class AcpServer implements Agent {
        * `available_commands_update` pushed immediately after each
        * `session/new`, `session/load`, and `session/resume`. Accepts
        * either a static array, or a resolver called once per session
-       * (with the just-created `Session`) so per-session sources like
-       * `session.listSkills()` can be merged in. When omitted, the
+       * (with the just-created session host) so per-session sources like
+       * `listSkills()` can be merged in. When omitted, the
        * adapter falls back to an empty list.
        *
        * Returning a {@link SlashCommandsSnapshot} (`{ commands, skillCommandMap }`)
        * additionally lets {@link AcpSession.prompt} intercept
        * `/skill:<name> ...` inputs at the adapter boundary and route
-       * them to {@link Session.activateSkill} instead of forwarding the
+       * them to the session host's skill activation port instead of forwarding the
        * raw slash text — matching the TUI's slash-command behavior so
        * skill activations don't fall back to model-driven Bash
        * exploration of `~/.kimi-code/skills/`.
@@ -277,6 +170,8 @@ export class AcpServer implements Agent {
       slashCommands?: SlashCommandsResolver;
     },
   ) {
+    this.host = toAcpHost(host);
+    if (this.conn !== undefined) this.host.bindConnection?.(this.conn);
     this.agentInfo = opts?.agentInfo;
     this.terminalAuthEnv = opts?.terminalAuthEnv;
     this.terminalAuthLegacyCommand = opts?.terminalAuthLegacyCommand;
@@ -305,6 +200,7 @@ export class AcpServer implements Agent {
   async initialize(params: InitializeRequest): Promise<InitializeResponse> {
     this.negotiated = negotiateVersion(params.protocolVersion);
     this.clientCapabilities = params.clientCapabilities;
+    this.host.setClientCapabilities?.(this.clientCapabilities);
 
     const agentCapabilities: AgentCapabilities = {
       loadSession: true,
@@ -339,23 +235,12 @@ export class AcpServer implements Agent {
   }
 
   async newSession(params: NewSessionRequest): Promise<NewSessionResponse> {
-    if (!(await harnessIsAuthed(this.harness))) {
+    if (!(await this.host.checkAuthenticated())) {
       throw RequestError.authRequired();
     }
-    // ACP's `cwd` maps to the SDK's `workDir`. `model`, `planMode`, and
-    // similar fields are wired in Phase 8 (per PLAN D3) — Phase 3.2 keeps
-    // the surface minimal. Phase 10.1 adds `mcpServers` forwarding so
-    // ACP-supplied servers (Zed config, JetBrains config) are passed
-    // alongside the on-disk config; unsupported ACP-transport servers
-    // are warn-dropped inside the conversion. `mcpServers` is NOT a
-    // declared field on `CreateSessionOptions` — the SDK is a
-    // transparent passthrough for unknown fields (see
-    // `packages/node-sdk/src/kimi-harness.ts:createSession` and
-    // `packages/node-sdk/src/rpc.ts:createSession`), so the kernel
-    // (`CreateSessionPayload.mcpServers` in agent-core) receives the
-    // record verbatim. The `@ts-expect-error` documents this contract;
-    // if the SDK ever switches from spread-passthrough to explicit field
-    // copy, this line breaks and we revisit the boundary.
+    // ACP's cwd and MCP servers are explicit fields on the runtime-neutral
+    // host contract. The v2 host passes them to hosted lifecycle creation,
+    // while the legacy compatibility host performs its own SDK projection.
     const mcpServers = acpMcpServersToConfigs(params.mcpServers);
     if (!this.conn) {
       // Defensive: every code path that constructs `AcpServer` (the
@@ -365,25 +250,14 @@ export class AcpServer implements Agent {
       // connection mid-stream.
       throw RequestError.internalError(undefined, 'AcpServer is missing its AgentSideConnection');
     }
-    // Pre-mint the session id so the optional `AcpKaos` (built when the
-    // client advertised `fs.readTextFile` / `fs.writeTextFile`) carries
-    // the correct reverse-RPC channel for the same session the kernel
-    // is about to construct. Boundary injection — the kaos is captured
-    // by the kernel `SessionImpl` ctor and every tool downstream sees
-    // the same reference, no AsyncLocalStorage needed.
+    // Pre-mint the id so the hosted Workspace FS and engine scope use the
+    // same session identity.
     const sessionId = `session_${randomUUID()}`;
-    const acpKaos = await this.maybeBuildAcpKaos(sessionId);
-    const persistenceKaos = acpKaos === undefined ? undefined : await this.ensureInnerKaos();
-    const session = await this.harness.createSession({
-      id: sessionId,
+    const session = await this.host.createSession({
+      sessionId,
       workDir: params.cwd,
-      kaos: acpKaos,
-      persistenceKaos,
-      sessionStartedProperties: { mode: 'new' },
-      // @ts-expect-error — `mcpServers` is a kernel-side extension
-      // (agent-core `CreateSessionPayload`) the SDK transparently
-      // forwards via spread. See block comment above.
       mcpServers,
+      mode: 'new',
     });
     const currentModelId = await this.resolveCurrentModelId();
     const currentThinkingEffort = await this.resolveCurrentThinkingEffort(session);
@@ -393,7 +267,7 @@ export class AcpServer implements Agent {
       this.clientCapabilities,
       this.makeTelemetryTrack(),
       currentModelId,
-      this.harness,
+      this.host,
       currentThinkingEffort,
     );
     this.sessions.set(session.id, acpSession);
@@ -409,8 +283,8 @@ export class AcpServer implements Agent {
     // current model's catalog row advertises `thinkingSupported` — one
     // row per declared effort level (plus `off`), or the legacy
     // `off` / `on` pair for boolean models.
-    const configOptions = await buildSessionConfigOptions(
-      this.harness,
+    const configOptions = buildSessionConfigOptionsFromModels(
+      await this.host.listAvailableModels(),
       currentModelId,
       currentThinkingEffort,
       DEFAULT_MODE_ID,
@@ -508,12 +382,9 @@ export class AcpServer implements Agent {
    * those turns; replay is a load-only behavior). See plan G4
    * (lines 106-170) for the rationale.
    *
-   * The `@ts-expect-error` boundary at the SDK `resumeSession` call
-   * is preserved verbatim — `mcpServers` is a kernel-only extension
-   * the SDK forwards via spread (see the `newSession` comment block
-   * for the full contract). The `session.not_found` → `invalidParams`
-   * mapping is also preserved so unknown-session errors surface as a
-   * structured JSON-RPC failure rather than a generic internal error.
+   * The `session.not_found` → `invalidParams` mapping is preserved so
+   * unknown-session errors surface as a structured JSON-RPC failure rather
+   * than a generic internal error.
    */
   private async setupSessionFromExisting(params: {
     cwd: string;
@@ -521,51 +392,39 @@ export class AcpServer implements Agent {
     mcpServers?: ReadonlyArray<McpServer>;
     mode: 'load' | 'resume';
   }): Promise<{
-    session: Session;
+    session: IAcpSessionHost;
     acpSession: AcpSession;
     configOptions: SessionConfigOption[];
   }> {
-    if (!(await harnessIsAuthed(this.harness))) {
+    if (!(await this.host.checkAuthenticated())) {
       throw RequestError.authRequired();
     }
     if (!this.conn) {
       throw RequestError.internalError(undefined, 'AcpServer is missing its AgentSideConnection');
     }
-    // ACP `cwd` → SDK `workDir` for parity with `newSession`. The
-    // harness's `resumeSession` only takes `{ id }` today; the cwd
-    // arrives on the request for future validation but is not enforced
-    // here (the on-disk session already has its own workDir). Phase
-    // 10.1 also forwards `mcpServers` so a resumed session can pick up
-    // ACP-supplied MCP servers (matching `newSession` behaviour). Same
-    // `@ts-expect-error` boundary as `newSession` — the SDK's
-    // `resumeSession` spreads `input` so unknown fields ride to the
-    // kernel.
+    // Forward ACP-supplied MCP servers through the host contract. The
+    // persisted session remains authoritative for its workspace root.
     const mcpServers = acpMcpServersToConfigs(params.mcpServers);
-    const acpKaos = await this.maybeBuildAcpKaos(params.sessionId);
-    const persistenceKaos = acpKaos === undefined ? undefined : await this.ensureInnerKaos();
-    let session: Session;
+    let session: IAcpSessionHost;
     try {
-      session = await this.harness.resumeSession({
-        id: params.sessionId,
-        kaos: acpKaos,
-        persistenceKaos,
-        sessionStartedProperties: { mode: params.mode },
-        // @ts-expect-error — see block comment above; mcpServers is a
-        // kernel-only field that the SDK forwards via spread.
+      session = await this.host.resumeSession({
+        sessionId: params.sessionId,
+        workDir: params.cwd,
         mcpServers,
+        mode: params.mode,
       });
-    } catch (err) {
+    } catch (error) {
       // Surface unknown-session as invalid_params so the JSON-RPC layer
       // returns a structured failure rather than a generic internal
       // error. Other errors propagate as-is.
-      const code = (err as { code?: string } | undefined)?.code;
+      const code = (error as { code?: string } | undefined)?.code;
       if (code === 'session.not_found') {
         throw RequestError.invalidParams(
           { sessionId: params.sessionId },
           `Unknown sessionId: ${params.sessionId}`,
         );
       }
-      throw err;
+      throw error;
     }
     // Phase 14 (PLAN D11) — same `configOptions:` advertisement as
     // `newSession`. `currentModeId` is `default` on every load (mode
@@ -574,7 +433,16 @@ export class AcpServer implements Agent {
     // dropdown's highlight matches the model the resumed turn will
     // actually use — falling back to the harness-level default
     // resolution when the resume state lacks a `modelAlias`.
-    const resumeState = session.getResumeState?.();
+    const resumeState = await session.getResumeState?.() as
+      | {
+          readonly agents?: Readonly<Record<string, {
+            readonly config?: {
+              readonly modelAlias?: string;
+              readonly thinkingLevel?: string;
+            };
+          }>>;
+        }
+      | undefined;
     const resumedModelAlias = resumeState?.agents?.['main']?.config?.modelAlias;
     const currentModelId =
       typeof resumedModelAlias === 'string' && resumedModelAlias.length > 0
@@ -586,7 +454,7 @@ export class AcpServer implements Agent {
     // projects onto its row set. Falls back to the live session status,
     // then the harness-level default, when the resume state lacks the
     // field.
-    const resumedThinkingEffort = resumeState?.agents?.['main']?.config?.thinkingEffort;
+    const resumedThinkingEffort = resumeState?.agents?.['main']?.config?.thinkingLevel;
     const currentThinkingEffort = await this.resolveCurrentThinkingEffort(
       session,
       resumedThinkingEffort,
@@ -597,49 +465,17 @@ export class AcpServer implements Agent {
       this.clientCapabilities,
       this.makeTelemetryTrack(),
       currentModelId,
-      this.harness,
+      this.host,
       currentThinkingEffort,
     );
     this.sessions.set(session.id, acpSession);
-    const configOptions = await buildSessionConfigOptions(
-      this.harness,
+    const configOptions = buildSessionConfigOptionsFromModels(
+      await this.host.listAvailableModels(),
       currentModelId,
       currentThinkingEffort,
       DEFAULT_MODE_ID,
     );
     return { session, acpSession, configOptions };
-  }
-
-  /**
-   * Build an {@link AcpKaos} for a given session id if (and only if)
-   * the client advertised any FS reverse-RPC capability. Returns
-   * `undefined` otherwise — the caller then omits the `kaos` field
-   * from `harness.createSession`/`resumeSession`, leaving the kernel
-   * to fall back to its process-wide {@link LocalKaos}.
-   *
-   * The inner {@link LocalKaos} is built lazily on the first capable
-   * session and cached on `this.innerKaos`; subsequent sessions reuse
-   * it. The resulting {@link AcpKaos} is captured by the kernel
-   * `SessionImpl` ctor and every tool downstream sees the same
-   * reference — no AsyncLocalStorage involved.
-   */
-  private async maybeBuildAcpKaos(sessionId: string): Promise<AcpKaos | undefined> {
-    const fs = this.clientCapabilities?.fs;
-    if (!fs?.readTextFile && !fs?.writeTextFile) {
-      return undefined;
-    }
-    if (!this.conn) {
-      return undefined;
-    }
-    const innerKaos = await this.ensureInnerKaos();
-    return new AcpKaos(this.conn, sessionId, innerKaos);
-  }
-
-  private async ensureInnerKaos(): Promise<Kaos> {
-    if (!this.innerKaos) {
-      this.innerKaos = await LocalKaos.create();
-    }
-    return this.innerKaos;
   }
 
   /**
@@ -659,7 +495,7 @@ export class AcpServer implements Agent {
         `Unknown auth method: ${params.methodId}`,
       );
     }
-    if (!(await harnessIsAuthed(this.harness))) {
+    if (!(await this.host.checkAuthenticated())) {
       throw RequestError.authRequired();
     }
     // void = empty success body (ACP allows AuthenticateResponse | void).
@@ -683,11 +519,11 @@ export class AcpServer implements Agent {
     }
     try {
       await acpSession.cancel();
-    } catch (err) {
+    } catch (error) {
       // Same notification-cannot-error rule: log and swallow.
       log.warn('acp: error while cancelling session', {
         sessionId: params.sessionId,
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }
@@ -794,8 +630,8 @@ export class AcpServer implements Agent {
         );
     }
     return {
-      configOptions: await buildSessionConfigOptions(
-        this.harness,
+      configOptions: buildSessionConfigOptionsFromModels(
+        await this.host.listAvailableModels(),
         acpSession.currentModelId,
         acpSession.currentThinkingEffort,
         acpSession.currentModeId,
@@ -805,13 +641,12 @@ export class AcpServer implements Agent {
 
   /**
    * Handle ACP `session/list`. Forwards to
-   * {@link KimiHarness.listSessions} (optionally filtered by `cwd` —
-   * the SDK calls it `workDir`) and projects each
-   * {@link SessionSummary} into an ACP {@link SessionInfo}.
+   * {@link AcpHost.listSessions} (optionally filtered by `cwd`) and projects
+   * each {@link AcpSessionSummary} into an ACP {@link SessionInfo}.
    *
    * No pagination support in this version — `nextCursor` is always
    * `null`. Mirrors the Python reference at `acp/server.py:303-322`
-   * where the response is built in a single shot from the harness'
+   * where the response is built in a single shot from the host's
    * full snapshot.
    */
   async listSessions(params: ListSessionsRequest): Promise<ListSessionsResponse> {
@@ -819,7 +654,7 @@ export class AcpServer implements Agent {
     // `null` (the schema-allowed sentinel for "no filter") the same
     // as `undefined`.
     const cwd = params.cwd ?? undefined;
-    const summaries = await this.harness.listSessions(
+    const summaries = await this.host.listSessions(
       cwd === undefined ? {} : { workDir: cwd },
     );
     const sessions: SessionInfo[] = summaries.map((summary) =>
@@ -863,59 +698,36 @@ export class AcpServer implements Agent {
   /**
    * Compute the `currentValue` for the `model` config option when the
    * caller (either `newSession` or `loadSession`'s fallback path) does
-   * not have a more specific signal. Prefers the harness's configured
+   * not have a more specific signal. Prefers the host's configured
    * `defaultModel`; otherwise falls back to the first listed catalog
    * alias so the dropdown's "current" highlight is always one of the
    * options the client will render. Returns the empty string when the
-   * harness has no models at all — a degenerate config the UI can still
+   * host has no models at all — a degenerate config the UI can still
    * render (an empty dropdown with an empty `currentValue`).
    *
-   * Tolerant to partial-stub harnesses (`getConfig` missing or
-   * throwing) — adapter-level unit tests routinely construct minimal
-   * `KimiHarness` shapes that only stub `auth.status` + `createSession`.
-   * Production callers always supply a real harness with both methods;
-   * the swallow-and-fallback path exists purely for test ergonomics.
+   * Tolerant to partial test hosts whose optional default-model lookup is
+   * absent or throws; the catalog fallback remains deterministic.
    *
    * Logged at `warn` when a fallback fires so a dev who forgot to set
    * `default_model = ...` sees a breadcrumb in the agent log.
    */
   private async resolveCurrentModelId(): Promise<string> {
-    // Minimal-stub harnesses (no `getConfig`) skip the catalog entirely
-    // and return the empty string silently. The old code path was the
-    // same — `listAvailableModels` used to live behind a
-    // `typeof harness.listAvailableModels === 'function'` guard, and we
-    // preserve that ergonomic so adapter unit tests with bare-bones
-    // stubs don't fire spurious "no models" warnings.
-    if (typeof this.harness.getConfig !== 'function') return '';
     try {
-      const config = await this.harness.getConfig();
-      const declared = config.defaultModel;
+      const declared = await this.host.getDefaultModelId?.();
       if (typeof declared === 'string' && declared.length > 0) {
         return declared;
       }
-    } catch (err) {
-      log.warn('acp: harness.getConfig threw during configOptions assembly; falling back', {
-        error: err instanceof Error ? err.message : String(err),
+      const models = await this.host.listAvailableModels();
+      if (models.length === 0) {
+        return '';
+      }
+      return models[0]!.id;
+    } catch (error) {
+      log.warn('acp: model catalog unavailable during configOptions assembly', {
+        error: error instanceof Error ? error.message : String(error),
       });
       return '';
     }
-    try {
-      const models = await listModelsFromHarness(this.harness);
-      if (models.length === 0) {
-        log.warn('acp: harness exposes no models; configOptions will ship an empty model picker');
-        return '';
-      }
-      log.warn(
-        'acp: harness has no defaultModel; falling back to first catalog entry for configOptions.currentValue',
-        { fallbackModelId: models[0]!.id },
-      );
-      return models[0]!.id;
-    } catch (err) {
-      log.warn('acp: listModelsFromHarness threw during configOptions assembly', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-    return '';
   }
 
   /**
@@ -933,7 +745,7 @@ export class AcpServer implements Agent {
    * test ergonomics symmetric.
    */
   private async resolveCurrentThinkingEffort(
-    session: Session,
+    session: IAcpSessionHost,
     resumedThinkingEffort?: unknown,
   ): Promise<string> {
     const resumed = effortStringOrUndefined(resumedThinkingEffort);
@@ -950,18 +762,11 @@ export class AcpServer implements Agent {
       }
     }
 
-    if (typeof this.harness.getConfig !== 'function') return 'off';
     try {
-      const config = await this.harness.getConfig();
-      const thinking = (config as { thinking?: { enabled?: unknown; effort?: unknown } })
-        .thinking;
-      if (thinking?.enabled === false) return 'off';
-      const configured = effortStringOrUndefined(thinking?.effort);
-      if (configured !== undefined) return configured;
-      return thinking?.enabled === true ? 'on' : 'off';
-    } catch (err) {
-      log.warn('acp: harness.getConfig threw during thinking effort resolution; defaulting to off', {
-        error: err instanceof Error ? err.message : String(err),
+      return effortStringOrUndefined(await this.host.getDefaultThinkingEffort?.()) ?? 'off';
+    } catch (error) {
+      log.warn('acp: default thinking effort unavailable; defaulting to off', {
+        error: error instanceof Error ? error.message : String(error),
       });
       return 'off';
     }
@@ -986,14 +791,8 @@ export class AcpServer implements Agent {
    * via {@link safeTrack}.
    */
   private makeTelemetryTrack(): TelemetryTrackFn | undefined {
-    const harness = this.harness;
-    if (typeof harness.track !== 'function') return undefined;
-    return (event, properties) => {
-      // Cast: the harness expects the narrower `TelemetryProperties`
-      // shape (Readonly<Record<string, primitive>>); Phase 13 callers
-      // only pass primitive values so the runtime contract holds.
-      harness.track(event, properties as Parameters<typeof harness.track>[1]);
-    };
+    if (this.host.track === undefined) return undefined;
+    return (event, properties) => this.host.track?.(event, properties);
   }
 
   private scheduleAvailableCommandsUpdate(sessionId: string): void {
@@ -1024,10 +823,10 @@ export class AcpServer implements Agent {
       await this.conn.sessionUpdate(
         availableCommandsUpdateNotification(sessionId, commands),
       );
-    } catch (err) {
+    } catch (error) {
       log.warn('acp: failed to push available_commands_update', {
         sessionId,
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   }
@@ -1041,7 +840,7 @@ export class AcpServer implements Agent {
  * in-memory pair instead of process stdio.
  */
 export async function runAcpServerWithStream(
-  harness: KimiHarness,
+  host: AcpHost | KimiHarness,
   stream: Stream,
   opts?: {
     agentInfo?: Implementation;
@@ -1050,7 +849,7 @@ export async function runAcpServerWithStream(
     slashCommands?: SlashCommandsResolver;
   },
 ): Promise<void> {
-  const conn = new AgentSideConnection((c) => new AcpServer(harness, c, opts), stream);
+  const conn = new AgentSideConnection((c) => new AcpServer(host, c, opts), stream);
   await conn.closed;
 }
 
@@ -1060,8 +859,8 @@ export async function runAcpServerWithStream(
  * The ACP SDK speaks Web `ReadableStream` / `WritableStream`, so Node stdio
  * is bridged through `Readable.toWeb` / `Writable.toWeb`.
  *
- * Phase 11.1 wires SIGINT / SIGTERM to a single-shot cleanup that calls
- * {@link KimiHarness.close} so an editor terminating the agent process
+ * SIGINT / SIGTERM are wired to a single-shot cleanup that calls
+ * {@link AcpHost.close} so an editor terminating the agent process
  * (Zed closing the panel, JetBrains stopping the run config, the user
  * pressing Ctrl-C) drains in-flight sessions before the OS reaps the
  * process. The handlers are installed via `.once(...)` and explicitly
@@ -1070,12 +869,12 @@ export async function runAcpServerWithStream(
  *
  * The `signals` option exists primarily for tests — production callers
  * use the default of `process`. A test can pass a fresh
- * `EventEmitter`, emit `'SIGINT'` on it, and assert `harness.close()`
+ * `EventEmitter`, emit `'SIGINT'` on it, and assert `host.close()`
  * was called exactly once without touching the real Node signal
  * handlers (which vitest itself relies on).
  */
 export async function runAcpServer(
-  harness: KimiHarness,
+  hostInput: AcpHost | KimiHarness,
   opts?: {
     input?: NodeJS.ReadableStream;
     output?: NodeJS.WritableStream;
@@ -1118,6 +917,7 @@ export async function runAcpServer(
   const output = (opts?.output ?? process.stdout) as Writable;
   const stream = ndJsonStream(Writable.toWeb(output), Readable.toWeb(input));
   const signals = opts?.signals ?? process;
+  const host = toAcpHost(hostInput);
 
   let cleanedUp = false;
   const cleanup = async (signal?: NodeJS.Signals): Promise<void> => {
@@ -1130,12 +930,12 @@ export async function runAcpServer(
       log.info('acp: received signal, draining harness', { signal });
     }
     try {
-      await harness.close();
-    } catch (err) {
+      await host.close?.();
+    } catch (error) {
       // The process is exiting either way; log so the diagnostic is
       // preserved rather than disappearing into a thrown promise.
       log.error('acp: harness close failed during shutdown', {
-        error: err instanceof Error ? err.message : String(err),
+        error: error instanceof Error ? error.message : String(error),
       });
     }
   };
@@ -1153,7 +953,7 @@ export async function runAcpServer(
     // Resolves when `AgentSideConnection.closed` settles — either
     // because the client disconnected stdin (natural EOF) or because
     // a signal handler closed the underlying stream.
-    await runAcpServerWithStream(harness, stream, {
+    await runAcpServerWithStream(host, stream, {
       agentInfo: opts?.agentInfo,
       terminalAuthEnv: opts?.terminalAuthEnv,
       terminalAuthLegacyCommand: opts?.terminalAuthLegacyCommand,
@@ -1190,20 +990,24 @@ export async function runAcpServer(
  *                    Invalid timestamps fall back to `null` rather
  *                    than producing `Invalid Date` strings on the wire.
  */
-function sessionSummaryToSessionInfo(summary: SessionSummary): SessionInfo {
-  let updatedAt: string | null = null;
-  if (typeof summary.updatedAt === 'number' && Number.isFinite(summary.updatedAt)) {
-    const date = new Date(summary.updatedAt);
-    if (!Number.isNaN(date.getTime())) {
-      updatedAt = date.toISOString();
-    }
-  }
-  const titleRaw = summary.title;
-  const title = typeof titleRaw === 'string' && titleRaw.length > 0 ? titleRaw : null;
+function sessionSummaryToSessionInfo(summary: AcpSessionSummary): SessionInfo {
   return {
     sessionId: summary.id,
     cwd: summary.workDir,
-    title,
-    updatedAt,
+    title: summary.title,
+    updatedAt: summary.updatedAt,
   };
+}
+
+function toAcpHost(host: AcpHost | KimiHarness): AcpHost {
+  return isAcpHost(host) ? host : new LegacyAcpHost(host);
+}
+
+function isAcpHost(host: AcpHost | KimiHarness): host is AcpHost {
+  return (
+    'checkAuthenticated' in host &&
+    typeof host.checkAuthenticated === 'function' &&
+    'listAvailableModels' in host &&
+    typeof host.listAvailableModels === 'function'
+  );
 }

@@ -1,11 +1,10 @@
 import * as path from "node:path";
 import * as vscode from "vscode";
-import type { SessionSummary } from "@moonshot-ai/kimi-code-sdk";
-
 import { Events, Methods } from "../../shared/bridge";
 import type { SessionInfo } from "../../shared/legacy-sdk";
 import type { BaselineSession } from "../managers/baseline.manager";
 import { replaySessionToWebviewEvents } from "../runtime/replay-adapter";
+import type { VscodeSessionSummary } from "../runtime/v2-host";
 import { areSameFsPath, isFsPathInsideOrEqual } from "../utils/fs-path";
 import {
   isWorkspacePathContained,
@@ -31,19 +30,19 @@ interface ForkSessionParams {
 export const sessionHandlers: Record<string, Handler<any, any>> = {
   [Methods.GetKimiSessions]: async (_, ctx): Promise<SessionInfo[]> => {
     if (!ctx.workDir) return [];
-    return (await ctx.harness.listSessions({ workDir: ctx.workDir })).map(toSessionInfo);
+    return (await ctx.host.listSessions({ workDir: ctx.workDir })).map(toSessionInfo);
   },
 
   [Methods.GetAllKimiSessions]: async (_, ctx): Promise<SessionInfo[]> => {
     if (!ctx.workspaceRoot) return [];
-    return (await ctx.harness.listSessions())
+    return (await ctx.host.listSessions())
       .filter((session) => isInsideOrEqual(ctx.workspaceRoot!, session.workDir))
       .map(toSessionInfo);
   },
 
   [Methods.GetRegisteredWorkDirs]: async (_, ctx): Promise<string[]> => {
     if (!ctx.workspaceRoot) return [];
-    const sessions = await ctx.harness.listSessions();
+    const sessions = await ctx.host.listSessions();
     return [
       ...new Set(
         sessions
@@ -135,7 +134,7 @@ export const sessionHandlers: Record<string, Handler<any, any>> = {
 
     let history: ReturnType<typeof replaySessionToWebviewEvents>;
     try {
-      const resumeState = runtime.session.getResumeState();
+      const resumeState = await runtime.session.getResumeState();
       if (resumeState?.agents["main"] === undefined) {
         throw new Error("Session history is unavailable.");
       }
@@ -177,7 +176,7 @@ export const sessionHandlers: Record<string, Handler<any, any>> = {
 
   [Methods.DeleteKimiSession]: async (params: DeleteSessionParams, ctx): Promise<{ ok: boolean }> => {
     if (!isSessionId(params.sessionId) || !ctx.workspaceRoot) return { ok: false };
-    const summary = (await ctx.harness.listSessions({ sessionId: params.sessionId }))[0];
+    const summary = (await ctx.host.listSessions({ sessionId: params.sessionId }))[0];
     if (summary === undefined || !isInsideOrEqual(ctx.workspaceRoot, summary.workDir)) {
       return { ok: false };
     }
@@ -198,7 +197,7 @@ export const sessionHandlers: Record<string, Handler<any, any>> = {
     if (!ctx.workDir || !isSessionId(params.sessionId) || !Number.isInteger(params.turnIndex) || params.turnIndex < 0) {
       return null;
     }
-    const summaries = await ctx.harness.listSessions({ sessionId: params.sessionId });
+    const summaries = await ctx.host.listSessions({ sessionId: params.sessionId });
     const sourceSummary = summaries[0];
     if (
       sourceSummary === undefined ||
@@ -207,7 +206,7 @@ export const sessionHandlers: Record<string, Handler<any, any>> = {
     ) return null;
 
     const forkSettledSession = async () => {
-      const fork = await ctx.harness.forkSession({ id: params.sessionId, turnIndex: params.turnIndex });
+      const fork = await ctx.host.forkSession({ id: params.sessionId, turnIndex: params.turnIndex });
       const targetSummary = fork.summary;
       if (targetSummary === undefined) {
         await fork.close();
@@ -230,7 +229,7 @@ export const sessionHandlers: Record<string, Handler<any, any>> = {
         ctx.logError("Unable to close a forked session", error);
       }
       if (materializeError !== undefined) {
-        await ctx.harness.deleteSession(targetSummary.id).catch((error: unknown) => {
+        await ctx.host.deleteSession(targetSummary.id).catch((error: unknown) => {
           ctx.logError(`Unable to remove failed fork "${targetSummary.id}"`, error);
         });
         await ctx.baselineManager.deleteSession(targetSummary.id).catch((error: unknown) => {
@@ -252,7 +251,7 @@ export const sessionHandlers: Record<string, Handler<any, any>> = {
   },
 };
 
-function toSessionInfo(summary: SessionSummary): SessionInfo {
+function toSessionInfo(summary: VscodeSessionSummary): SessionInfo {
   return {
     id: summary.id,
     workDir: summary.workDir,
@@ -261,7 +260,9 @@ function toSessionInfo(summary: SessionSummary): SessionInfo {
   };
 }
 
-function baselineSession(summary: Pick<SessionSummary, "id" | "workDir" | "metadata">): BaselineSession {
+function baselineSession(
+  summary: Pick<VscodeSessionSummary, "id" | "workDir" | "metadata">,
+): BaselineSession {
   return { id: summary.id, workDir: summary.workDir, metadata: summary.metadata };
 }
 

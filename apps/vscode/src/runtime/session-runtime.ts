@@ -3,8 +3,6 @@ import {
   type ContentPart as SdkContentPart,
   type Event,
   type PromptInput,
-  type Session,
-  type SessionSummary,
 } from "@moonshot-ai/kimi-code-sdk";
 
 import type { ContentPart as LegacyContentPart, ApprovalResponse } from "../../shared/legacy-sdk";
@@ -23,15 +21,16 @@ import {
   type LegacyApprovalFlags,
 } from "./legacy-approval";
 import { ReverseRpcController } from "./reverse-rpc";
+import type { VscodeSessionPort, VscodeSessionSummary } from "./v2-host";
 
 export type RuntimeBroadcast = (event: string, data: unknown, webviewId?: string) => void;
 
 export interface SessionRuntimeOptions {
-  readonly session: Session;
+  readonly session: VscodeSessionPort;
   readonly legacyApproval: LegacyApprovalFlags;
   readonly broadcast: RuntimeBroadcast;
   readonly captureBaseline: (
-    session: Pick<SessionSummary, "id" | "workDir" | "metadata">,
+    session: Pick<VscodeSessionSummary, "id" | "workDir" | "metadata">,
     filePath: string,
     webviewIds: readonly string[],
   ) => void;
@@ -68,7 +67,7 @@ interface PendingHostCompaction {
  * handler or duplicating streamed events.
  */
 export class SessionRuntime {
-  readonly session: Session;
+  readonly session: VscodeSessionPort;
 
   private readonly broadcast: RuntimeBroadcast;
   private readonly captureBaseline: SessionRuntimeOptions["captureBaseline"];
@@ -82,6 +81,8 @@ export class SessionRuntime {
   private hostActionSequence = 0;
   private activeHostActionId: number | undefined;
   private readonly cancelledHostActions = new Set<number>();
+  private readonly hostActionAgentIds = new Set<string>();
+  private readonly suppressedAgentIds = new Set<string>();
   private pendingHostCompaction: PendingHostCompaction | undefined;
   private readonly activeWorkSettledWaiters = new Set<() => void>();
   private exclusiveActionActive = false;
@@ -111,7 +112,7 @@ export class SessionRuntime {
     return this.session.id;
   }
 
-  get summary(): SessionSummary | undefined {
+  get summary(): VscodeSessionSummary | undefined {
     return this.session.summary;
   }
 
@@ -230,6 +231,7 @@ export class SessionRuntime {
     const actionId = ++this.hostActionSequence;
     this.hostActionActive = true;
     this.activeHostActionId = actionId;
+    this.hostActionAgentIds.clear();
     this.emitStreamEvent({
       type: "TurnBegin",
       payload: { user_input: input, forkable },
@@ -268,6 +270,7 @@ export class SessionRuntime {
     if (!this.hostActionActive || actionId !== this.activeHostActionId) return;
     this.hostActionActive = false;
     this.activeHostActionId = undefined;
+    this.hostActionAgentIds.clear();
     this.emitStreamEvent({
       type: "stream_complete",
       result: { status },
@@ -280,6 +283,7 @@ export class SessionRuntime {
     if (!this.hostActionActive || actionId !== this.activeHostActionId) return;
     this.hostActionActive = false;
     this.activeHostActionId = undefined;
+    this.hostActionAgentIds.clear();
     this.notifyActiveWorkSettled();
   }
 
@@ -337,6 +341,7 @@ export class SessionRuntime {
     const hostActionId = this.activeHostActionId;
     if (cancellingHostAction && hostActionId !== undefined) {
       this.cancelledHostActions.add(hostActionId);
+      for (const agentId of this.hostActionAgentIds) this.suppressedAgentIds.add(agentId);
       this.completeHostAction("cancelled", hostActionId);
     }
     // A manual compaction is not a model turn, so Session.cancel() alone does
@@ -413,6 +418,8 @@ export class SessionRuntime {
       this.notifyActiveWorkSettled();
     }
     this.cancelledHostActions.clear();
+    this.hostActionAgentIds.clear();
+    this.suppressedAgentIds.clear();
     await this.session.close();
     this.webviewIds.clear();
   }
@@ -438,6 +445,24 @@ export class SessionRuntime {
 
   private onSdkEvent(event: Event): void {
     if (this.closed) return;
+
+    if (event.type === "subagent.spawned") {
+      if (this.suppressedAgentIds.has(event.agentId)) {
+        this.suppressedAgentIds.add(event.subagentId);
+        return;
+      }
+      if (this.hostActionActive) this.hostActionAgentIds.add(event.subagentId);
+    }
+    if (
+      event.type === "subagent.completed" ||
+      event.type === "subagent.failed" ||
+      event.type === "subagent.suspended"
+    ) {
+      if (this.suppressedAgentIds.delete(event.subagentId)) return;
+    }
+    if (this.suppressedAgentIds.has(event.agentId)) {
+      return;
+    }
 
     if (event.type === "compaction.completed" || event.type === "compaction.cancelled") {
       const pending = this.pendingHostCompaction;

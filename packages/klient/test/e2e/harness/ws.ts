@@ -15,6 +15,7 @@
  */
 import { WebSocket as WsWebSocket } from 'ws';
 
+import { serverWsProtocols } from './auth.js';
 import { recordReportEvent } from './report.js';
 
 /** Wire frame shape — kept loose because the server adds new event types. */
@@ -34,6 +35,7 @@ export interface WsClientOptions {
   wsImpl: typeof WsWebSocket;
   logger: (level: 'info' | 'warn' | 'error' | 'debug', msg: string, meta?: unknown) => void;
   reportDir?: string;
+  token?: string;
 }
 
 type FrameWaiter = (frame: AnyFrame) => boolean;
@@ -71,7 +73,10 @@ export class WsClient {
   async open(): Promise<void> {
     if (this.ws) return;
     await new Promise<void>((resolve, reject) => {
-      const ws = new this.opts.wsImpl(this.opts.url);
+      const ws = new this.opts.wsImpl(
+        this.opts.url,
+        serverWsProtocols(this.opts.url, this.opts.token),
+      );
       this.ws = ws;
       ws.once('open', () => {
         recordReportEvent(

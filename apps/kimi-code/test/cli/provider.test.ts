@@ -1,5 +1,5 @@
 /**
- * `kimi provider` CLI unit tests. The handlers receive an injected `getHarness`
+ * `kimi provider` CLI unit tests. The handlers receive an injected config host
  * + capturing stdout/stderr, so we test the wiring end-to-end without booting
  * a real harness or hitting the network.
  */
@@ -19,6 +19,17 @@ import {
   type ProviderDeps,
 } from '#/cli/sub/provider';
 
+const runtimeMocks = vi.hoisted(() => ({
+  createCliV2Runtime: vi.fn(),
+  getConfigAll: vi.fn(),
+  replaceConfig: vi.fn(async () => {}),
+  close: vi.fn(async () => {}),
+}));
+
+vi.mock('../../src/cli/v2/create-v2-runtime', () => ({
+  createCliV2Runtime: runtimeMocks.createCliV2Runtime,
+}));
+
 class ExitCalled extends Error {
   constructor(public readonly code: number) {
     super(`exit(${code})`);
@@ -32,9 +43,20 @@ interface FakeHarness {
   removeProvider: (providerId: string) => Promise<KimiConfig>;
 }
 
+/** A KimiConfig whose `providers`/`models` are always present — tests assert on them.
+ *  The conditional mapped type strips KimiConfig's open `[key: string]` index
+ *  signature so every declared field (defaultModel, thinking, …) stays a real,
+ *  non-index property that is legal under `noPropertyAccessFromIndexSignature`. */
+type TestConfig = {
+  [K in keyof KimiConfig as string extends K ? never : K]: KimiConfig[K];
+} & {
+  providers: Record<string, NonNullable<KimiConfig['providers']>[string]>;
+  models: Record<string, NonNullable<KimiConfig['models']>[string]>;
+};
+
 function makeHarness(initial: KimiConfig): {
   harness: FakeHarness;
-  current: () => KimiConfig;
+  current: () => TestConfig;
   setConfigCalls: Array<Partial<KimiConfig>>;
   removeCalls: string[];
 } {
@@ -45,7 +67,7 @@ function makeHarness(initial: KimiConfig): {
   // object disappears unless it is flushed via `setConfig` BEFORE the next
   // `removeProvider`.
   let persisted: KimiConfig = structuredClone(initial);
-  const setConfigCalls: Array<Partial<KimiConfig>> = [];
+  const setConfigCalls: Array<Partial<TestConfig>> = [];
   const removeCalls: string[] = [];
   const harness: FakeHarness = {
     ensureConfigFile: async () => {},
@@ -84,7 +106,11 @@ function makeHarness(initial: KimiConfig): {
   };
   return {
     harness,
-    current: () => persisted,
+    current: () => ({
+      ...persisted,
+      providers: persisted.providers ?? {},
+      models: persisted.models ?? {},
+    }) as TestConfig,
     setConfigCalls,
     removeCalls,
   };
@@ -103,9 +129,12 @@ function makeDeps(
   const stderr: string[] = [];
   const exitCodes: number[] = [];
   const deps: ProviderDeps = {
-    getHarness: () => harness as unknown as ProviderDeps extends { getHarness: () => infer R }
-      ? R
-      : never,
+    getConfigHost: () =>
+      harness as unknown as ProviderDeps extends {
+        getConfigHost: () => infer R;
+      }
+        ? R
+        : never,
     stdout: {
       write: (chunk: string) => {
         stdout.push(chunk);
@@ -608,6 +637,66 @@ describe('kimi provider list', () => {
 });
 
 describe('registerProviderCommand', () => {
+  beforeEach(() => {
+    runtimeMocks.createCliV2Runtime.mockResolvedValue({
+      runtime: {
+        klient: {
+          global: {
+            config: {
+              getAll: runtimeMocks.getConfigAll,
+              replace: runtimeMocks.replaceConfig,
+            },
+          },
+        },
+        close: runtimeMocks.close,
+      },
+      homeDir: '/tmp/kimi-provider-home',
+      firstLaunch: false,
+    });
+    runtimeMocks.getConfigAll.mockResolvedValue({
+      providers: {},
+      models: {},
+    });
+  });
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it('uses and closes the v2 runtime for default provider commands', async () => {
+    runtimeMocks.getConfigAll.mockResolvedValue({
+      providers: { local: { type: 'openai', apiKey: 'YOUR_API_KEY' } },
+      models: {
+        'local/model': {
+          provider: 'local',
+          model: 'model',
+          maxContextSize: 8192,
+        },
+      },
+    });
+    let output = '';
+    const stdout = vi.spyOn(process.stdout, 'write').mockImplementation((chunk) => {
+      output += String(chunk);
+      return true;
+    });
+    const program = new Command('kimi');
+    registerProviderCommand(program);
+
+    try {
+      await program.parseAsync(['node', 'kimi', 'provider', 'list', '--json'], {
+        from: 'node',
+      });
+    } finally {
+      stdout.mockRestore();
+    }
+
+    expect(runtimeMocks.createCliV2Runtime).toHaveBeenCalledOnce();
+    expect(JSON.parse(output)).toMatchObject({
+      providers: { local: { type: 'openai' } },
+    });
+    expect(runtimeMocks.close).toHaveBeenCalledOnce();
+  });
+
   it('describes the user-facing subcommand and routes flags through commander', async () => {
     const fetchMock = mockRegistryFetch();
     const { harness, current } = makeHarness({ providers: {} } as KimiConfig);
@@ -1069,7 +1158,7 @@ describe('kimi provider catalog add', () => {
 
     expect(exitCodes).toEqual([1]);
     expect(stderr.join('')).toContain('--base-url cannot be empty');
-    await expect(harness.getConfig().then((c) => c.providers['openai'])).resolves.toBeUndefined();
+    await expect(harness.getConfig().then((c) => c.providers?.['openai'])).resolves.toBeUndefined();
   });
 
   it('requires --base-url for a non-official Anthropic-compatible vendor without one', async () => {
@@ -1164,7 +1253,7 @@ describe('kimi provider catalog add', () => {
 
     expect(exitCodes).toEqual([1]);
     expect(stderr.join('')).toContain('--base-url');
-    await expect(harness.getConfig().then((c) => c.providers['xai'])).resolves.toBeUndefined();
+    await expect(harness.getConfig().then((c) => c.providers?.['xai'])).resolves.toBeUndefined();
   });
 
   it('imports a guessed vendor with --base-url, carrying off_effort and a guess note', async () => {

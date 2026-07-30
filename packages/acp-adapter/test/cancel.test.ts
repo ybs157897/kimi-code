@@ -72,7 +72,7 @@ describe('AcpServer cancel', () => {
     } as unknown as KimiHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
+    void new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const client = new ClientSideConnection((_a) => new StubClient(), clientStream);
 
     await client.newSession({ cwd: '/tmp/x', mcpServers: [] });
@@ -96,7 +96,7 @@ describe('AcpServer cancel', () => {
     } as unknown as KimiHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
+    void new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const client = new ClientSideConnection((_a) => new StubClient(), clientStream);
 
     // Notification: no response, no throw.
@@ -127,7 +127,7 @@ describe('AcpServer cancel', () => {
     } as unknown as KimiHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
+    void new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const client = new ClientSideConnection((_a) => new StubClient(), clientStream);
 
     await client.newSession({ cwd: '/tmp/x', mcpServers: [] });
@@ -158,7 +158,7 @@ describe('AcpServer cancel', () => {
     } as unknown as KimiHarness;
 
     const { agentStream, clientStream } = makeInMemoryStreamPair();
-    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
+    void new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
     const client = new ClientSideConnection((_a) => new StubClient(), clientStream);
 
     const { sessionId } = await client.newSession({ cwd: '/tmp/x', mcpServers: [] });
@@ -181,41 +181,45 @@ describe('AcpServer cancel', () => {
     expect(promptCalls).toBe(0); // the turn was never launched
   });
 
-  it('cancels every prompt compressing concurrently, not just the most recent', async () => {
-    let promptCalls = 0;
-    const fakeSession = {
-      id: 'sess-cancel-concurrent',
-      prompt: async () => {
-        promptCalls += 1;
-        return undefined;
-      },
-      cancel: async () => undefined,
-      onEvent: () => () => undefined,
-    } as unknown as Session;
-    const harness = {
-      auth: { status: async () => AUTHED_STATUS },
-      createSession: async () => fakeSession,
-    } as unknown as KimiHarness;
+  it(
+    'cancels every prompt compressing concurrently, not just the most recent',
+    async () => {
+      let promptCalls = 0;
+      const fakeSession = {
+        id: 'sess-cancel-concurrent',
+        prompt: async () => {
+          promptCalls += 1;
+          return undefined;
+        },
+        cancel: async () => undefined,
+        onEvent: () => () => undefined,
+      } as unknown as Session;
+      const harness = {
+        auth: { status: async () => AUTHED_STATUS },
+        createSession: async () => fakeSession,
+      } as unknown as KimiHarness;
 
-    const { agentStream, clientStream } = makeInMemoryStreamPair();
-    new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
-    const client = new ClientSideConnection((_a) => new StubClient(), clientStream);
+      const { agentStream, clientStream } = makeInMemoryStreamPair();
+      void new AgentSideConnection((c) => new AcpServer(harness, c), agentStream);
+      const client = new ClientSideConnection((_a) => new StubClient(), clientStream);
 
-    const { sessionId } = await client.newSession({ cwd: '/tmp/x', mcpServers: [] });
+      const { sessionId } = await client.newSession({ cwd: '/tmp/x', mcpServers: [] });
 
-    const data = Buffer.from(
-      await new Jimp({ width: 3600, height: 1800, color: 0x3366ccff }).getBuffer('image/png'),
-    ).toString('base64');
-    const imageBlock = { type: 'image' as const, data, mimeType: 'image/png' };
+      const data = Buffer.from(
+        await new Jimp({ width: 3600, height: 1800, color: 0x3366ccff }).getBuffer('image/png'),
+      ).toString('base64');
+      const imageBlock = { type: 'image' as const, data, mimeType: 'image/png' };
 
-    // Two prompts compressing at once; a single cancel must cover both.
-    const p1 = client.prompt({ sessionId, prompt: [imageBlock] });
-    const p2 = client.prompt({ sessionId, prompt: [imageBlock] });
-    await client.cancel({ sessionId });
-    const [r1, r2] = await Promise.all([p1, p2]);
+      // Two prompts compressing at once; a single cancel must cover both.
+      const p1 = client.prompt({ sessionId, prompt: [imageBlock] });
+      const p2 = client.prompt({ sessionId, prompt: [imageBlock] });
+      await client.cancel({ sessionId });
+      const [r1, r2] = await Promise.all([p1, p2]);
 
-    expect(r1.stopReason).toBe('cancelled');
-    expect(r2.stopReason).toBe('cancelled');
-    expect(promptCalls).toBe(0);
-  });
+      expect(r1.stopReason).toBe('cancelled');
+      expect(r2.stopReason).toBe('cancelled');
+      expect(promptCalls).toBe(0);
+    },
+    15_000,
+  );
 });

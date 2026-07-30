@@ -111,8 +111,6 @@ describe('handleSwarmCommand', () => {
 
     await handleSwarmCommand(host, 'Ship feature X');
 
-    expect(host.session).toBeUndefined();
-    expect(host.requireSession).not.toHaveBeenCalled();
     expect(ports.agent.setPermission).not.toHaveBeenCalled();
     expect(ports.swarm.enter).toHaveBeenCalledWith('task');
     expect(host.state.swarmModeEntry).toBe('task');
@@ -261,8 +259,6 @@ describe('handleSwarmCommand', () => {
     await vi.waitFor(() => {
       expect(host.sendNormalUserInput).toHaveBeenCalledWith('Ship feature X');
     });
-    expect(host.session).toBeUndefined();
-    expect(host.requireSession).not.toHaveBeenCalled();
     expect(ports.agent.setPermission).toHaveBeenCalledWith('auto');
     expect(ports.swarm.enter).toHaveBeenCalledWith('task');
     expect(ports.swarm.enter).toHaveBeenCalledTimes(1);
@@ -391,8 +387,6 @@ describe('handleBtwCommand', () => {
 
     await handleBtwCommand(host, '  inspect this  ');
 
-    expect(host.session).toBeUndefined();
-    expect(host.requireSession).not.toHaveBeenCalled();
     expect(ports.btw.start).toHaveBeenCalledOnce();
     expect(host.btwPanelController.closeOrCancel).toHaveBeenCalledOnce();
     expect(host.btwPanelController.open).toHaveBeenCalledWith(

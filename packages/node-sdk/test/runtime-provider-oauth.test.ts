@@ -45,24 +45,27 @@ async function resolveRuntimeProviderWithOAuth(options: {
   if (modelAlias === undefined) {
     throw new KimiError(ErrorCodes.CONFIG_INVALID, `Model "${model}" not found.`);
   }
-  const providerName = modelAlias['provider'] as string;
+  const providerName = modelAlias.provider;
   const providers = options.config.providers!;
   const providerConfig = providers[providerName];
   if (providerConfig === undefined) {
     throw new KimiError(ErrorCodes.CONFIG_INVALID, `Provider "${providerName}" not found.`);
   }
-  const provider = {
+  const provider: Record<string, unknown> = {
     ...providerConfig,
-    model: modelAlias['model'] as string,
+    model: modelAlias.model,
   };
 
-  const oauthVal = providerConfig['oauth'];
-  const apiKeyVal = providerConfig['apiKey'] as string | undefined;
+  const oauthVal = providerConfig.oauth;
+  const apiKeyVal = providerConfig.apiKey;
   if (oauthVal !== undefined && (apiKeyVal ?? '').length > 0) {
     throw new KimiError(
       ErrorCodes.CONFIG_INVALID,
       `Provider "${providerName}" has both apiKey and oauth set in config.toml — they are mutually exclusive. Remove one.`,
     );
+  }
+  if (oauthVal !== undefined) {
+    delete provider['apiKey'];
   }
 
   const oauthRef = oauthVal as Record<string, unknown> | undefined;
@@ -146,7 +149,7 @@ describe('resolveRuntimeProviderWithOAuth', () => {
       model: 'kimi-for-coding',
       baseUrl: 'https://api.kimi.com/coding/v1',
     });
-    expect((resolved.provider as Record<string, unknown>)['apiKey']).toBeUndefined();
+    expect(resolved.provider['apiKey']).toBeUndefined();
     await expect(resolved.resolveAuth?.()).resolves.toEqual({ apiKey: 'rotated-oauth-token' });
     await expect(resolved.resolveAuth?.({ forceRefresh: true })).resolves.toEqual({
       apiKey: 'force-refreshed-oauth-token',

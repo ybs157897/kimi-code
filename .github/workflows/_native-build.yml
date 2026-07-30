@@ -3,6 +3,11 @@ name: _native-build
 on:
   workflow_call:
     inputs:
+      ref:
+        description: 'Repository revision to build'
+        required: false
+        type: string
+        default: ''
       upload-artifact-prefix:
         description: 'Prefix for uploaded artifact name'
         required: false
@@ -57,6 +62,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.ref || github.sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6

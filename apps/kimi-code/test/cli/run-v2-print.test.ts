@@ -19,6 +19,7 @@ import {
 } from '#/cli/v2/run-v2-print';
 
 const hostMocks = vi.hoisted(() => ({
+  countKimiV2ActiveTasks: vi.fn(async () => 0),
   createKimiV2Runtime: vi.fn(),
   createKimiDefaultHeaders: vi.fn(() => ({ 'User-Agent': 'kimi-test' })),
   createKimiDeviceId: vi.fn(
@@ -28,10 +29,20 @@ const hostMocks = vi.hoisted(() => ({
     },
   ),
   getCachedAccessToken: vi.fn(async () => 'access-test'),
+  drainKimiV2BackgroundTasks: vi.fn(async () => {}),
+  resolveKimiV2PrintBackgroundSettings: vi.fn(async () => ({
+    mode: 'steer' as const,
+    ceilingS: 315_360_000,
+    maxTurns: 100_000,
+  })),
 }));
 
 vi.mock('@moonshot-ai/kimi-code-sdk/v2', () => ({
+  countKimiV2ActiveTasks: hostMocks.countKimiV2ActiveTasks,
   createKimiV2Runtime: hostMocks.createKimiV2Runtime,
+  drainKimiV2BackgroundTasks: hostMocks.drainKimiV2BackgroundTasks,
+  resolveKimiV2PrintBackgroundSettings:
+    hostMocks.resolveKimiV2PrintBackgroundSettings,
 }));
 
 vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
@@ -539,8 +550,53 @@ describe('runV2Print (Runtime + Klient host contract)', () => {
       input: [{ type: 'text', text: 'hello' }],
     });
     expect(stdout.text()).toContain('hello from klient');
-    expect(stderr.text()).toContain('kimi version 1.2.3-test');
+    expect(stderr.text()).not.toContain('kimi version');
     expect(rig.runtime.close).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores the prior permission after running against a resumed session', async () => {
+    const rig = createPrintHostRig([
+      { type: 'turn.ended', turnId: 1, reason: 'completed' },
+    ]);
+    rig.runtime.klient.global.sessions.get.mockResolvedValue({
+      id: 'ses_existing',
+      cwd: process.cwd(),
+    });
+
+    await runV2Print(printOptions({ session: 'ses_existing' }), '1.2.3-test', {
+      stdout: testWriter(),
+      stderr: testWriter(),
+    });
+
+    expect(rig.session.restore).toHaveBeenCalledOnce();
+    expect(rig.agent.setPermission.mock.calls).toEqual([['auto'], ['manual']]);
+    expect(rig.runtime.close).toHaveBeenCalledOnce();
+  });
+
+  it('paginates continue lookup and normalizes equivalent working directories', async () => {
+    const rig = createPrintHostRig([
+      { type: 'turn.ended', turnId: 1, reason: 'completed' },
+    ]);
+    rig.runtime.klient.global.sessions.list
+      .mockResolvedValueOnce({
+        items: [{ id: 'ses_other', cwd: '/tmp/other' }],
+        nextCursor: 'page-2',
+      })
+      .mockResolvedValueOnce({
+        items: [{ id: 'ses_previous', cwd: `${process.cwd()}/.` }],
+      });
+
+    await runV2Print(printOptions({ continue: true }), '1.2.3-test', {
+      stdout: testWriter(),
+      stderr: testWriter(),
+    });
+
+    expect(rig.runtime.klient.global.sessions.list.mock.calls).toEqual([
+      [{ cursor: undefined, limit: 100 }],
+      [{ cursor: 'page-2', limit: 100 }],
+    ]);
+    expect(rig.session.restore).toHaveBeenCalledOnce();
+    expect(rig.runtime.klient.global.sessions.create).not.toHaveBeenCalled();
   });
 
   it('owns Cloud Telemetry context and shutdown through the Runtime facade', async () => {
@@ -712,7 +768,6 @@ describe('runV2Print (Runtime + Klient host contract)', () => {
     });
 
     expect(stdout.jsonLines()).toEqual([
-      { role: 'meta', type: 'system.version', version: '1.2.3-test' },
       {
         role: 'meta',
         type: 'turn.step.retrying',
@@ -789,6 +844,7 @@ function createPrintHostRig(
     thinkingLevel: 'off',
     systemPrompt: '',
   };
+  let permission: 'manual' | 'auto' | 'yolo' = 'manual';
   let goal: ReturnType<typeof goalSnapshot> | null = null;
   const agent = {
     events: {
@@ -814,7 +870,10 @@ function createPrintHostRig(
       profileState.profileName ??= 'agent';
       return { model };
     }),
-    setPermission: vi.fn(async () => {}),
+    getPermission: vi.fn(async () => permission),
+    setPermission: vi.fn(async (mode: 'manual' | 'auto' | 'yolo') => {
+      permission = mode;
+    }),
     getTasks: vi.fn(async () => []),
     prompt: vi.fn(async () => {
       for (const event of promptEvents) emit(event);
@@ -865,7 +924,12 @@ function createPrintHostRig(
         sessions: {
           create: vi.fn(async () => ({ id: 'ses_klient' })),
           get: vi.fn(),
-          list: vi.fn(),
+          list: vi.fn(
+            async (): Promise<{
+              items: Array<{ id: string; cwd?: string }>;
+              nextCursor?: string;
+            }> => ({ items: [] }),
+          ),
         },
         auth: { ensureReady: vi.fn(async () => {}) },
       },

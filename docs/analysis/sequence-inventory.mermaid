@@ -1,0 +1,70 @@
+sequenceDiagram
+    participant Client as 客户端
+    participant OrderSvc as 订单服务
+    participant InvSvc as 库存服务
+    participant DB as PostgreSQL(skus)
+    participant InvLog as inventory_changes 表
+
+    %% === 场景 1：下单锁库存 ===
+    rect rgb(230, 245, 255)
+        Note over Client,InvLog: 场景 1：下单时锁定库存
+        Client->>OrderSvc: 提交订单
+        OrderSvc->>InvSvc: lock_stock(order_no, [{sku_id, qty}])
+
+        Note over InvSvc,DB: 使用 SELECT FOR UPDATE 锁定行
+        InvSvc->>DB: BEGIN
+        InvSvc->>DB: SELECT available_stock, locked_stock, version<br/>FROM skus WHERE id=? FOR UPDATE
+        DB-->>InvSvc: {stock: 100, locked: 10, version: 5}
+
+        alt 库存充足 (available - qty >= 0)
+            Note over InvSvc,DB: 乐观锁更新
+            InvSvc->>DB: UPDATE skus<br/>SET available_stock = available_stock - qty,<br/>locked_stock = locked_stock + qty,<br/>version = version + 1<br/>WHERE id = ? AND version = 5
+            DB-->>InvSvc: updated rows = 1
+            InvSvc->>InvLog: INSERT INTO inventory_changes<br/>(sku_id, type=ORDER_LOCK, qty, order_no)
+            InvSvc->>DB: COMMIT
+            InvSvc-->>OrderSvc: 锁定成功
+            OrderSvc-->>Client: 订单创建成功
+        else 库存不足
+            InvSvc->>DB: ROLLBACK
+            InvSvc-->>OrderSvc: 锁定失败（库存不足）
+            OrderSvc-->>Client: 下单失败，库存不足
+        end
+    end
+
+    %% === 场景 2：支付成功扣减 ===
+    rect rgb(230, 255, 240)
+        Note over Client,InvLog: 场景 2：支付成功 — 实际扣减
+        Alipay->>OrderSvc: 支付成功回调
+        OrderSvc->>InvSvc: deduct_stock(order_no, [{sku_id, qty}])
+
+        Note over InvSvc,DB: 将 locked_stock 转为 sold_stock
+        InvSvc->>DB: BEGIN
+        InvSvc->>DB: UPDATE skus<br/>SET locked_stock = locked_stock - qty,<br/>sold_stock = sold_stock + qty<br/>WHERE id = ?
+        DB-->>InvSvc: 成功
+        InvSvc->>InvLog: INSERT INTO inventory_changes<br/>(sku_id, type=PAYMENT_DEDUCT, qty, order_no)
+        InvSvc->>DB: COMMIT
+        InvSvc-->>OrderSvc: 扣减成功
+        OrderSvc-->>Client(异步): 订单已支付
+    end
+
+    %% === 场景 3：取消订单 — 回滚库存 ===
+    rect rgb(255, 240, 230)
+        Note over Client,InvLog: 场景 3：取消订单 — 回滚库存
+        Client->>OrderSvc: 取消订单(order_id)
+        OrderSvc->>OrderSvc: 校验订单状态（待支付可取消）
+        alt 已支付取消走退款流程
+            OrderSvc->>PaySvc: 发起退款
+            PaySvc-->>OrderSvc: 退款成功
+        end
+        OrderSvc->>InvSvc: unlock_stock(order_no)
+
+        Note over InvSvc,DB: 将 locked_stock 归还到 available_stock
+        InvSvc->>DB: BEGIN
+        InvSvc->>DB: UPDATE skus sk<br/>SET available_stock = available_stock + il.qty,<br/>locked_stock = locked_stock - il.qty<br/>FROM inventory_changes il<br/>WHERE sk.id = il.sku_id<br/>AND il.order_no = ? AND il.type = 'ORDER_LOCK'
+        DB-->>InvSvc: 成功
+        InvSvc->>InvLog: INSERT INTO inventory_changes<br/>(sku_id, type=CANCEL_UNLOCK, qty, order_no)
+        InvSvc->>DB: COMMIT
+        InvSvc-->>OrderSvc: 回滚成功
+        OrderSvc->>OrderSvc: 订单状态 → CANCELLED + OrderLog
+        OrderSvc-->>Client: 订单已取消
+    end

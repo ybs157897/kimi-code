@@ -45,6 +45,16 @@ const mocks = vi.hoisted(() => ({
   withTelemetryContext: vi.fn(),
   resolveKimiHome: vi.fn((homeDir?: string) => homeDir ?? '/tmp/kimi-export-home'),
   harnessCreatesDeviceIdOnConstruction: false,
+  createCliV2Runtime: vi.fn(),
+  v2SessionsList: vi.fn(
+    async (): Promise<{
+      items: Array<{ id: string; cwd?: string; title?: string }>;
+      nextCursor?: string;
+    }> => ({ items: [] }),
+  ),
+  v2SessionExport: vi.fn(),
+  v2TelemetryTrack: vi.fn(),
+  v2RuntimeClose: vi.fn(async () => {}),
 }));
 
 vi.mock('@moonshot-ai/kimi-code-sdk', async (importOriginal) => {
@@ -92,8 +102,26 @@ vi.mock('@moonshot-ai/kimi-telemetry', () => ({
   withTelemetryContext: mocks.withTelemetryContext,
 }));
 
+vi.mock('../../src/cli/v2/create-v2-runtime', () => ({
+  createCliV2Runtime: mocks.createCliV2Runtime,
+}));
+
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), 'kimi-export-'));
+  mocks.createCliV2Runtime.mockResolvedValue({
+    runtime: {
+      klient: {
+        global: {
+          sessions: { list: mocks.v2SessionsList },
+          sessionExport: { export: mocks.v2SessionExport },
+        },
+      },
+      telemetry: { track: mocks.v2TelemetryTrack },
+      close: mocks.v2RuntimeClose,
+    },
+    homeDir: '/tmp/kimi-export-home',
+    firstLaunch: false,
+  });
 });
 
 afterEach(() => {
@@ -109,6 +137,7 @@ afterEach(() => {
     (homeDir?: string) => homeDir ?? '/tmp/kimi-export-home',
   );
   mocks.harnessCreatesDeviceIdOnConstruction = false;
+  mocks.v2SessionsList.mockResolvedValue({ items: [] });
 });
 
 function makeSummary(id: string, overrides: Partial<SessionSummary> = {}): SessionSummary {
@@ -295,7 +324,6 @@ describe('kimi export', () => {
       {
         workDir: tmp,
         sessionId: 'ses_confirm',
-        sessionDir: join(tmp, 'sessions', 'ses_confirm'),
         title: 'Prod debug',
       },
     ]);
@@ -366,10 +394,10 @@ describe('kimi export', () => {
     ]);
   });
 
-  it('initializes and flushes telemetry around default export tracking', async () => {
+  it('uses one v2 runtime for the default export and closes it', async () => {
     const program = new Command('kimi');
-    const output = join(tmp, 'telemetry.zip');
-    mocks.harnessExportSession.mockResolvedValue(makeResult('ses_telemetry', output));
+    const output = join(tmp, 'v2.zip');
+    mocks.v2SessionExport.mockResolvedValue(makeResult('ses_v2', output));
 
     registerExportCommand(program, {
       cwd: () => tmp,
@@ -385,62 +413,69 @@ describe('kimi export', () => {
       getShellEnv: () => ({ term: 'xterm-256color', shell: '/bin/zsh' }),
     });
 
-    await program.parseAsync(['node', 'kimi', 'export', 'ses_telemetry', '--output', output], {
+    await program.parseAsync(['node', 'kimi', 'export', 'ses_v2', '--output', output], {
       from: 'node',
     });
 
-    expect(mocks.kimiHarnessConstructor).toHaveBeenCalledWith(
-      expect.objectContaining({
-        telemetry: {
-          track: mocks.telemetryTrack,
-          setContext: mocks.setTelemetryContext,
-          withContext: mocks.withTelemetryContext,
-        },
-      }),
+    expect(mocks.createCliV2Runtime).toHaveBeenCalledWith(
+      expect.objectContaining({ prompt: undefined, skillsDirs: [] }),
+      expect.any(String),
+      'shell',
+      'default',
     );
-    expect(mocks.harnessEnsureConfigFile).toHaveBeenCalledOnce();
-    expect(mocks.harnessGetConfig).toHaveBeenCalledOnce();
-    expect(mocks.createKimiDeviceId).toHaveBeenCalledWith(
-      '/tmp/kimi-export-home',
-      expect.objectContaining({ onFirstLaunch: expect.any(Function) }),
-    );
-    expect(mocks.initializeTelemetry).toHaveBeenCalledWith({
-      homeDir: '/tmp/kimi-export-home',
-      deviceId: 'device-1',
-      enabled: true,
-      appName: 'kimi-code-cli',
-      version: expect.any(String),
-      uiMode: 'shell',
-      model: 'k2',
-      sessionId: undefined,
-      getAccessToken: expect.any(Function),
-    });
-    expect(mocks.initializeTelemetry.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.harnessExportSession.mock.invocationCallOrder[0]!,
-    );
-    expect(mocks.harnessExportSession).toHaveBeenCalledWith({
-      id: 'ses_telemetry',
+    expect(mocks.v2SessionExport).toHaveBeenCalledWith({
+      sessionId: 'ses_v2',
       outputPath: output,
       version: expect.any(String),
       includeGlobalLog: true,
       installSource: expect.any(String),
       shellEnv: expect.objectContaining({ shell: expect.any(String) }),
     });
-    expect(mocks.shutdownTelemetry).toHaveBeenCalledWith({ timeoutMs: 3000 });
-    expect(mocks.harnessExportSession.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.shutdownTelemetry.mock.invocationCallOrder[0]!,
-    );
+    expect(mocks.v2RuntimeClose).toHaveBeenCalledOnce();
+    expect(mocks.kimiHarnessConstructor).not.toHaveBeenCalled();
   });
 
-  it('passes enabled false when default export config disables telemetry', async () => {
+  it('paginates the v2 session index when resolving the previous session', async () => {
     const program = new Command('kimi');
-    const output = join(tmp, 'telemetry-disabled.zip');
-    mocks.harnessGetConfig.mockResolvedValue({
-      providers: {},
-      defaultModel: 'k2',
-      telemetry: false,
+    const output = join(tmp, 'previous.zip');
+    const stdout: string[] = [];
+    mocks.v2SessionsList
+      .mockResolvedValueOnce({
+        items: [{ id: 'ses_other', cwd: '/tmp/other' }],
+        nextCursor: 'page-2',
+      })
+      .mockResolvedValueOnce({
+        items: [{ id: 'ses_previous', cwd: `${tmp}/.`, title: 'Previous' }],
+      });
+    mocks.v2SessionExport.mockResolvedValue(makeResult('ses_previous', output));
+
+    registerExportCommand(program, {
+      cwd: () => tmp,
+      stdout: { write: (chunk) => stdout.push(chunk) > 0 },
+      stderr: { write: () => true },
+      exit: ((code: number) => {
+        throw new ExitCalled(code);
+      }) as ExportDeps['exit'],
     });
-    mocks.harnessExportSession.mockResolvedValue(makeResult('ses_disabled', output));
+
+    await program.parseAsync(['node', 'kimi', 'export', '--yes', '--output', output], {
+      from: 'node',
+    });
+
+    expect(mocks.v2SessionsList.mock.calls).toEqual([
+      [{ cursor: undefined, limit: 100 }],
+      [{ cursor: 'page-2', limit: 100 }],
+    ]);
+    expect(mocks.v2SessionExport).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'ses_previous', outputPath: output }),
+    );
+    expect(stdout.join('')).toContain(output);
+    expect(mocks.v2RuntimeClose).toHaveBeenCalledOnce();
+  });
+
+  it('closes the v2 runtime when export fails', async () => {
+    const program = new Command('kimi');
+    mocks.v2SessionExport.mockRejectedValue(new Error('export failed'));
 
     registerExportCommand(program, {
       cwd: () => tmp,
@@ -455,32 +490,33 @@ describe('kimi export', () => {
       }) as ExportDeps['exit'],
     });
 
-    await program.parseAsync(['node', 'kimi', 'export', 'ses_disabled', '--output', output], {
-      from: 'node',
-    });
-
-    expect(mocks.initializeTelemetry).toHaveBeenCalledWith(
-      expect.objectContaining({
-        enabled: false,
+    await expect(
+      program.parseAsync(['node', 'kimi', 'export', 'ses_failed'], {
+        from: 'node',
       }),
-    );
-    expect(mocks.shutdownTelemetry).toHaveBeenCalledWith({ timeoutMs: 3000 });
+    ).rejects.toThrow(ExitCalled);
+
+    expect(mocks.v2RuntimeClose).toHaveBeenCalledOnce();
   });
 
-  it('tracks first launch around default export telemetry before harness construction can create the device id', async () => {
+  it('tracks first launch through the v2 runtime before exporting', async () => {
     const program = new Command('kimi');
-    const output = join(tmp, 'telemetry-first-launch.zip');
-    mocks.harnessCreatesDeviceIdOnConstruction = true;
-    const createdHomes = new Set<string>();
-    mocks.createKimiDeviceId.mockImplementation((homeDir, options) => {
-      const deviceId = `device-for-${homeDir}`;
-      if (!createdHomes.has(homeDir)) {
-        createdHomes.add(homeDir);
-        options?.onFirstLaunch?.(deviceId);
-      }
-      return deviceId;
+    const output = join(tmp, 'first-launch.zip');
+    mocks.createCliV2Runtime.mockResolvedValueOnce({
+      runtime: {
+        klient: {
+          global: {
+            sessions: { list: mocks.v2SessionsList },
+            sessionExport: { export: mocks.v2SessionExport },
+          },
+        },
+        telemetry: { track: mocks.v2TelemetryTrack },
+        close: mocks.v2RuntimeClose,
+      },
+      homeDir: '/tmp/kimi-export-home',
+      firstLaunch: true,
     });
-    mocks.harnessExportSession.mockResolvedValue(makeResult('ses_first_launch', output));
+    mocks.v2SessionExport.mockResolvedValue(makeResult('ses_first_launch', output));
 
     registerExportCommand(program, {
       cwd: () => tmp,
@@ -499,20 +535,9 @@ describe('kimi export', () => {
       from: 'node',
     });
 
-    expect(mocks.createKimiDeviceId).toHaveBeenNthCalledWith(
-      1,
-      '/tmp/kimi-export-home',
-      expect.objectContaining({ onFirstLaunch: expect.any(Function) }),
-    );
-    expect(mocks.createKimiDeviceId.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.kimiHarnessConstructor.mock.invocationCallOrder[0]!,
-    );
-    expect(mocks.kimiHarnessConstructor).toHaveBeenCalledWith(
-      expect.objectContaining({ homeDir: '/tmp/kimi-export-home' }),
-    );
-    expect(mocks.harnessTrack).toHaveBeenCalledWith('first_launch');
-    expect(mocks.initializeTelemetry.mock.invocationCallOrder[0]).toBeLessThan(
-      mocks.harnessTrack.mock.invocationCallOrder[0]!,
+    expect(mocks.v2TelemetryTrack).toHaveBeenCalledWith('first_launch');
+    expect(mocks.v2TelemetryTrack.mock.invocationCallOrder[0]).toBeLessThan(
+      mocks.v2SessionExport.mock.invocationCallOrder[0]!,
     );
   });
 });

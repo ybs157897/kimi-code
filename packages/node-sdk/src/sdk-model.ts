@@ -1,10 +1,10 @@
-/**
- * SDK-local model alias helper — `effectiveModelAlias` and replay limit
- * utilities, extracted from the legacy `@moonshot-ai/agent-core` package.
+/*
+ * SDK-local model alias helper — effectiveModelAlias and replay limit
+ * utilities, extracted from the legacy agent-core package.
  *
  * These are thin helpers that the SDK's public barrel re-exports.  The
- * canonical model resolution logic lives in `@moonshot-ai/agent-core-v2`'s
- * `IModelCatalog` service; this module provides the static, config-local
+ * canonical model resolution logic lives in the v2 `IModelCatalog` service;
+ * this module provides the static, config-local
  * projection that the catalog UI / login flow need without a live runtime.
  */
 
@@ -27,19 +27,22 @@ export function effectiveModelAlias(
   const { overrides, ...base } = alias;
   const effective: ModelAlias = overrides === undefined ? alias : { ...base, ...overrides };
 
-  const suppEfforts = overrides?.['supportEfforts'] as string[] | undefined;
-  const defEffort = overrides?.['defaultEffort'] as string | undefined;
+  const typedOverrides = (overrides ?? {}) as Partial<
+    Pick<ModelAlias, 'supportEfforts' | 'defaultEffort'>
+  >;
+  const suppEfforts = typedOverrides.supportEfforts;
+  const defEffort = typedOverrides.defaultEffort;
   if (
     suppEfforts !== undefined &&
     defEffort === undefined &&
-    (effective as Record<string, unknown>)['defaultEffort'] !== undefined &&
-    !(suppEfforts as string[]).includes((effective as Record<string, unknown>)['defaultEffort'] as string)
+    effective.defaultEffort !== undefined &&
+    !suppEfforts.includes(effective.defaultEffort)
   ) {
-    delete (effective as Record<string, unknown>)['defaultEffort'];
+    effective.defaultEffort = undefined;
   }
 
-  const maxInputSize = (effective as Record<string, unknown>)['maxInputSize'] as number | undefined;
-  const maxContextSize = (effective as Record<string, unknown>)['maxContextSize'] as number | undefined;
+  const maxInputSize = effective.maxInputSize;
+  const maxContextSize = effective.maxContextSize;
   const clamped =
     maxInputSize !== undefined && maxInputSize > (maxContextSize ?? 0)
       ? ({ ...effective, maxInputSize: maxContextSize }) as ModelAlias
@@ -57,7 +60,7 @@ export function effectiveModelAliases(
 }
 
 function withAnthropicProfile(model: ModelAlias, providerType?: string): ModelAlias {
-  const protocol = ((model as Record<string, unknown>)['protocol'] as string | undefined) ?? providerType;
+  const protocol = model.protocol ?? providerType;
   const profile =
     providerType !== undefined && providerType !== 'kimi' && protocol === 'anthropic'
       ? (matchKnownAnthropicModelProfile(model.model) ?? matchUnknownClaudeProfile(model.model))
@@ -71,7 +74,7 @@ function withAnthropicProfile(model: ModelAlias, providerType?: string): ModelAl
   );
   const supportEfforts =
     model.supportEfforts ??
-    ((model as Record<string, unknown>)['adaptiveThinking'] === false
+    (model.adaptiveThinking === false
       ? [...BUDGET_THINKING_EFFORTS]
       : [...profile.efforts]);
 
@@ -88,7 +91,7 @@ function withAnthropicProfile(model: ModelAlias, providerType?: string): ModelAl
 
 /**
  * Minimal compatible AgentReplayRecord type for the turn-boundary predicate.
- * Mirrors the legacy type from @moonshot-ai/agent-core/rpc/resumed.ts.
+ * Mirrors the legacy agent-core replay record.
  */
 
 export interface AgentReplayRecord {
@@ -103,8 +106,6 @@ export interface AgentReplayRecord {
       readonly phase?: string;
     };
   };
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  readonly [key: string]: any;
 }
 
 /**
@@ -146,10 +147,10 @@ export function isAgentReplayUserTurnRecord(record: AgentReplayRecord): boolean 
  * Keep only the most recent `maxTurns` user turns of a replay. `undefined`
  * keeps the full replay; `0` or negative returns an empty replay.
  */
-export function limitAgentReplayByTurns(
-  records: readonly AgentReplayRecord[],
+export function limitAgentReplayByTurns<T extends AgentReplayRecord>(
+  records: readonly T[],
   maxTurns?: number,
-): readonly AgentReplayRecord[] {
+): readonly T[] {
   if (maxTurns === undefined) return records;
   if (maxTurns <= 0) return [];
   const turnStarts = records.flatMap((record, index) =>

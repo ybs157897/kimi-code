@@ -1,9 +1,9 @@
 import type * as vscode from "vscode";
 import type { FileManager } from "../managers/file.manager";
 import type { BaselineManager } from "../managers/baseline.manager";
-import type { KimiHarness } from "@moonshot-ai/kimi-code-sdk";
 import type { KimiRuntime } from "../runtime/kimi-runtime";
 import type { SessionRuntime } from "../runtime/session-runtime";
+import type { VscodeHostPort } from "../runtime/v2-host";
 
 export type BroadcastFn = (event: string, data: unknown, webviewId?: string) => void;
 
@@ -24,7 +24,7 @@ export interface HandlerContext {
   fileManager: FileManager;
   baselineManager: BaselineManager;
   runtime: KimiRuntime;
-  harness: KimiHarness;
+  host: VscodeHostPort;
   reloadWebview: () => void;
   showLogs: () => void;
   logError: (message: string, error: unknown) => void;

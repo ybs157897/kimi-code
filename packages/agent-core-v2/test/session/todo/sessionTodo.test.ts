@@ -165,6 +165,7 @@ function makeLifecycleStub(handles: readonly IAgentScopeHandle[] = []): Lifecycl
     create: async () => {
       throw new Error('not implemented');
     },
+    restore: async (agentId) => byId.get(agentId),
     fork: async () => {
       throw new Error('not implemented');
     },

@@ -42,6 +42,7 @@ import type {
   AddAdditionalDirInput,
   WorkspaceAdditionalDirsResult,
 } from '@moonshot-ai/agent-core-v2/session/workspaceCommand/workspaceCommand';
+import type { TodoItem } from '@moonshot-ai/agent-core-v2/session/todo/todoItem';
 
 import type { ScopeRef } from '../channel.js';
 import type { ScopedCaller } from './global.js';
@@ -93,6 +94,7 @@ export interface SessionExtensionsFacade {
 export interface SessionCronFacade {
   list(): Promise<readonly CronTask[]>;
   getNextFireTime(): Promise<number | null>;
+  getNextFireForTask(taskId: string): Promise<number | null>;
 }
 
 export interface SessionGoalQueueFacade {
@@ -132,6 +134,12 @@ export interface SessionWorkspaceFacade {
   addAdditionalDir(input: AddAdditionalDirInput): Promise<WorkspaceAdditionalDirsResult>;
 }
 
+export interface SessionTodoFacade {
+  list(): Promise<readonly TodoItem[]>;
+  replace(todos: readonly TodoItem[]): Promise<void>;
+  clear(): Promise<void>;
+}
+
 /**
  * Derived session lifecycle phase. The engine retired its `sessionActivity`
  * service (#1751) — busy is now derived from agent activity views — so the
@@ -150,8 +158,14 @@ export interface SessionFacade {
   archive(): Promise<void>;
   /** Re-materialize a closed session; `false` when it no longer exists. */
   restore(): Promise<boolean>;
-  fork(input?: { title?: string; metadata?: Record<string, unknown> }): Promise<SessionMeta>;
+  fork(input?: {
+    newSessionId?: string;
+    title?: string;
+    metadata?: Record<string, unknown>;
+    userVisibleTurnIndex?: number;
+  }): Promise<SessionMeta>;
   createChild(input?: {
+    newSessionId?: string;
     title?: string;
     metadata?: Record<string, unknown>;
   }): Promise<SessionMeta>;
@@ -167,6 +181,7 @@ export interface SessionFacade {
   readonly skills: SessionSkillsFacade;
   readonly warnings: SessionWarningsFacade;
   readonly workspace: SessionWorkspaceFacade;
+  readonly todos: SessionTodoFacade;
   /** Agent id → metadata for every agent registered in this session. */
   agents(): Promise<Readonly<Record<string, AgentMeta>>>;
 }
@@ -177,10 +192,21 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
     call(scope, 'sessionMetadata', 'read', []) as Promise<SessionMeta>;
   const spawn = async (
     method: 'fork' | 'createChild',
-    input: { title?: string; metadata?: Record<string, unknown> } = {},
+    input: {
+      newSessionId?: string;
+      title?: string;
+      metadata?: Record<string, unknown>;
+      userVisibleTurnIndex?: number;
+    } = {},
   ): Promise<SessionMeta> => {
     const handle = (await call({}, 'sessionLifecycleService', method, [
-      { sourceSessionId: sessionId, title: input.title, metadata: input.metadata },
+      {
+        sourceSessionId: sessionId,
+        newSessionId: input.newSessionId,
+        title: input.title,
+        metadata: input.metadata,
+        userVisibleTurnIndex: input.userVisibleTurnIndex,
+      },
     ])) as HandleWire;
     return call({ sessionId: handle.id }, 'sessionMetadata', 'read', []) as Promise<SessionMeta>;
   };
@@ -296,6 +322,10 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
         call(scope, 'sessionCronService', 'list', []) as Promise<readonly CronTask[]>,
       getNextFireTime: () =>
         call(scope, 'sessionCronService', 'getNextFireTime', []) as Promise<number | null>,
+      getNextFireForTask: (taskId) =>
+        call(scope, 'sessionCronService', 'getNextFireForTask', [
+          taskId,
+        ]) as Promise<number | null>,
     },
 
     goalQueue: {
@@ -347,6 +377,14 @@ export function createSessionFacade(call: ScopedCaller, sessionId: string): Sess
         call(scope, 'sessionWorkspaceCommandService', 'addAdditionalDir', [
           input,
         ]) as Promise<WorkspaceAdditionalDirsResult>,
+    },
+
+    todos: {
+      list: () =>
+        call(scope, 'sessionTodoService', 'getTodos', []) as Promise<readonly TodoItem[]>,
+      replace: (todos) =>
+        call(scope, 'sessionTodoService', 'setTodos', [todos]) as Promise<void>,
+      clear: () => call(scope, 'sessionTodoService', 'clear', []) as Promise<void>,
     },
 
     agents: async () => {

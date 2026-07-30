@@ -49,6 +49,9 @@ const mocks = vi.hoisted(() => {
     },
     KimiHarness: vi.fn(),
     createKimiHarness: vi.fn(),
+    createCliV2Runtime: vi.fn(),
+    v2TelemetryTrack: vi.fn(),
+    v2RuntimeClose: vi.fn(),
   };
 });
 
@@ -90,6 +93,10 @@ vi.mock('@moonshot-ai/kimi-code-sdk', async () => {
 vi.mock('../../src/cli/telemetry', () => ({
   createCliTelemetryBootstrap: mocks.createCliTelemetryBootstrap,
   initializeCliTelemetry: mocks.initializeCliTelemetry,
+}));
+
+vi.mock('../../src/cli/v2/create-v2-runtime', () => ({
+  createCliV2Runtime: mocks.createCliV2Runtime,
 }));
 
 vi.mock('../../src/cli/sub/upgrade', () => ({
@@ -218,6 +225,15 @@ describe('main entry command handling', () => {
     });
     mocks.harness.close.mockResolvedValue(undefined);
     mocks.shutdownTelemetry.mockResolvedValue(undefined);
+    mocks.createCliV2Runtime.mockResolvedValue({
+      runtime: {
+        telemetry: { track: mocks.v2TelemetryTrack },
+        close: mocks.v2RuntimeClose,
+      },
+      homeDir: '/tmp/kimi-home',
+      firstLaunch: false,
+    });
+    mocks.v2RuntimeClose.mockResolvedValue(undefined);
     mocks.handleUpgrade.mockResolvedValue(0);
     mocks.flushDiagnosticLogs.mockResolvedValue(undefined);
   });
@@ -383,42 +399,30 @@ describe('main entry command handling', () => {
     expect(runShell).not.toHaveBeenCalled();
   });
 
-  it('initializes and flushes telemetry around the upgrade command', async () => {
+  it('owns the upgrade command through a v2 runtime', async () => {
     const exitCode = await runHandleUpgradeCommand();
 
     expect(exitCode).toBe(0);
-    expect(mocks.createCliTelemetryBootstrap).toHaveBeenCalledTimes(1);
-    expect(mocks.createKimiHarness).toHaveBeenCalledWith(expect.objectContaining({
-      homeDir: '/tmp/kimi-home',
-      telemetry: {
-        track: mocks.track,
-        withContext: mocks.withTelemetryContext,
-        setContext: mocks.setTelemetryContext,
-      },
-    }));
-    expect(mocks.harness.ensureConfigFile).toHaveBeenCalledTimes(1);
-    expect(mocks.initializeCliTelemetry).toHaveBeenCalledWith(expect.objectContaining({
-      harness: expect.objectContaining({
-        homeDir: '/tmp/kimi-home',
+    expect(mocks.createCliV2Runtime).toHaveBeenCalledWith(
+      expect.objectContaining({
+        prompt: undefined,
+        skillsDirs: [],
       }),
-      bootstrap: {
-        homeDir: '/tmp/kimi-home',
-        deviceId: 'device-id',
-        firstLaunch: false,
-      },
-      config: {
-        defaultModel: 'kimi-k2',
-        telemetry: true,
-      },
-      version: '0.0.1-alpha.2',
-      uiMode: 'shell',
-    }));
+      '0.0.1-alpha.2',
+      'shell',
+      'default',
+    );
     expect(mocks.handleUpgrade).toHaveBeenCalledWith('0.0.1-alpha.2', {
-      track: mocks.track,
+      track: expect.any(Function),
       logger: mocks.log,
     });
-    expect(mocks.shutdownTelemetry).toHaveBeenCalledWith({ timeoutMs: 3000 });
-    expect(mocks.harness.close).toHaveBeenCalledTimes(1);
+    const upgradeTrack = mocks.handleUpgrade.mock.calls[0]![1].track;
+    upgradeTrack('upgrade_test', { stage: 'done' });
+    expect(mocks.v2TelemetryTrack).toHaveBeenCalledWith('upgrade_test', {
+      stage: 'done',
+    });
+    expect(mocks.v2RuntimeClose).toHaveBeenCalledTimes(1);
+    expect(mocks.createKimiHarness).not.toHaveBeenCalled();
   });
 
   it('formats Kimi startup errors with structured fields', () => {

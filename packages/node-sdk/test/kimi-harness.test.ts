@@ -47,8 +47,8 @@ read_byte_budget = 65536
       // The core was constructed in-process; its owner-scoped [image] limits
       // must be readable on the harness for prompt-ingestion paths.
       expect(harness.imageLimits).toBeInstanceOf(ImageLimits);
-      expect(harness.imageLimits?.maxEdgePx()).toBe(1200);
-      expect(harness.imageLimits?.readByteBudget()).toBe(65536);
+      expect(harness.imageLimits?.maxEdgePx).toBe(1200);
+      expect(harness.imageLimits?.readByteBudget).toBe(65536);
     } finally {
       await harness.close();
     }
@@ -61,8 +61,8 @@ read_byte_budget = 65536
     const harness = createKimiHarness({ identity: TEST_IDENTITY, homeDir });
     try {
       expect(harness.imageLimits).toBeInstanceOf(ImageLimits);
-      expect(harness.imageLimits?.maxEdgePx()).toBe(2000);
-      expect(harness.imageLimits?.readByteBudget()).toBe(256 * 1024);
+      expect(harness.imageLimits?.maxEdgePx).toBe(2000);
+      expect(harness.imageLimits?.readByteBudget).toBe(256 * 1024);
     } finally {
       await harness.close();
     }
@@ -81,6 +81,6 @@ read_byte_budget = 65536
     });
 
     expect(harness.imageLimits).toBe(limits);
-    expect(harness.imageLimits?.maxEdgePx()).toBe(900);
+    expect(harness.imageLimits?.maxEdgePx).toBe(900);
   });
 });

@@ -39,7 +39,7 @@ async function main(): Promise<void> {
     if (status.providers[0]?.hasToken !== true) {
       throw new Error('status did not report a stored token after login');
     }
-    if (config.providers[MANAGED_KIMI_CODE_PROVIDER]?.oauth?.key !== 'oauth/kimi-code') {
+    if (config.providers?.[MANAGED_KIMI_CODE_PROVIDER]?.oauth?.key !== 'oauth/kimi-code') {
       throw new Error('managed provider oauth config was not written');
     }
 

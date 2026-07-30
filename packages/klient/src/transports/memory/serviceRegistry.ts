@@ -7,6 +7,11 @@
 
 import type { ServiceIdentifier } from '@moonshot-ai/agent-core-v2/_base/di/instantiation';
 import { ISessionIndex } from '@moonshot-ai/agent-core-v2/app/sessionIndex/sessionIndex';
+import { ISessionSnapshotStore } from '@moonshot-ai/agent-core-v2/app/sessionStore/sessionSnapshotStore';
+import { IMcpCatalogService } from '@moonshot-ai/agent-core-v2/app/mcpCatalog/mcpCatalog';
+import { IMcpOAuthService } from '@moonshot-ai/agent-core-v2/app/mcpOAuth/mcpOAuth';
+import { IMcpProbeService } from '@moonshot-ai/agent-core-v2/app/mcpProbe/mcpProbe';
+import { IWorkspaceSkillCatalogService } from '@moonshot-ai/agent-core-v2/app/skillCatalog/workspaceSkillCatalog';
 import { IWorkspaceService } from '@moonshot-ai/agent-core-v2/app/workspace/workspace';
 import { IConfigService } from '@moonshot-ai/agent-core-v2/app/config/config';
 import { IModelService } from '@moonshot-ai/agent-core-v2/kosong/model/model';
@@ -38,6 +43,7 @@ import { ISessionSkillCatalog } from '@moonshot-ai/agent-core-v2/session/session
 import { ISessionSecondaryModelWarningService } from '@moonshot-ai/agent-core-v2/session/subagent/secondaryModelWarning';
 import { ISessionWorkspaceCommandService } from '@moonshot-ai/agent-core-v2/session/workspaceCommand/workspaceCommand';
 import { ISessionWorkspaceContext } from '@moonshot-ai/agent-core-v2/session/workspaceContext/workspaceContext';
+import { ISessionTodoService } from '@moonshot-ai/agent-core-v2/session/todo/sessionTodo';
 import { IAgentRPCService } from '@moonshot-ai/agent-core-v2/agent/rpc/rpc';
 import { IAgentExtensionService } from '@moonshot-ai/agent-core-v2/agent/extension/agentExtension';
 import { IAgentGoalService } from '@moonshot-ai/agent-core-v2/agent/goal/goal';
@@ -47,15 +53,22 @@ import { IAgentActivityView } from '@moonshot-ai/agent-core-v2/agent/activityVie
 import { IAgentFullCompactionService } from '@moonshot-ai/agent-core-v2/agent/fullCompaction/fullCompaction';
 import { IAgentMcpService } from '@moonshot-ai/agent-core-v2/agent/mcp/mcp';
 import { IAgentPlanService } from '@moonshot-ai/agent-core-v2/agent/plan/plan';
+import { IAgentPluginService } from '@moonshot-ai/agent-core-v2/agent/plugin/agentPlugin';
 import { IAgentProfileService } from '@moonshot-ai/agent-core-v2/agent/profile/profile';
 import { IAgentReplayView } from '@moonshot-ai/agent-core-v2/agent/replayView/agentReplayView';
 import { IAgentShellCommandService } from '@moonshot-ai/agent-core-v2/agent/shellCommand/shellCommand';
 import { IAgentTaskService } from '@moonshot-ai/agent-core-v2/agent/task/task';
 import { IAgentUsageService } from '@moonshot-ai/agent-core-v2/agent/usage/usage';
+import { IAgentContextCommandService } from '@moonshot-ai/agent-core-v2/agent/contextCommand/contextCommand';
 
 /** Wire service name (decorator id string) → token. */
 export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>> = {
   sessionIndex: ISessionIndex,
+  sessionSnapshotStore: ISessionSnapshotStore,
+  mcpCatalogService: IMcpCatalogService,
+  mcpOAuthService: IMcpOAuthService,
+  mcpProbeService: IMcpProbeService,
+  workspaceSkillCatalogService: IWorkspaceSkillCatalogService,
   workspaceService: IWorkspaceService,
   configService: IConfigService,
   modelService: IModelService,
@@ -84,9 +97,11 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   sessionSecondaryModelWarningService: ISessionSecondaryModelWarningService,
   sessionWorkspaceContext: ISessionWorkspaceContext,
   sessionWorkspaceCommandService: ISessionWorkspaceCommandService,
+  sessionTodoService: ISessionTodoService,
   agentRPCService: IAgentRPCService,
   agentFullCompactionService: IAgentFullCompactionService,
   agentMcpService: IAgentMcpService,
+  agentPluginService: IAgentPluginService,
   agentPermissionModeService: IAgentPermissionModeService,
   agentExtensionService: IAgentExtensionService,
   agentGoalService: IAgentGoalService,
@@ -98,6 +113,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   agentUsageService: IAgentUsageService,
   agentPlanService: IAgentPlanService,
   agentTaskService: IAgentTaskService,
+  agentContextCommandService: IAgentContextCommandService,
 };
 
 export { IEventService };

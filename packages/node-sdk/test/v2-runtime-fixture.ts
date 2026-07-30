@@ -41,6 +41,15 @@ export interface FakeProvider {
   close(): Promise<void>;
 }
 
+export interface FakeProviderOptions {
+  /**
+   * Optional response used whenever the explicit script queue is empty.
+   * This is useful for public-contract tests that vary a simple text response
+   * between prompts without coupling each call site to the HTTP fixture.
+   */
+  readonly fallbackResponse?: () => ScriptedProviderResponse;
+}
+
 const FAKE_WIRE_MODEL = 'stub-model';
 
 function sseChunk(payload: unknown): string {
@@ -139,7 +148,9 @@ function renderScriptedResponse(
 }
 
 /** Start a loopback OpenAI chat-completions endpoint driven by a script queue. */
-export async function startFakeProvider(): Promise<FakeProvider> {
+export async function startFakeProvider(
+  options: FakeProviderOptions = {},
+): Promise<FakeProvider> {
   const script: ScriptedProviderResponse[] = [];
   const requests: RecordedProviderRequest[] = [];
   let responseIndex = 0;
@@ -161,7 +172,7 @@ export async function startFakeProvider(): Promise<FakeProvider> {
       }
       requests.push({ body });
 
-      const scripted = script.shift();
+      const scripted = script.shift() ?? options.fallbackResponse?.();
       if (scripted === undefined) {
         res.writeHead(500, { 'content-type': 'application/json' });
         res.end(
@@ -203,7 +214,13 @@ export async function startFakeProvider(): Promise<FakeProvider> {
     },
     close: () =>
       new Promise<void>((resolve, reject) => {
-        server.close((error) => (error === undefined ? resolve() : reject(error)));
+        server.close((error) => {
+          if (error !== undefined) {
+            reject(error);
+            return;
+          }
+          resolve();
+        });
       }),
   };
 }

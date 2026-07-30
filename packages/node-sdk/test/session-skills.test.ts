@@ -5,7 +5,7 @@
  * Run: pnpm exec vitest run packages/node-sdk/test/session-skills.test.ts
  */
 import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve as nodeResolve } from 'node:path';
 
 import type * as KosongModule from '@moonshot-ai/kosong';
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from 'vitest';
@@ -18,12 +18,6 @@ import {
   type SkillSummary,
 } from '#/index';
 import type { SDKRpcClientBase } from '#/rpc';
-
-// Inlined minimal version of normalizeWorkDir to avoid importing agent-core.
-import { resolve as nodeResolve } from 'node:path';
-function normalizeWorkDir(workDir: string): string {
-  return nodeResolve(workDir);
-}
 import {
   makeTempDir,
   removeTempDirs,
@@ -31,6 +25,11 @@ import {
   waitForSDKEvent,
 } from './session-runtime-helpers';
 import { TEST_IDENTITY } from './test-identity';
+
+// Inlined minimal version of normalizeWorkDir to avoid importing agent-core.
+function normalizeWorkDir(workDir: string): string {
+  return nodeResolve(workDir);
+}
 
 const fakeProviderState = vi.hoisted(() => ({
   histories: [] as unknown[],
@@ -304,12 +303,12 @@ describe('Session skills', () => {
 
   it('exposes public skill event and summary types', () => {
     expectTypeOf<SkillSummary['name']>().toEqualTypeOf<string>();
-    expectTypeOf<SkillActivatedEvent['name']>().toEqualTypeOf<string | undefined>();
+    expectTypeOf<SkillActivatedEvent['skillName']>().toEqualTypeOf<string>();
   });
 });
 
 describe('KimiHarness workspace skills', () => {
-  it('returns project skills when no session exists', async () => {
+  it('discovers workspace skills without creating a session', async () => {
     const homeDir = await makeTempDir(tempDirs, 'kimi-sdk-workspace-skills-home-');
     const workDir = await makeTempDir(tempDirs, 'kimi-sdk-workspace-skills-work-');
     await writeSkill(workDir, 'workspace-review', [
@@ -324,13 +323,13 @@ describe('KimiHarness workspace skills', () => {
 
     try {
       const skills = await harness.listWorkspaceSkills(workDir);
-
       expect(skills.find((skill) => skill.name === 'workspace-review')).toMatchObject({
         name: 'workspace-review',
         description: 'Review workspace changes',
         source: 'project',
       });
       expect(harness.sessions.size).toBe(0);
+      await expect(harness.listSessions({ workDir })).resolves.toEqual([]);
     } finally {
       await harness.close();
     }

@@ -21,6 +21,7 @@ import {
   IAuthSummaryService,
   IEventService,
   IFileService,
+  IHostFileSystem,
   ISessionMetadata,
   buildKimiFileUrl,
   parseKimiFileUrl,
@@ -123,13 +124,13 @@ async function resolvePrompt(core: Scope, sessionId: string, agentId?: string) {
 
 async function resolvePromptFromSession(session: ISessionScopeHandle, agentId?: string) {
   // A prompt may target a forked side-channel agent (e.g. `/btw`) via
-  // `body.agent_id`. Default to `main` when absent; only `main` is
-  // auto-created — any other id must already exist (forked beforehand), or it
-  // is reported as `agent.not_found`.
+  // `body.agent_id`. Default to `main` when absent; persisted child agents are
+  // materialized on demand.
+  const lifecycle = session.accessor.get(IAgentLifecycleService);
   const agent =
     agentId === undefined || agentId === MAIN_AGENT_ID
       ? await ensureMainAgent(session)
-      : session.accessor.get(IAgentLifecycleService).get(agentId);
+      : lifecycle.get(agentId) ?? await lifecycle.restore(agentId);
   if (agent === undefined) {
     throw new Error2('agent.not_found', `agent ${agentId} does not exist`);
   }
@@ -265,6 +266,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           core.accessor.get(IFileService),
           core.accessor.get(IBootstrapService).cacheDir,
           {
+            hostFs: core.accessor.get(IHostFileSystem),
             telemetry,
             resolveOriginalsDir: async () => {
               const session = await core.accessor.get(ISessionLifecycleService).resume(session_id);
@@ -465,6 +467,8 @@ function contentToCoreParts(content: PromptSubmission['content']): ContentPart[]
 }
 
 interface ResolvePromptMediaOptions {
+  /** Host filesystem injected by the server composition root. */
+  readonly hostFs: IHostFileSystem;
   /**
    * Lazily resolve the session's media-originals dir for persisting the
    * pre-compression bytes of inline base64 images. Only invoked when an image
@@ -487,7 +491,7 @@ async function resolvePromptMediaFiles(
   body: PromptSubmission,
   store: IFileService,
   cacheDir: string,
-  options: ResolvePromptMediaOptions = {},
+  options: ResolvePromptMediaOptions,
 ): Promise<PromptSubmission> {
   let changed = false;
   let originalsDir: string | undefined;
@@ -554,7 +558,7 @@ async function resolvePromptMediaFiles(
         const originalPath = await persistOriginalImage(
           Buffer.from(part.source.data, 'base64'),
           part.source.media_type,
-          { dir },
+          { dir, hostFs: options.hostFs },
         );
         content.push({
           type: 'text',
@@ -656,7 +660,10 @@ async function resolvePromptMediaFiles(
       });
       if (compressed.changed) {
         const dir = await resolveOriginalsDir();
-        const originalPath = await persistOriginalImage(data, mediaType, { dir });
+        const originalPath = await persistOriginalImage(data, mediaType, {
+          dir,
+          hostFs: options.hostFs,
+        });
         content.push({
           type: 'text',
           text: buildImageCompressionCaption({

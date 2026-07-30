@@ -1,17 +1,54 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows:
+      - CI
+    types:
+      - completed
 
 concurrency: ${{ github.workflow }}-${{ github.ref }}
 
 jobs:
+  release_gate:
+    name: Confirm tested main revision
+    runs-on: ubuntu-latest
+    if: >-
+      github.repository_owner == 'MoonshotAI' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository &&
+      github.event.workflow_run.conclusion == 'success'
+    outputs:
+      current: ${{ steps.current_main.outputs.current }}
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout tested revision
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Confirm the tested revision is still main
+        id: current_main
+        env:
+          TESTED_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          git fetch --no-tags origin main
+          CURRENT_MAIN="$(git rev-parse origin/main)"
+          if [[ "$CURRENT_MAIN" == "$TESTED_SHA" ]]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping stale tested revision $TESTED_SHA; main is $CURRENT_MAIN."
+            echo "current=false" >> "$GITHUB_OUTPUT"
+          fi
+
   release:
     name: Release
+    needs: release_gate
     runs-on: ubuntu-latest
-    if: github.repository_owner == 'MoonshotAI'
+    if: needs.release_gate.outputs.current == 'true'
     outputs:
       packages_published: ${{ steps.changesets.outputs.published }}
       kimi_native_release: ${{ steps.kimi-release.outputs.should_publish }}
@@ -25,6 +62,7 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -76,6 +114,8 @@ jobs:
     needs: release
     if: needs.release.outputs.packages_published == 'true'
     uses: ./.github/workflows/docs-deploy.yml
+    with:
+      ref: ${{ github.event.workflow_run.head_sha }}
     permissions:
       contents: read
       pages: write
@@ -87,6 +127,7 @@ jobs:
     if: needs.release.outputs.kimi_native_release == 'true'
     uses: ./.github/workflows/_native-build.yml
     with:
+      ref: ${{ github.event.workflow_run.head_sha }}
       upload-artifact-prefix: kimi-code-native
       retention-days: 7
       sign-macos: true
@@ -110,6 +151,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Download native artifacts
         uses: actions/download-artifact@v8

@@ -16,21 +16,23 @@ import type { AcpModelEntry } from './types';
 export async function listModelsFromKlient(
   klient: Klient,
 ): Promise<readonly AcpModelEntry[]> {
-  let models: readonly any[];
+  let models: Awaited<ReturnType<Klient['global']['kosong']['listModels']>>;
   try {
     models = await klient.global.kosong.listModels();
   } catch {
     return [];
   }
-  return models.map((m: any) => {
-    const caps: readonly string[] = m.capabilities ?? [];
+  return models.map((model) => {
+    const capabilities = model.capabilities ?? [];
     return {
-      id: m.model,
-      name: m.display_name ?? m.model,
-      thinkingSupported: caps.includes('thinking') || caps.includes('always_thinking'),
-      alwaysThinking: caps.includes('always_thinking'),
-      supportEfforts: m.support_efforts ?? [],
-      defaultThinkingEffort: m.default_effort ?? 'on',
+      id: model.model,
+      name: model.display_name ?? model.model,
+      thinkingSupported:
+        capabilities.includes('thinking') ||
+        capabilities.includes('always_thinking'),
+      alwaysThinking: capabilities.includes('always_thinking'),
+      supportEfforts: model.support_efforts ?? [],
+      defaultThinkingEffort: model.default_effort ?? 'on',
     };
   });
 }
@@ -40,17 +42,15 @@ export async function listModelsFromKlient(
  */
 export async function resolveCurrentModelIdFromKlient(klient: Klient): Promise<string> {
   try {
-    const cfg: any = await klient.global.config.get('config');
-    if (cfg && typeof cfg === 'object' && typeof (cfg as any).defaultModel === 'string') {
-      return (cfg as any).defaultModel;
-    }
+    const defaultModel = await klient.global.config.get<string>('defaultModel');
+    if (defaultModel.length > 0) return defaultModel;
   } catch {
     // fall through
   }
   // Fallback: first model from the catalog
   try {
     const models = await klient.global.kosong.listModels();
-    if (models.length > 0) return (models[0] as any).model;
+    if (models.length > 0) return models[0]!.model;
   } catch {
     // empty
   }

@@ -45,7 +45,7 @@ const MIME_EXTENSION: Readonly<Record<string, string>> = {
 export interface PersistOriginalImageOptions {
   readonly dir?: string;
   readonly maxTotalBytes?: number;
-  readonly hostFs?: IHostFileSystem;
+  readonly hostFs: IHostFileSystem;
 }
 
 export function originalImageCacheDir(): string {
@@ -59,11 +59,10 @@ export function sessionMediaOriginalsDir(sessionDir: string): string {
 export async function persistOriginalImage(
   bytes: Uint8Array,
   mimeType: string,
-  options: PersistOriginalImageOptions = {},
+  options: PersistOriginalImageOptions,
 ): Promise<string | null> {
   if (bytes.length === 0) return null;
   const fs = options.hostFs;
-  if (fs === undefined) return null;
   const dir = options.dir ?? originalImageCacheDir();
   const maxTotalBytes = options.maxTotalBytes ?? DEFAULT_MAX_TOTAL_BYTES;
   try {

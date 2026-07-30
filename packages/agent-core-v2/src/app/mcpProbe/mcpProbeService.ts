@@ -16,6 +16,7 @@ import { SseMcpClient } from '#/session/mcp/client-sse';
 
 import {
   type IMcpProbeService,
+  type McpProbeOptions,
   type McpProbeResult,
   IMcpProbeService as IMcpProbeServiceToken,
 } from './mcpProbe';
@@ -31,10 +32,14 @@ export class McpProbeServiceImpl extends Disposable implements IMcpProbeService 
     super();
   }
 
-  async probe(serverName: string, config: McpServerConfig): Promise<McpProbeResult> {
+  async probe(
+    serverName: string,
+    config: McpServerConfig,
+    options: McpProbeOptions = {},
+  ): Promise<McpProbeResult> {
     let client: ProbeClient | undefined;
     try {
-      client = this.createClient(config);
+      client = this.createClient(config, options);
       await client.connect();
 
       const tools = await withTimeout(
@@ -61,7 +66,10 @@ export class McpProbeServiceImpl extends Disposable implements IMcpProbeService 
     }
   }
 
-  private createClient(config: McpServerConfig): ProbeClient {
+  private createClient(
+    config: McpServerConfig,
+    options: McpProbeOptions,
+  ): ProbeClient {
     const startupTimeoutMs =
       config.startupTimeoutMs ?? DEFAULT_STARTUP_TIMEOUT_MS;
 
@@ -69,6 +77,7 @@ export class McpProbeServiceImpl extends Disposable implements IMcpProbeService 
       return new StdioMcpClient(config, {
         startupTimeoutMs,
         toolCallTimeoutMs: config.toolTimeoutMs,
+        defaultCwd: options.cwd,
       });
     }
     if (config.transport === 'sse') {

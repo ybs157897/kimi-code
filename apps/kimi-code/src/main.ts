@@ -6,21 +6,13 @@
  */
 
 import {
-  createKimiHarness,
   flushDiagnosticLogs,
   installGlobalProxyDispatcher,
   log,
   resolveGlobalLogPath,
   resolveKimiHome,
-  type TelemetryClient,
 } from '@moonshot-ai/kimi-code-sdk';
-import {
-  installCrashHandlers,
-  setTelemetryContext,
-  shutdownTelemetry,
-  track,
-  withTelemetryContext,
-} from '@moonshot-ai/kimi-telemetry';
+import { installCrashHandlers, track } from '@moonshot-ai/kimi-telemetry';
 
 import { createProgram } from './cli/commands';
 import { finalizeHeadlessRun } from './cli/headless-exit';
@@ -31,10 +23,10 @@ import { runShell } from './cli/run-shell';
 import { formatStartupError } from './cli/startup-error';
 import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { handleUpgrade } from './cli/sub/upgrade';
-import { createCliTelemetryBootstrap, initializeCliTelemetry } from './cli/telemetry';
 import { runUpdatePreflight } from './cli/update/preflight';
-import { createKimiCodeHostIdentity, getVersion } from './cli/version';
-import { CLI_SHUTDOWN_TIMEOUT_MS, CLI_UI_MODE, PROCESS_NAME } from './constant/app';
+import { getVersion } from './cli/version';
+import { createCliV2Runtime } from './cli/v2/create-v2-runtime';
+import { PROCESS_NAME } from './constant/app';
 import { cleanupStaleNativeCacheForCurrent } from './native/native-assets';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
@@ -89,32 +81,22 @@ async function handleMigrateCommand(version: string): Promise<void> {
 }
 
 export async function handleUpgradeCommand(version: string): Promise<void> {
-  const telemetryBootstrap = createCliTelemetryBootstrap();
-  const telemetryClient: TelemetryClient = {
-    track,
-    withContext: withTelemetryContext,
-    setContext: setTelemetryContext,
-  };
-  const harness = createKimiHarness({
-    homeDir: telemetryBootstrap.homeDir,
-    identity: createKimiCodeHostIdentity(version),
-    telemetry: telemetryClient,
-  });
+  const { runtime } = await createCliV2Runtime(
+    MIGRATE_CLI_OPTIONS,
+    version,
+    'shell',
+    'default',
+  );
   let exitCode = 1;
   try {
-    await harness.ensureConfigFile();
-    const config = await harness.getConfig();
-    initializeCliTelemetry({
-      harness,
-      bootstrap: telemetryBootstrap,
-      config,
-      version,
-      uiMode: CLI_UI_MODE,
+    exitCode = await handleUpgrade(version, {
+      track: (event, properties) => {
+        runtime.telemetry.track(event, properties);
+      },
+      logger: log,
     });
-    exitCode = await handleUpgrade(version, { track, logger: log });
   } finally {
-    await shutdownTelemetry({ timeoutMs: CLI_SHUTDOWN_TIMEOUT_MS }).catch(() => {});
-    await harness.close().catch(() => {});
+    await runtime.close().catch(() => {});
   }
   process.exit(exitCode);
 }
@@ -140,7 +122,7 @@ export function main(): void {
   // Route all outbound fetch through HTTP_PROXY/HTTPS_PROXY (honoring NO_PROXY)
   // before any client is constructed. No-op when no proxy variable is set; an
   // invalid proxy URL is reported and ignored rather than aborting startup.
-  installGlobalProxyDispatcher();
+  installGlobalProxyDispatcher(process.env);
   installNativeModuleHook();
   if (runNativeAssetSmokeIfRequested()) return;
 

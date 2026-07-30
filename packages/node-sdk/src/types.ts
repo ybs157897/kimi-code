@@ -1,6 +1,56 @@
 import type { Kaos } from '@moonshot-ai/kaos';
 import type { KimiHostIdentity, OAuthRefreshOutcome } from '@moonshot-ai/kimi-code-oauth';
 import type { ContentPart } from '@moonshot-ai/kosong';
+import type { ContextMessage, PromptOrigin } from '@moonshot-ai/agent-core-v2/agent/contextMemory/types';
+import type {
+  GoalBudgetLimits,
+  GoalBudgetReport,
+  GoalChange,
+  GoalChangeStats,
+  GoalSnapshot,
+  GoalStatus,
+  GoalToolResult,
+} from '@moonshot-ai/agent-core-v2/agent/goal/types';
+import type { LoopControl } from '@moonshot-ai/agent-core-v2/agent/loop/configSection';
+import type { McpServerConfig as CoreMcpServerConfig } from '@moonshot-ai/agent-core-v2/agent/mcp/config-schema';
+import type { PermissionMode as PermissionModeV2 } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
+import type {
+  AgentReplayRecord,
+  ResumedAgentState,
+  ResumeSessionResult,
+} from '@moonshot-ai/agent-core-v2/agent/replayBuilder/types';
+import type {
+  ConfigDiagnostics,
+  McpServerInfo,
+  McpStartupMetrics,
+  SkillSummary as SkillSummaryV2,
+} from '@moonshot-ai/agent-core-v2/agent/rpc/core-api';
+import type { ServicesConfig } from '@moonshot-ai/agent-core-v2/app/auth/configSection';
+import type {
+  PluginCommandDef,
+  PluginGithubMetadata,
+  PluginGithubRef,
+  PluginInfo,
+  PluginMcpServerInfo,
+  PluginSource,
+  PluginSummary,
+  ReloadSummary,
+} from '@moonshot-ai/agent-core-v2/app/plugin/types';
+import type {
+  ExportSessionManifest,
+  ShellEnvironment,
+} from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExport';
+import type { ThinkingConfig } from '@moonshot-ai/agent-core-v2/kosong/model/thinking';
+import type {
+  OAuthRef,
+  ProviderConfig,
+  ProviderType,
+} from '@moonshot-ai/agent-core-v2/kosong/provider/provider';
+import type {
+  ExpertTeamDefinition,
+  ExpertTeamSnapshot,
+} from '@moonshot-ai/agent-core-v2/session/expertTeam/expertTeam';
+import type { ToolInfo } from '@moonshot-ai/agent-core-v2/tool/toolContract';
 import type {
   TelemetryClient,
   TelemetryContextPatch,
@@ -16,50 +66,6 @@ export type JsonObject = { readonly [key: string]: JsonValue };
 export type Unsubscribe = () => void;
 
 // ── v2-available types (imported from agent-core-v2 subpaths) ────────────
-
-import type {
-  ExpertTeamDefinition,
-  ExpertTeamSnapshot,
-} from '@moonshot-ai/agent-core-v2/session/expertTeam/expertTeam';
-import type {
-  GoalBudgetLimits,
-  GoalBudgetReport,
-  GoalChange,
-  GoalChangeStats,
-  GoalSnapshot,
-  GoalStatus,
-  GoalToolResult,
-} from '@moonshot-ai/agent-core-v2/agent/goal/types';
-import type {
-  AgentReplayRecord,
-  ResumedAgentState,
-  ResumeSessionResult,
-} from '@moonshot-ai/agent-core-v2/agent/replayBuilder/types';
-import type { ContextMessage, PromptOrigin } from '@moonshot-ai/agent-core-v2/agent/contextMemory/types';
-import type {
-  ConfigDiagnostics,
-  McpServerInfo,
-  McpStartupMetrics,
-  SkillSummary as SkillSummaryV2,
-} from '@moonshot-ai/agent-core-v2/agent/rpc/core-api';
-import type { ExportSessionManifest, ShellEnvironment } from '@moonshot-ai/agent-core-v2/app/sessionExport/sessionExport';
-import type { McpServerConfig } from '@moonshot-ai/agent-core-v2/agent/mcp/config-schema';
-import type { ThinkingConfig } from '@moonshot-ai/agent-core-v2/kosong/model/thinking';
-import type { ProviderConfig, ProviderType, OAuthRef } from '@moonshot-ai/agent-core-v2/kosong/provider/provider';
-import type { LoopControl } from '@moonshot-ai/agent-core-v2/agent/loop/configSection';
-import type { ToolInfo } from '@moonshot-ai/agent-core-v2/tool/toolContract';
-import type { PermissionMode as PermissionModeV2 } from '@moonshot-ai/agent-core-v2/agent/permissionPolicy/types';
-import type {
-  PluginCommandDef,
-  PluginGithubMetadata,
-  PluginGithubRef,
-  PluginInfo,
-  PluginMcpServerInfo,
-  PluginSource,
-  PluginSummary,
-  ReloadSummary,
-} from '@moonshot-ai/agent-core-v2/app/plugin/types';
-import type { ServicesConfig } from '@moonshot-ai/agent-core-v2/app/auth/configSection';
 
 type SkillSummary = SkillSummaryV2;
 
@@ -80,7 +86,6 @@ export type {
   LoopControl,
   McpServerInfo,
   McpStartupMetrics,
-  McpServerConfig,
   OAuthRef,
   PluginCommandDef,
   PluginGithubMetadata,
@@ -126,9 +131,16 @@ export type BackgroundConfig = {
 
 export type BackgroundTaskInfo = {
   readonly id: string;
+  /** Deprecated alias for `id`, kept for consumers still referencing it. */
+  readonly taskId?: string;
   readonly kind: string;
   readonly name?: string;
   readonly status?: string;
+  readonly description?: string;
+  readonly command?: string;
+  readonly subagentType?: string;
+  readonly stopReason?: string;
+  readonly agentId?: string;
   readonly exitCode?: number;
 };
 
@@ -181,39 +193,29 @@ export type GetCronTasksResult = {
   readonly tasks: readonly CronTaskSnapshot[];
 };
 
-export type KimiConfig = {
-  readonly defaultModel?: string;
-  readonly providers?: Record<string, Record<string, unknown>>;
-  readonly models?: Record<string, Record<string, unknown>>;
-  readonly telemetry?: boolean | Record<string, unknown>;
-  readonly thinking?: { readonly enabled?: boolean; readonly effort?: string };
-  readonly [key: string]: unknown;
-};
+// `KimiConfig` / `ModelAlias` are owned by `sdk-config` (the SDK's single
+// config-type source); `ProviderConfig` / `OAuthRef` are re-exported from the
+// v2 engine above. Re-export them here so the historical `#/types` surface
+// keeps naming them.
+export type { KimiConfig, ModelAlias } from '#/sdk-config';
 
 export type KimiConfigPatch = Record<string, unknown>;
 
-export type ModelAlias = {
-  readonly provider: string;
-  readonly model: string;
-  readonly maxContextSize?: number;
-  readonly maxInputSize?: number;
-  readonly maxOutputSize?: number;
-  readonly capabilities?: readonly string[];
-  readonly displayName?: string;
-  readonly baseUrl?: string;
-  readonly protocol?: string;
-  readonly overrides?: Record<string, unknown>;
-  readonly supportEfforts?: readonly string[];
-  readonly defaultEffort?: string;
-  readonly offEffort?: string;
-  [key: string]: unknown;
+/**
+ * Compatibility shape used by the root SDK's user-global MCP facade.
+ *
+ * The v2 core owns the transport configuration, while the global catalog
+ * keys that configuration by server name. The historical root SDK keeps the
+ * name inline and preserves the OAuth UI marker accepted by existing hosts.
+ */
+export type McpServerConfig = CoreMcpServerConfig & {
+  readonly name: string;
+  readonly auth?: 'oauth';
 };
 
 export type McpTestResult = {
-  readonly name: string;
-  readonly status: string;
-  readonly error?: string;
-  readonly [key: string]: unknown;
+  readonly success: boolean;
+  readonly output: string;
 };
 
 export type MoonshotServiceConfig = {
