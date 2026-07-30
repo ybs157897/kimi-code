@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+
+import { isRecord } from '#/utils/type-guards';
 import type {
   GoalQueueMoveDirection,
   GoalQueueSnapshot,
@@ -252,10 +254,6 @@ function isUpcomingGoal(value: unknown): value is UpcomingGoal {
     isNonEmptyString(value['createdAt']) &&
     isNonEmptyString(value['updatedAt'])
   );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {

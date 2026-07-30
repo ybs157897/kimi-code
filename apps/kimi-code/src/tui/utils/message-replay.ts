@@ -22,6 +22,7 @@ import type {
 
 import { mediaUrlPartToText } from './media-url';
 import { nextTranscriptId } from './transcript-id';
+import { isRecord } from '#/utils/type-guards';
 
 export const REPLAY_TURN_LIMIT = 10;
 
@@ -304,10 +305,6 @@ const HOOK_RESULT_RE =
 
 function formatHookResultBlock(event: string, body: string, blocked: boolean): string {
   return `*${event} hook${blocked ? ' blocked' : ''}*\n\n${body.trim() || '(empty)'}`;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 export interface ReplayBackgroundOrigin {
