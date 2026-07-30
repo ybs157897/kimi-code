@@ -4,6 +4,7 @@
 // contract the Wails shell uses, so the demo renders identically under plain
 // `pnpm dev` (no Go side) — see docs/plan/desktop-product.md §3 M4 / §6.
 
+import { isRecord } from '../../lib/typeGuards';
 import type {
   WireAuthResult,
   WireConfig,
@@ -1843,10 +1844,6 @@ function requireMockString(value: unknown, name: string): string {
 
 function optionalMockString(value: unknown): string | undefined {
   return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Mutate a session's agent_config from a POST /profile (or create) body. */
