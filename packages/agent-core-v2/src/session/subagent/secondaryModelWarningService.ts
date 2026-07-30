@@ -26,6 +26,7 @@ import { IConfigService } from '#/app/config/config';
 import { IEventBus } from '#/app/event/eventBus';
 import { IFlagService } from '#/app/flag/flag';
 import {
+  SECONDARY_MODEL_SECTION,
   SECONDARY_MODEL_EFFORT_ENV,
   SECONDARY_MODEL_ENV,
 } from '#/app/kosongConfig/configSection';
@@ -68,9 +69,34 @@ export class SessionSecondaryModelWarningService
     );
     const main = this.agentLifecycle.get(MAIN_AGENT_ID);
     if (main !== undefined) this.check(main);
+    this._register(
+      this.config.onDidSectionChange(({ domain }) => {
+        if (domain === SECONDARY_MODEL_SECTION && this.checked) {
+          this.recheckSecondaryModelWarning();
+        }
+      }),
+    );
   }
 
   getSecondaryModelWarning(): SecondaryModelWarning | undefined {
+    return this.warning;
+  }
+
+  recheckSecondaryModelWarning(): SecondaryModelWarning | undefined {
+    const previous = this.warning;
+    this.warning = this.computeWarning();
+    const changed =
+      previous?.code !== this.warning?.code || previous?.message !== this.warning?.message;
+    if (changed && this.warning !== undefined) {
+      this.agentLifecycle
+        .get(MAIN_AGENT_ID)
+        ?.accessor.get(IEventBus)
+        .publish({
+          type: 'warning',
+          code: this.warning.code,
+          message: this.warning.message,
+        });
+    }
     return this.warning;
   }
 

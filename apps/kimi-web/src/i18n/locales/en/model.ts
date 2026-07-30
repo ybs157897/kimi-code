@@ -13,4 +13,5 @@ export default {
   starTitle: 'Add to favorites',
   unstarTitle: 'Remove from favorites',
   footerHint: '↑↓ Navigate · Enter Select · Esc Close',
+  manageProviders: 'Configure model services',
 } as const;

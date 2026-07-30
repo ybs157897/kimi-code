@@ -219,8 +219,24 @@ func (c *Client) Call(ctx context.Context, s Scope, service, method string, arg 
 // runtime subscription error). The subscription id — needed for Unlisten — is
 // carried on every delivered Event.ID.
 func (c *Client) Listen(ctx context.Context, s Scope, event string) (<-chan Event, error) {
+	ch, _, err := c.listen(ctx, s, event, nil)
+	return ch, err
+}
+
+// ListenWithCursor subscribes like Listen but carries a positional arg (e.g. a
+// resume cursor for the product stream: {epoch?, after_seq?}) and returns the
+// subscription id up front, so the caller can Unlisten it without waiting for
+// the first event. An empty arg behaves exactly like Listen.
+func (c *Client) ListenWithCursor(ctx context.Context, s Scope, event string, arg []any) (<-chan Event, string, error) {
+	return c.listen(ctx, s, event, arg)
+}
+
+// listen is the shared subscription implementation. It sends the listen frame
+// (optionally carrying arg), waits for the host's ack, and returns the event
+// channel plus the subscription id.
+func (c *Client) listen(ctx context.Context, s Scope, event string, arg []any) (<-chan Event, string, error) {
 	if c.closed.Load() {
-		return nil, ErrClosed
+		return nil, "", ErrClosed
 	}
 	id := c.nextID()
 	sub := &subscription{
@@ -238,21 +254,22 @@ func (c *Client) Listen(ctx context.Context, s Scope, event string) (<-chan Even
 		SessionID: s.SessionID,
 		AgentID:   s.AgentID,
 		Event:     event,
+		Arg:       trimTrailingNil(arg),
 	})
 
 	select {
 	case err := <-sub.ack:
 		if err != nil {
 			c.dropSub(id)
-			return nil, err
+			return nil, "", err
 		}
-		return sub.events, nil
+		return sub.events, id, nil
 	case <-c.dead:
 		c.dropSub(id)
-		return nil, ErrClosed
+		return nil, "", ErrClosed
 	case <-ctx.Done():
 		c.dropSub(id)
-		return nil, ctx.Err()
+		return nil, "", ctx.Err()
 	}
 }
 

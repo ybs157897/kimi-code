@@ -12,15 +12,23 @@ import type { Interaction } from '@moonshot-ai/agent-core-v2/session/interaction
 import { SECONDARY_DERIVED_MODEL_ID } from '@moonshot-ai/agent-core-v2/app/kosongConfig/secondaryModelOverlay';
 
 import type {
+  ExpertTeamDefinition,
+  ExpertTeamSnapshot,
+} from '@moonshot-ai/agent-core-v2/session/expertTeam/expertTeam';
+
+import type {
   WireApprovalRequest,
   WireConfig,
   WireConfigProvider,
+  WireExpertTeamDefinition,
+  WireExpertTeamSnapshot,
   WireImageSource,
   WireMessageContent,
   WireMeta,
   WireQuestionRequest,
   WireSession,
   WireSessionUsage,
+  WireTaskListItem,
   WireWorkspace,
 } from './wire.js';
 
@@ -87,6 +95,131 @@ function buildWireMetadata(custom: Record<string, unknown> | undefined, cwd: str
     rest[key] = value;
   }
   return { ...rest, cwd };
+}
+
+/** Mirrors kap-server `toWireDefinition` (routes/expertTeams.ts). */
+export function toWireExpertTeamDefinition(definition: ExpertTeamDefinition): WireExpertTeamDefinition {
+  return {
+    plugin_id: definition.pluginId,
+    plugin_version: definition.pluginVersion,
+    display_name: definition.displayName,
+    description: definition.description,
+    profession: definition.profession,
+    tags: [...definition.tags],
+    lead_agent_name: definition.leadAgentName,
+    member_agent_names: [...definition.memberAgentNames],
+    members: definition.members.map((member) => ({
+      agent: member.agent,
+      role: member.role,
+      display_name: member.displayName,
+      name: member.name,
+      profession: member.profession,
+      description: member.description,
+      avatar: member.avatar,
+    })),
+    quick_prompts: [...definition.quickPrompts],
+    default_init_prompt: definition.defaultInitPrompt,
+    category_id: definition.categoryId,
+  };
+}
+
+/** Mirrors kap-server `toWireSnapshot` (routes/expertTeams.ts). */
+export function toWireExpertTeamSnapshot(snapshot: ExpertTeamSnapshot): WireExpertTeamSnapshot {
+  return {
+    binding: {
+      plugin_id: snapshot.binding.pluginId,
+      plugin_version: snapshot.binding.pluginVersion,
+      display_name: snapshot.binding.displayName,
+      lead_agent_name: snapshot.binding.leadAgentName,
+      lead_profile_name: snapshot.binding.leadProfileName,
+      member_agent_names: [...snapshot.binding.memberAgentNames],
+      previous_profile_name: snapshot.binding.previousProfile.profileName,
+      activated_at: snapshot.binding.activatedAt,
+    },
+    team:
+      snapshot.team === undefined
+        ? undefined
+        : {
+            id: snapshot.team.id,
+            name: snapshot.team.name,
+            description: snapshot.team.description,
+            created_at: snapshot.team.createdAt,
+            members: snapshot.team.members.map((member) => ({
+              name: member.name,
+              agent_id: member.agentId,
+              profile_name: member.profileName,
+              status: member.status,
+              updated_at: member.updatedAt,
+              task_id: member.taskId,
+            })),
+          },
+  };
+}
+
+/**
+ * Mirrors kap-server `toWireTask` (routes/tasks.ts): project engine
+ * `AgentTaskInfo` to the wire `Task` shape (snake_case + ISO timestamps).
+ */
+export function toWireTask(
+  sessionId: string,
+  info: {
+    readonly taskId: string;
+    readonly kind: string;
+    readonly description: string;
+    readonly status: string;
+    readonly startedAt: number;
+    readonly endedAt: number | null;
+    readonly command?: string;
+  },
+  output?: { preview: string; bytes: number },
+): WireTaskListItem {
+  const mapKind = (k: string): WireTaskListItem['kind'] => {
+    switch (k) {
+      case 'process':
+        return 'bash';
+      case 'agent':
+        return 'subagent';
+      default:
+        return 'tool';
+    }
+  };
+  const mapStatus = (s: string): WireTaskListItem['status'] => {
+    switch (s) {
+      case 'running':
+        return 'running';
+      case 'completed':
+        return 'completed';
+      case 'failed':
+      case 'timed_out':
+      case 'lost':
+        return 'failed';
+      case 'killed':
+        return 'cancelled';
+      default:
+        return 'failed';
+    }
+  };
+  const createdIso = new Date(info.startedAt).toISOString();
+  const item: WireTaskListItem = {
+    id: info.taskId,
+    session_id: sessionId,
+    kind: mapKind(info.kind),
+    description: info.description,
+    status: mapStatus(info.status),
+    created_at: createdIso,
+    started_at: createdIso,
+  };
+  if (info.endedAt !== null && info.endedAt !== undefined) {
+    item.completed_at = new Date(info.endedAt).toISOString();
+  }
+  if (info.kind === 'process' && info.command !== undefined) {
+    item.command = info.command;
+  }
+  if (output !== undefined) {
+    item.output_preview = output.preview;
+    item.output_bytes = output.bytes;
+  }
+  return item;
 }
 
 /** Mirrors kap-server `toWireSession` (routes/sessions.ts). */

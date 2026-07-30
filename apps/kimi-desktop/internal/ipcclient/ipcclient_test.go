@@ -259,6 +259,71 @@ func TestListenDeliversEvents(t *testing.T) {
 	}
 }
 
+func TestListenWithCursorCarriesArgAndReturnsID(t *testing.T) {
+	s, sock := startFakeServer(t, "")
+	c := dial(t, sock, "")
+
+	cursor := []any{map[string]any{"epoch": "ep_1", "after_seq": float64(7)}}
+	ch, id, err := c.ListenWithCursor(
+		context.Background(),
+		Scope{SessionID: "s1", AgentID: "a1"},
+		"product",
+		cursor,
+	)
+	if err != nil {
+		t.Fatalf("ListenWithCursor: %v", err)
+	}
+	if id == "" {
+		t.Fatalf("ListenWithCursor returned empty subscription id")
+	}
+
+	// Drain the first canned event so the id is confirmed on the wire too.
+	select {
+	case ev := <-ch:
+		if ev.ID != id {
+			t.Fatalf("event id = %q, want %q", ev.ID, id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for first event")
+	}
+
+	s.mu.Lock()
+	listens := append([]frame(nil), s.listens...)
+	s.mu.Unlock()
+	if len(listens) != 1 {
+		t.Fatalf("server saw %d listens, want 1", len(listens))
+	}
+	lf := listens[0]
+	if lf.Event != "product" || lf.SessionID != "s1" || lf.AgentID != "a1" {
+		t.Fatalf("listen frame = %+v, want product/s1/a1", lf)
+	}
+	if len(lf.Arg) != 1 {
+		t.Fatalf("listen arg = %#v, want one cursor object", lf.Arg)
+	}
+	obj, ok := lf.Arg[0].(map[string]any)
+	if !ok || obj["epoch"] != "ep_1" || obj["after_seq"] != float64(7) {
+		t.Fatalf("listen arg[0] = %#v, want {epoch:ep_1, after_seq:7}", lf.Arg[0])
+	}
+
+	// The returned id must Unlisten the subscription.
+	if err := c.Unlisten(id); err != nil {
+		t.Fatalf("Unlisten: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		got := append([]string(nil), s.unlistens...)
+		s.mu.Unlock()
+		if len(got) == 1 && got[0] == id {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not receive unlisten for %q, got %v", id, got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 func TestWrongTokenRejected(t *testing.T) {
 	_, sock := startFakeServer(t, "secret")
 

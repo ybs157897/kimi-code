@@ -62,37 +62,74 @@ func (a *App) ProductCall(method, argsJSON string) (string, error) {
 
 // ProductSubscribe subscribes the session/agent product stream and re-emits
 // each projected kimi-web WireEvent on the "kimi:event" channel as
-// { sessionId, agentId, event: <WireEvent> } (frozen contract F). It reuses the
-// Phase 0 subscription bookkeeping (App.subs, cancelled on shutdown) under a
-// namespaced key so it coexists with the Phase 0 agent-event subscription for
-// the same session/agent without leaking or double-forwarding: re-subscribing
-// an already-active product stream is a no-op.
-func (a *App) ProductSubscribe(sessionId, agentId string) error {
+// { sessionId, agentId, event: <WireEvent> } (frozen contract F). cursorJSON is
+// an optional resume cursor object ({epoch?, after_seq?}) carried to the sidecar
+// stream hub as the listen arg: the hub replays journaled frames after
+// after_seq, or pushes a resync_required control frame when it cannot cover the
+// gap. An empty cursorJSON subscribes live from the current head. Re-subscribing
+// an already-active product stream is a no-op (the existing cursor stands).
+func (a *App) ProductSubscribe(sessionId, agentId, cursorJSON string) error {
 	client, err := a.requireClient()
 	if err != nil {
 		return err
 	}
-	return a.subscribeProduct(client, sessionId, agentId)
+	arg, err := parseProductCursor(cursorJSON)
+	if err != nil {
+		return err
+	}
+	return a.subscribeProduct(client, sessionId, agentId, arg)
+}
+
+// ProductUnsubscribe detaches the session/agent product stream: it cancels the
+// forwarding goroutine and tells the sidecar to dispose its projector
+// subscription (Unlisten), so the stream hub can ref-count down and stop
+// projecting when no consumer remains. Unsubscribing an inactive stream is a
+// no-op.
+func (a *App) ProductUnsubscribe(sessionId, agentId string) error {
+	key := productSubKeyPrefix + sessionId + "/" + agentId
+	a.mu.Lock()
+	sub, ok := a.productSubs[key]
+	delete(a.productSubs, key)
+	a.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	sub.cancel()
+	if client := a.currentClient(); client != nil {
+		_ = client.Unlisten(sub.listenID)
+	}
+	return nil
+}
+
+// productSub tracks one active product subscription: the context cancel that
+// stops its forwarding goroutine and the ipc subscription id used to Unlisten
+// the sidecar side.
+type productSub struct {
+	cancel   context.CancelFunc
+	listenID string
 }
 
 // subscribeProduct mirrors subscribe in app.go for the product stream. It is
 // kept separate so the Phase 0 agent-event path stays untouched; the two share
-// App.subs and App.emit and must be kept consistent. Unlike subscribe it
-// returns the listen error so ProductSubscribe can report a failed setup.
-func (a *App) subscribeProduct(client *ipcclient.Client, sessionId, agentId string) error {
+// App.emit but track subscriptions in different maps (App.productSubs vs
+// App.subs). Unlike subscribe it returns the listen error so ProductSubscribe
+// can report a failed setup, and it records the ipc subscription id for
+// ProductUnsubscribe.
+func (a *App) subscribeProduct(client *ipcclient.Client, sessionId, agentId string, cursor []any) error {
 	key := productSubKeyPrefix + sessionId + "/" + agentId
 
 	a.mu.Lock()
-	if _, ok := a.subs[key]; ok {
+	if _, ok := a.productSubs[key]; ok {
 		a.mu.Unlock()
 		return nil
 	}
 	a.mu.Unlock()
 
 	subCtx, cancel := context.WithCancel(context.Background())
-	ch, err := client.Listen(subCtx,
+	ch, listenID, err := client.ListenWithCursor(subCtx,
 		ipcclient.Scope{SessionID: sessionId, AgentID: agentId},
 		productEventStream,
+		cursor,
 	)
 	if err != nil {
 		cancel()
@@ -101,23 +138,49 @@ func (a *App) subscribeProduct(client *ipcclient.Client, sessionId, agentId stri
 	}
 
 	a.mu.Lock()
-	if _, ok := a.subs[key]; ok {
-		// Lost a race to a concurrent ProductSubscribe; drop this one.
+	if _, ok := a.productSubs[key]; ok {
+		// Lost a race to a concurrent ProductSubscribe; drop this one and
+		// dispose the just-created sidecar subscription.
 		a.mu.Unlock()
 		cancel()
+		_ = client.Unlisten(listenID)
 		return nil
 	}
-	a.subs[key] = cancel
+	a.productSubs[key] = productSub{cancel: cancel, listenID: listenID}
 	a.mu.Unlock()
 
 	go func() {
 		defer cancel()
 		for ev := range ch {
-			// ev.Data is already a kimi-web WireEvent JSON; pass it through.
+			// ev.Data is already a kimi-web WireEvent (or resync_required control
+			// frame) JSON; pass it through verbatim.
 			a.emit(sessionId, agentId, ev.Data)
 		}
 	}()
 	return nil
+}
+
+// parseProductCursor parses an optional resume-cursor payload into the
+// positional listen arg the stream hub reads. Empty / blank input means no
+// cursor (a fresh live subscription, arg nil). A JSON object is wrapped as a
+// single-element positional array; an empty object also means no cursor.
+// Anything else is rejected so a malformed payload fails fast.
+func parseProductCursor(cursorJSON string) ([]any, error) {
+	trimmed := strings.TrimSpace(cursorJSON)
+	if trimmed == "" {
+		return nil, nil
+	}
+	if trimmed[0] != '{' {
+		return nil, fmt.Errorf("product cursor: expected a JSON object, got %q", trimmed[0])
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(trimmed), &obj); err != nil {
+		return nil, fmt.Errorf("product cursor: %w", err)
+	}
+	if len(obj) == 0 {
+		return nil, nil
+	}
+	return []any{obj}, nil
 }
 
 // parseProductArgs parses a ProductCall argument payload into the positional

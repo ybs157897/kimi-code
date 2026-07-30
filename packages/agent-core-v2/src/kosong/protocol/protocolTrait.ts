@@ -24,6 +24,7 @@
  */
 
 import type { ModelCapability } from '#/kosong/contract/capability';
+import type { ChatProviderError } from '#/kosong/contract/errors';
 import type { Message, VideoURLPart } from '#/kosong/contract/message';
 import type {
   GenerateOptions,
@@ -133,6 +134,8 @@ export interface ProtocolTrait {
   /** Single-value: tool-call id rewrite policy, replacing the base policy. */
   toolCallIdPolicy?(ctx: TraitContext): ToolCallIdPolicy | undefined;
 
+  convertError?(error: unknown, ctx: TraitContext): ChatProviderError | undefined;
+
   /**
    * Per-turn thinking intent → generation-kwargs patch. Receives the kwargs
    * already seeded by earlier intents (cacheKey, sampling) and returns the
@@ -238,4 +241,16 @@ export function traitDefaultHeaders(
     headers = { ...headers, ...declared };
   }
   return headers;
+}
+
+export function traitConvertError(
+  traits: readonly ResolvedTrait[],
+): ((error: unknown) => ChatProviderError | undefined) | undefined {
+  let bound: ((error: unknown) => ChatProviderError | undefined) | undefined;
+  for (const { trait, context } of traits) {
+    if (trait.convertError === undefined) continue;
+    const declared = trait.convertError.bind(trait);
+    bound = (error) => declared(error, context);
+  }
+  return bound;
 }

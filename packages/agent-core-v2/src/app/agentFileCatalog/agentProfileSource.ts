@@ -38,6 +38,7 @@ export interface AgentProfileContribution {
 }
 
 export const AGENT_PROFILE_SOURCE_PRIORITY = {
+  plugin: 5,
   user: 10,
   extra: 20,
   project: 30,

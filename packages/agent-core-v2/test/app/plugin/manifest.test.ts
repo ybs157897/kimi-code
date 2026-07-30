@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { parseManifest } from '#/app/plugin/manifest';
+import { parseManifest, PLUGIN_SYSTEM_PROMPT_MAX_BYTES } from '#/app/plugin/manifest';
 
 describe('plugin manifest parser', () => {
   let dir: string;
@@ -60,6 +60,82 @@ describe('plugin manifest parser', () => {
     expect(result.diagnostics.map((d) => d.message)).toEqual([
       expect.stringContaining('Invalid hook at index 0'),
       '"commands" path must start with "./" (got "../outside.md")',
+    ]);
+  });
+
+  it('resolves generic agent directories and defaults to ./agents', async () => {
+    await mkdir(join(dir, 'agents'), { recursive: true });
+    await writeFile(
+      join(dir, 'kimi.plugin.json'),
+      JSON.stringify({ name: 'demo', agents: ['./agents'] }),
+      'utf8',
+    );
+
+    const explicit = await parseManifest(dir);
+    expect(explicit.manifest?.agents).toEqual([join(await realpath(dir), 'agents')]);
+
+    await writeFile(join(dir, 'kimi.plugin.json'), JSON.stringify({ name: 'demo' }), 'utf8');
+    const fallback = await parseManifest(dir);
+    expect(fallback.manifest?.agents).toEqual([join(await realpath(dir), 'agents')]);
+    expect(fallback.diagnostics).toEqual([]);
+  });
+
+  it('keeps the generic agents list separate from WorkBuddy expert files', async () => {
+    await mkdir(join(dir, 'agents'), { recursive: true });
+    await writeFile(join(dir, 'agents', 'lead.md'), '# Lead', 'utf8');
+    await writeFile(
+      join(dir, 'kimi.plugin.json'),
+      JSON.stringify({
+        name: 'demo',
+        expertType: 'agent',
+        agentName: 'lead',
+        agents: ['./agents/lead.md'],
+      }),
+      'utf8',
+    );
+
+    const result = await parseManifest(dir);
+    const root = await realpath(dir);
+
+    expect(result.manifest?.agents).toEqual([]);
+    expect(result.manifest?.expert?.agents).toEqual([join(root, 'agents', 'lead.md')]);
+  });
+
+  it('combines inline and file-based system prompts', async () => {
+    await writeFile(join(dir, 'PROMPT.md'), '﻿From file.\n', 'utf8');
+    await writeFile(
+      join(dir, 'kimi.plugin.json'),
+      JSON.stringify({
+        name: 'demo',
+        systemPrompt: '\nInline.\n',
+        systemPromptPath: './PROMPT.md',
+      }),
+      'utf8',
+    );
+
+    const result = await parseManifest(dir);
+
+    expect(result.manifest?.systemPrompt).toBe('Inline.\n\nFrom file.');
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it('rejects escaping and oversized system-prompt content', async () => {
+    await writeFile(
+      join(dir, 'kimi.plugin.json'),
+      JSON.stringify({
+        name: 'demo',
+        systemPrompt: 'x'.repeat(PLUGIN_SYSTEM_PROMPT_MAX_BYTES + 1),
+        systemPromptPath: './../outside.md',
+      }),
+      'utf8',
+    );
+
+    const result = await parseManifest(dir);
+
+    expect(result.manifest?.systemPrompt).toBeUndefined();
+    expect(result.diagnostics.map((diagnostic) => diagnostic.message)).toEqual([
+      `"systemPrompt" is ${PLUGIN_SYSTEM_PROMPT_MAX_BYTES + 1} bytes, exceeding the 32 KB limit; the field is ignored`,
+      '"systemPromptPath" path resolves outside the plugin (./../outside.md)',
     ]);
   });
 

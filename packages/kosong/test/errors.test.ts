@@ -2,6 +2,7 @@ import {
   APIConnectionError,
   APIContextOverflowError,
   APIEmptyResponseError,
+  APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
   APIRequestTooLargeError,
   APIStatusError,
@@ -676,5 +677,30 @@ describe('isImageFormatError', () => {
     expect(
       isRetryableGenerateError(new APIStatusError(400, 'unsupported image format')),
     ).toBe(false);
+  });
+});
+
+describe('APIProviderQuotaExhaustedError', () => {
+  it('preserves HTTP details without becoming a rate-limit error', () => {
+    const error = new APIProviderQuotaExhaustedError('quota exhausted', 'req-quota', 12_500);
+
+    expect(error).toBeInstanceOf(APIStatusError);
+    expect(error).toBeInstanceOf(ChatProviderError);
+    expect(error).not.toBeInstanceOf(APIProviderRateLimitError);
+    expect(error).toMatchObject({
+      name: 'APIProviderQuotaExhaustedError',
+      statusCode: 429,
+      requestId: 'req-quota',
+      retryAfterMs: 12_500,
+    });
+  });
+
+  it('is neither retryable nor treated as transient rate limiting', () => {
+    const error = new APIProviderQuotaExhaustedError('quota exhausted');
+
+    expect(isRetryableGenerateError(error)).toBe(false);
+    expect(isProviderRateLimitError(error)).toBe(false);
+    expect(isRetryableGenerateError(new APIProviderRateLimitError('rate limited'))).toBe(true);
+    expect(isProviderRateLimitError(new APIProviderRateLimitError('rate limited'))).toBe(true);
   });
 });

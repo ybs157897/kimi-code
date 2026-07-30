@@ -1,6 +1,7 @@
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
+import { log } from '@moonshot-ai/kimi-code-sdk';
 import type {
   ApprovalRequest,
   ApprovalResponse,
@@ -1913,8 +1914,8 @@ export class KimiTUI {
         this.state.appState.sessionId,
         this.hasSessionContent(),
       );
-    } catch {
-      /* silently ignore */
+    } catch (error) {
+      log.warn('failed to fetch sessions for picker', { error: String(error) });
     } finally {
       this.state.loadingSessions = false;
     }

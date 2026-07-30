@@ -832,4 +832,106 @@ describe('AgentToolDedupeService', () => {
       expect(telemetryEvents.filter((e) => e.event === 'tool_call_repeat')).toHaveLength(0);
     });
   });
+
+  describe('preflight-rejected calls', () => {
+    class StrictTool implements ExecutableTool<Record<string, unknown>> {
+      readonly name = 'Strict';
+      readonly description = 'Requires a command string.';
+      readonly parameters = {
+        type: 'object',
+        properties: { command: { type: 'string' } },
+        required: ['command'],
+        additionalProperties: true,
+      };
+      readonly calls: Array<Record<string, unknown>> = [];
+
+      resolveExecution(args: Record<string, unknown>): ToolExecution {
+        return {
+          approvalRule: this.name,
+          execute: async () => {
+            this.calls.push(args);
+            return { output: 'ran' };
+          },
+        };
+      }
+    }
+
+    function invalidCall(id: string): ToolCall {
+      return { type: 'function', id, name: 'Strict', arguments: JSON.stringify({ timeout: 60 }) };
+    }
+
+    function malformedCall(id: string, rawArguments: string): ToolCall {
+      return { type: 'function', id, name: 'Strict', arguments: rawArguments };
+    }
+
+    it('counts rejected calls toward the streak and force-stops at 12', async () => {
+      const h = createHarness();
+      const tool = new StrictTool();
+      h.registry.register(tool);
+      let last: ToolResult | undefined;
+
+      for (let i = 0; i < 12; i += 1) {
+        const [result] = await runStep(h, 1, i + 1, [invalidCall(`c${String(i)}`)]);
+        last = result!.result;
+      }
+
+      expect(tool.calls).toHaveLength(0);
+      expect(last).toMatchObject({ isError: true, stopTurn: true });
+      expect(last!.output as string).toContain(REMINDER_TEXT_3.trim());
+      expect(
+        telemetryEvents
+          .filter((event) => event.event === 'tool_call_repeat')
+          .map((event) => event.properties?.['action']),
+      ).toEqual(['none', 'r1', 'r1', 'r2', 'r2', 'r2', 'r3', 'r3', 'r3', 'r3', 'stop']);
+    });
+
+    it('does not double-register calls observed by the before hook', async () => {
+      const h = createHarness(undefined, { executorEvents: true });
+
+      for (let i = 0; i < 2; i += 1) {
+        await beforeStep(h, 1, i + 1);
+        const callId = `c${String(i)}`;
+        expect(await h.fireBefore(willCtx(callId, 'Read', { p: 1 }))).toBeUndefined();
+        await h.executor.hooks.onDidExecuteTool.run(
+          didCtx(callId, 'Read', { p: 1 }, okResult('R')),
+        );
+        await afterStep(h, 1, i + 1);
+      }
+
+      expect(
+        telemetryEvents
+          .filter((event) => event.event === 'tool_call_repeat')
+          .map((event) => event.properties?.['repeat_count']),
+      ).toEqual([2]);
+    });
+
+    it('counts identical malformed argument text as repeats', async () => {
+      const h = createHarness();
+      h.registry.register(new StrictTool());
+
+      for (let i = 0; i < 2; i += 1) {
+        await runStep(h, 1, i + 1, [malformedCall(`c${String(i)}`, '{"command":')]);
+      }
+
+      expect(
+        telemetryEvents
+          .filter((event) => event.event === 'tool_call_repeat')
+          .map((event) => event.properties?.['repeat_count']),
+      ).toEqual([2]);
+    });
+
+    it('keeps different malformed argument text in separate streaks', async () => {
+      const h = createHarness();
+      h.registry.register(new StrictTool());
+      const argumentsList = ['{"command":', '{"comand":', '{"command": "ls"'];
+
+      for (let i = 0; i < argumentsList.length; i += 1) {
+        await runStep(h, 1, i + 1, [
+          malformedCall(`c${String(i)}`, argumentsList[i]!),
+        ]);
+      }
+
+      expect(telemetryEvents.filter((event) => event.event === 'tool_call_repeat')).toHaveLength(0);
+    });
+  });
 });

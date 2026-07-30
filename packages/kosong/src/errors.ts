@@ -119,6 +119,18 @@ export class APIProviderRateLimitError extends APIStatusError {
   }
 }
 
+export class APIProviderQuotaExhaustedError extends APIStatusError {
+  constructor(
+    message: string,
+    requestId?: string | null,
+    retryAfterMs?: number | null,
+    traceId?: string | null,
+  ) {
+    super(429, message, requestId, retryAfterMs, traceId);
+    this.name = 'APIProviderQuotaExhaustedError';
+  }
+}
+
 /**
  * The API returned an empty response (no content, no tool calls).
  */
@@ -191,6 +203,9 @@ export function isRetryableGenerateError(error: unknown): boolean {
     return true;
   }
   if (error instanceof APIStatusError) {
+    if (error instanceof APIProviderQuotaExhaustedError) {
+      return false;
+    }
     // Transient statuses worth retrying: 408 (request timeout), 409
     // (lock/conflict timeout), 429 (rate limit), 5xx (server errors) and 529
     // (provider overloaded — the "engine is currently overloaded" case).
@@ -551,6 +566,7 @@ export function isRecoverableRequestStructureError(error: unknown): boolean {
 }
 
 export function isProviderRateLimitError(error: unknown): boolean {
+  if (error instanceof APIProviderQuotaExhaustedError) return false;
   if (error instanceof APIProviderRateLimitError) return true;
 
   const statusCode = getStatusCode(error);

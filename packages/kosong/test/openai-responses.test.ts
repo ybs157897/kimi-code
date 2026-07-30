@@ -1,8 +1,10 @@
 import {
   APIContextOverflowError,
+  APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
   APIStatusError,
   ChatProviderError,
+  isRetryableGenerateError,
 } from '#/errors';
 import { generate } from '#/generate';
 import type { ContentPart, Message, StreamedMessagePart, ToolCall } from '#/message';
@@ -2038,6 +2040,57 @@ describe('OpenAIResponsesChatProvider', () => {
       expect(caughtError).toBeInstanceOf(APIProviderRateLimitError);
       expect((caughtError as APIProviderRateLimitError).statusCode).toBe(429);
       expect((caughtError as Error).message).toContain('status_code=429');
+    });
+
+    it('fails fast on response.failed with an insufficient_quota code', async () => {
+      const events = [
+        {
+          type: 'response.failed',
+          response: {
+            id: 'resp_quota',
+            status: 'failed',
+            error: {
+              code: 'insufficient_quota',
+              message: 'You exceeded your current quota, please check your plan.',
+            },
+          },
+        },
+      ];
+      const stream = new OpenAIResponsesStreamedMessage(makeAsyncIterable(events), true);
+
+      let caughtError: unknown;
+      try {
+        await collectStreamParts(stream);
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError).toBeInstanceOf(APIProviderQuotaExhaustedError);
+      expect(isRetryableGenerateError(caughtError)).toBe(false);
+    });
+
+    it('keeps vendor billing wording retryable without a vendor hook', async () => {
+      const events = [
+        {
+          type: 'error',
+          code: 'upstream_error',
+          message:
+            'llmproxy/openai/responses/resp_q.json status_code=429 Your account is suspended due to insufficient balance',
+          param: null,
+        },
+      ];
+      const stream = new OpenAIResponsesStreamedMessage(makeAsyncIterable(events), true);
+
+      let caughtError: unknown;
+      try {
+        await collectStreamParts(stream);
+      } catch (error) {
+        caughtError = error;
+      }
+
+      expect(caughtError).toBeInstanceOf(APIProviderRateLimitError);
+      expect(caughtError).not.toBeInstanceOf(APIProviderQuotaExhaustedError);
+      expect(isRetryableGenerateError(caughtError)).toBe(true);
     });
 
     it('rejects malformed stream events with a non-string type even when message is present', async () => {

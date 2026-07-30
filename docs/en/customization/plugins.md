@@ -1,6 +1,6 @@
 # Plugins
 
-Plugins package reusable Kimi Code CLI capabilities into installable units — they can add [Agent Skills](./skills.md), automatically load a specified Skill at session start, and declare MCP servers to provide real tool capabilities. They are ideal for sharing workflows with a team, connecting to external services, or installing extensions from the official marketplace.
+Plugins package reusable Kimi Code CLI capabilities into installable units — they can add [Agent Skills](./skills.md), custom [agents](./agents.md), system-prompt instructions, slash commands, hooks, and MCP servers. They are ideal for sharing workflows with a team, connecting to external services, or installing extensions from the official marketplace.
 
 ## Installation and Management
 
@@ -143,6 +143,8 @@ Example:
   "version": "1.0.0",
   "description": "Finance data and analysis workflows for Kimi Code CLI",
   "skills": "./skills/",
+  "agents": "./agents/",
+  "systemPromptPath": "./SYSTEM.md",
   "sessionStart": {
     "skill": "using-finance"
   },
@@ -161,13 +163,30 @@ Supported fields:
 | `version`, `description`, `keywords`, `author`, `homepage`, `license` | Display metadata |
 | `interface` | Fields shown in `/plugins`: `displayName`, `shortDescription`, `longDescription`, `developerName`, `websiteURL` |
 | `skills` | One or more `./` paths; must be within the plugin root directory. When omitted, the `SKILL.md` in the root directory is treated as a single Skill root |
+| `agents` | One or more `./` directories containing [agent files](./agents.md#custom-agents). When omitted, the plugin's `agents/` directory is discovered automatically |
 | `sessionStart.skill` | Loads the specified plugin Skill into the main Agent when a new or resumed session starts |
 | `skillInstructions` | Additional instructions appended whenever a Skill from this plugin is loaded |
+| `systemPrompt` | Inline instructions contributed to the agent's system prompt while the plugin is enabled |
+| `systemPromptPath` | A `./` path to a UTF-8 text file containing system-prompt instructions; appended after `systemPrompt` when both are present |
 | `mcpServers` | MCP server declarations; enabled by default, can be disabled from `/plugins` |
 | `hooks` | Hook rules run on lifecycle events while the plugin is enabled; see [Hooks in Plugins](#hooks-in-plugins) |
 | `commands` | One or more `./` paths pointing to a directory or `.md` file; registers the Markdown files within as slash commands. See [Plugin Slash Commands](#plugin-slash-commands) |
 
 Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` appear as diagnostics and are ignored.
+
+### System-prompt instructions
+
+Use `systemPrompt` for a short instruction or `systemPromptPath` for a text file inside the plugin root. If both fields are present, the inline text appears first, followed by the file content:
+
+```json
+{
+  "name": "code-review",
+  "systemPrompt": "Review changes for correctness and security.",
+  "systemPromptPath": "./SYSTEM.md"
+}
+```
+
+Each field is limited to 32 KB of UTF-8 content. A prompt build accepts at most 64 KB across all enabled plugins; later contributions that exceed the aggregate budget are skipped with a warning. Run `/plugins reload` after editing plugin files so active sessions rebuild their plugin instructions.
 
 ## Plugin Slash Commands
 
@@ -249,6 +268,19 @@ my-plugin/
 
 Regardless of how a Skill is loaded (`sessionStart.skill`, `/skill:<name>`, or automatic model invocation), `skillInstructions` appears alongside that plugin's Skill.
 
+## Plugin agents
+
+A plugin can ship custom agents by declaring one or more `./` directories in `agents`, or by placing an `agents/` directory under the plugin root:
+
+```text
+my-plugin/
+  kimi.plugin.json
+  agents/
+    reviewer.md
+```
+
+These files use the same format as [custom agents](./agents.md#custom-agents) and are available for subagent delegation while the plugin is enabled. Plugin agents rank below user, extra, project, and explicit agent files; replacing a built-in agent still requires `override: true` in the frontmatter. Run `/plugins reload` after installing, enabling, disabling, or changing the plugin.
+
 ## MCP Servers in Plugins
 
 When a plugin needs real tool capabilities, it can declare `mcpServers` in its manifest, reusing the [MCP](./mcp.md) schema.
@@ -323,4 +355,3 @@ Plugins have a limited loading scope. The following operations do not occur duri
 - All paths must remain within the plugin root directory after symbolic link resolution
 - MCP servers of enabled plugins start after `/reload` or in new sessions and can be disabled at any time from `/plugins`
 - Broken manifests or unsafe paths appear in `/plugins info <id>` diagnostics and do not affect other sessions
-

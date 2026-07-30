@@ -28,6 +28,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   select: [modelId: string];
   'toggle-star': [modelId: string];
+  manage: [];
   close: [];
 }>();
 
@@ -214,7 +215,13 @@ function selectTab(tabId: string): void {
       </div>
 
       <!-- Footer hint -->
-      <div class="footer-hint">{{ t('model.footerHint') }}</div>
+      <div class="footer">
+        <span class="footer-hint">{{ t('model.footerHint') }}</span>
+        <Button variant="secondary" size="sm" @click="emit('manage')">
+          <Icon name="settings" size="sm" />
+          {{ t('model.manageProviders') }}
+        </Button>
+      </div>
     </div>
   </Dialog>
 </template>
@@ -333,12 +340,18 @@ function selectTab(tabId: string): void {
 }
 
 /* Footer */
-.footer-hint {
+.footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
   padding-top: var(--space-2);
+  border-top: 1px solid var(--color-line);
+}
+.footer-hint {
+  color: var(--color-text-faint);
   font-family: var(--font-ui);
   font-size: var(--text-xs);
-  color: var(--color-text-faint);
-  border-top: 1px solid var(--color-line);
 }
 
 @media (max-width: 640px) {

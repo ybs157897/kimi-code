@@ -43,3 +43,40 @@ func TestParseProductArgsRejectsNonContainer(t *testing.T) {
 		}
 	}
 }
+
+func TestParseProductCursor(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []any
+	}{
+		{name: "empty means no cursor", in: "", want: nil},
+		{name: "blank means no cursor", in: "  \n\t", want: nil},
+		{name: "empty object means no cursor", in: "{}", want: nil},
+		{name: "cursor wraps to one positional arg", in: `{"epoch":"ep_1","after_seq":7}`, want: []any{
+			map[string]any{"epoch": "ep_1", "after_seq": float64(7)},
+		}},
+		{name: "after_seq only", in: `{"after_seq":3}`, want: []any{
+			map[string]any{"after_seq": float64(3)},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseProductCursor(tt.in)
+			if err != nil {
+				t.Fatalf("parseProductCursor(%q) unexpected error: %v", tt.in, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("parseProductCursor(%q) = %#v, want %#v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseProductCursorRejectsNonObject(t *testing.T) {
+	for _, in := range []string{`[1,2]`, `123`, `"ep"`, `true`, `{`} {
+		if got, err := parseProductCursor(in); err == nil {
+			t.Fatalf("parseProductCursor(%q) = %#v, want error", in, got)
+		}
+	}
+}

@@ -1,5 +1,6 @@
 import {
   APIContextOverflowError,
+  APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
   ChatProviderError,
   isContextOverflowErrorCode,
@@ -23,6 +24,7 @@ import { usesOpenAIResponsesDeveloperRole } from './capability-registry';
 import {
   convertOpenAIError,
   isMediaPart,
+  isOpenAIInsufficientQuotaCode,
   TOOL_RESULT_MEDIA_PLACEHOLDER,
   TOOL_RESULT_MEDIA_PROMPT,
   type ToolMessageConversion,
@@ -250,6 +252,9 @@ function errorFromOpenAIResponsesEvent(
   const fullMessage = `${prefix}: ${formatted}`;
   if (isContextOverflowErrorCode(code)) {
     return new APIContextOverflowError(400, fullMessage);
+  }
+  if (isOpenAIInsufficientQuotaCode(code)) {
+    return new APIProviderQuotaExhaustedError(fullMessage);
   }
   if (code === 'rate_limit_exceeded' || readEmbeddedStatusCode(message) === 429) {
     return new APIProviderRateLimitError(fullMessage);

@@ -27,7 +27,11 @@
 
 import type {
   AppConfig,
+  AppExpertTeam,
+  AppExpertTeamStatus,
   AppGoal,
+  AppMessage,
+  AppMessageRole,
   AppModel,
   AppProvider,
   AppProviderDetail,
@@ -41,6 +45,9 @@ import type {
   AppSessionCursor,
   AppSessionSnapshot,
   AppWorkspace,
+  FsBrowseResult,
+  FsEntry,
+  FsKind,
   KimiEventConnection,
   KimiEventHandlers,
   KimiWebApi,
@@ -56,6 +63,9 @@ import {
   toAppApprovalRequest,
   toAppConfig,
   toAppEvent,
+  toAppExpertTeam,
+  toAppExpertTeamStatus,
+  toAppFsEntry,
   toAppGoal,
   toAppMessage,
   toAppModel,
@@ -74,20 +84,26 @@ import type {
   WireAuthResult,
   WireConfig,
   WireEnvelope,
-  WireEvent,
+  WireExpertTeamDefinition,
+  WireExpertTeamSnapshot,
+  WireFsBrowseResult,
+  WireFsEntry,
   WireFsHomeResult,
   WireGoalSnapshot,
+  WireMessage,
   WireModel,
   WireOAuthCancelResult,
   WireOAuthLoginPollResult,
   WireOAuthLoginStartResult,
   WirePage,
+  WirePromptSteerResult,
   WirePromptSubmitResult,
   WireProvider,
   WireProviderDetail,
   WireProviderRefreshResult,
   WireLogoutResult,
   WireSession,
+  WireSessionAbortResult,
   WireSessionRuntimeStatus,
   WireSessionSnapshot,
   WireSessionWarning,
@@ -118,8 +134,82 @@ interface WireMeta {
   backend?: 'v1' | 'v2';
 }
 
+// ---------------------------------------------------------------------------
+// Slice 4 — structured filesystem wire results. Mirrored field-for-field from
+// the daemon client's local DTOs (daemon/client.ts), which match the engine's
+// `sessionFs` response schemas the sidecar returns unchanged.
+// ---------------------------------------------------------------------------
+
+interface WireListDirectoryResult {
+  items: WireFsEntry[];
+  children_by_path?: Record<string, WireFsEntry[]>;
+  truncated: boolean;
+}
+
+interface WireReadFileResult {
+  path: string;
+  content: string;
+  encoding: 'utf-8' | 'base64';
+  size: number;
+  truncated: boolean;
+  etag: string;
+  mime: string;
+  language_id?: string;
+  line_count?: number;
+  is_binary: boolean;
+}
+
+interface WireSearchFilesResult {
+  items: Array<{
+    path: string;
+    name: string;
+    kind: FsKind;
+    score: number;
+    match_positions: number[];
+  }>;
+  truncated: boolean;
+}
+
+interface WireGrepFilesResult {
+  files: Array<{
+    path: string;
+    matches: Array<{
+      line: number;
+      col: number;
+      text: string;
+      before: string[];
+      after: string[];
+    }>;
+  }>;
+  files_scanned: number;
+  truncated: boolean;
+  elapsed_ms: number;
+}
+
+interface WireDiffResult {
+  path: string;
+  diff: string;
+}
+
 /** Conventional main-agent id used to scope the product subscription. */
 const MAIN_AGENT_ID = 'main';
+
+/**
+ * The v2 sync control frame the product stream pushes (instead of a `WireEvent`)
+ * when it cannot incrementally cover the resume cursor. Mirrors the sidecar's
+ * `WireResyncRequired` and kimi-web's daemon `WireResyncRequired`; the desktop
+ * client discriminates it on `type` before mapping normal events.
+ */
+interface DesktopResyncFrame {
+  type: 'resync_required';
+  timestamp?: string;
+  payload: {
+    session_id: string;
+    reason: 'buffer_overflow' | 'session_recreated' | 'epoch_changed';
+    current_seq: number;
+    epoch?: string;
+  };
+}
 
 /** historyCompacted reasons that are compaction itself (no snapshot reload). */
 function isCompactionReason(reason: string): boolean {
@@ -134,7 +224,11 @@ export class WailsKimiWebApi {
   }
 
   /** ProductCall with a JSON positional-args array; unwraps the response wire. */
-  private async call<T>(method: string, args: unknown[]): Promise<T> {
+  private async call<T>(
+    method: string,
+    args: unknown[],
+    opts?: { allowCodes?: number[] },
+  ): Promise<T> {
     const raw = await this.bridge.ProductCall(method, JSON.stringify(args));
     let envelope: WireEnvelope<T>;
     try {
@@ -144,8 +238,10 @@ export class WailsKimiWebApi {
     }
     // ProductCall hands back the raw kap-server envelope (frozen contract E).
     // Unwrap it like the daemon HTTP transport: code 0 = success → data, else
-    // surface the envelope's code/msg as a transport error.
-    if (envelope.code !== 0) {
+    // surface the envelope's code/msg as a transport error — unless the caller
+    // opted into allowCodes (e.g. dismissQuestion's 40909 success path).
+    const allowCodes = opts?.allowCodes ?? [];
+    if (envelope.code !== 0 && !allowCodes.includes(envelope.code)) {
       throw new Error(`desktop transport: ${method} failed (${envelope.code}): ${envelope.msg}`);
     }
     return envelope.data as T;
@@ -195,6 +291,29 @@ export class WailsKimiWebApi {
     if (input.model !== undefined) body['agent_config'] = { model: input.model };
     const data = await this.call<WireSession>('createSession', [body]);
     return toAppSession(data);
+  }
+
+  // GET /sessions/{id} — deep links / sessions outside the first list page.
+  async getSession(sessionId: string): Promise<AppSession> {
+    const data = await this.call<WireSession>('getSession', [sessionId]);
+    return toAppSession(data);
+  }
+
+  async listMessages(
+    sessionId: string,
+    input?: PageRequest & { role?: AppMessageRole },
+  ): Promise<Page<AppMessage>> {
+    const query: Record<string, string | number | boolean | undefined> = {
+      before_id: input?.beforeId,
+      after_id: input?.afterId,
+      page_size: input?.pageSize,
+      role: input?.role,
+    };
+    const data = await this.call<WirePage<WireMessage>>('listMessages', [sessionId, query]);
+    return {
+      items: data.items.map(toAppMessage),
+      hasMore: data.has_more,
+    };
   }
 
   /**
@@ -350,6 +469,41 @@ export class WailsKimiWebApi {
     return (data.items ?? []).map(toAppWorkspace);
   }
 
+  // Slice 4 — register a workspace by absolute folder path. Throws on error
+  // (e.g. path not found / not a directory) so the caller can surface it.
+  async addWorkspace(input: { root: string; name?: string }): Promise<AppWorkspace> {
+    const body: Record<string, unknown> = { root: input.root };
+    if (input.name !== undefined) body['name'] = input.name;
+    const data = await this.call<WireWorkspace>('addWorkspace', [body]);
+    return toAppWorkspace(data);
+  }
+
+  // Slice 4 — rename a workspace (display name only; never moves the directory).
+  async updateWorkspace(id: string, input: { name: string }): Promise<AppWorkspace> {
+    const data = await this.call<WireWorkspace>('updateWorkspace', [id, { name: input.name }]);
+    return toAppWorkspace(data);
+  }
+
+  // Slice 4 — browse directories under `path` (defaults to $HOME in the
+  // sidecar). Mirrors the daemon client: a browse failure yields an empty
+  // result so the picker can distinguish "failed" from "no children".
+  async browseFs(path?: string): Promise<FsBrowseResult> {
+    try {
+      const data = await this.call<WireFsBrowseResult>('browseFs', [path]);
+      return {
+        path: data.path,
+        parent: data.parent,
+        entries: (data.entries ?? []).map((e) => ({
+          name: e.name,
+          path: e.path,
+          isDir: e.is_dir,
+        })),
+      };
+    } catch {
+      return { path: '', parent: null, entries: [] };
+    }
+  }
+
   async getFsHome(): Promise<{ home: string; recentRoots: string[] }> {
     const data = await this.call<WireFsHomeResult>('getFsHome', []);
     return { home: data.home, recentRoots: data.recent_roots ?? [] };
@@ -389,6 +543,76 @@ export class WailsKimiWebApi {
   }
 
   // -------------------------------------------------------------------------
+  // Slice 2 — session control (steer / abort / compact / undo / fork /
+  // children / BTW). Each mirrors the daemon client's REST call, routed
+  // through ProductCall to the sidecar facade's kap-server-parity handlers.
+  // -------------------------------------------------------------------------
+
+  // prompts:steer — steer daemon-queued prompts into the active turn. Throws
+  // PROMPT_NOT_FOUND when there is no active turn anymore (callers may treat
+  // that as success — the queued prompt then starts its own turn).
+  async steerPrompts(
+    sessionId: string,
+    promptIds: string[],
+  ): Promise<{ steered: boolean; promptIds: string[] }> {
+    const data = await this.call<WirePromptSteerResult>('steerPrompts', [
+      sessionId,
+      { prompt_ids: promptIds },
+    ]);
+    return { steered: data.steered, promptIds: data.prompt_ids };
+  }
+
+  // sessions/{id}:abort — cancel whatever is running in the session, keeping
+  // the idempotent success semantics when the session is idle.
+  async abortSession(sessionId: string): Promise<{ aborted: boolean }> {
+    const data = await this.call<WireSessionAbortResult>('abortSession', [sessionId]);
+    return { aborted: data.aborted };
+  }
+
+  // sessions/{id}:compact — request history compaction. Returns {}; progress
+  // and completion arrive via the compaction.* product events.
+  async compactSession(sessionId: string, instruction?: string): Promise<void> {
+    await this.call('compactSession', [sessionId, instruction ? { instruction } : {}]);
+  }
+
+  // sessions/{id}:undo — remove the last `count` turns. The wire response
+  // carries messages + status, but like the daemon client we only need the
+  // call to succeed (callers re-sync the session afterwards).
+  async undoSession(sessionId: string, count = 1): Promise<void> {
+    await this.call('undoSession', [sessionId, { count }]);
+  }
+
+  // sessions/{id}:fork — fork the session into a new session.
+  async forkSession(sessionId: string, input?: { title?: string }): Promise<AppSession> {
+    const body: Record<string, unknown> = {};
+    if (input?.title !== undefined) body['title'] = input.title;
+    const data = await this.call<WireSession>('forkSession', [sessionId, body]);
+    return toAppSession(data);
+  }
+
+  // sessions/{id}/children — create a child ("side chat") session inheriting
+  // the parent's context, tagged with parent_session_id.
+  async createChildSession(sessionId: string, input?: { title?: string }): Promise<AppSession> {
+    const body: Record<string, unknown> = {};
+    if (input?.title !== undefined) body['title'] = input.title;
+    const data = await this.call<WireSession>('createChildSession', [sessionId, body]);
+    return toAppSession(data);
+  }
+
+  // sessions/{id}/children — list a session's child sessions.
+  async listChildSessions(sessionId: string): Promise<AppSession[]> {
+    const data = await this.call<WirePage<WireSession>>('listChildSessions', [sessionId]);
+    return data.items.map(toAppSession);
+  }
+
+  // sessions/{id}:btw — start a side-channel agent; follow-up prompts use the
+  // returned agent_id on the normal prompt route.
+  async startBtw(sessionId: string): Promise<{ agentId: string }> {
+    const data = await this.call<{ agent_id: string }>('startBtw', [sessionId]);
+    return { agentId: data.agent_id };
+  }
+
+  // -------------------------------------------------------------------------
   // Approval / Question
   // -------------------------------------------------------------------------
 
@@ -416,6 +640,18 @@ export class WailsKimiWebApi {
       toWireQuestionResponse(response),
     ]);
     return { resolved: data.resolved, resolvedAt: data.resolved_at };
+  }
+
+  async dismissQuestion(
+    sessionId: string,
+    questionId: string,
+  ): Promise<{ dismissed: true; dismissedAt: string }> {
+    const data = await this.call<{ dismissed: true; dismissed_at: string }>(
+      'dismissQuestion',
+      [sessionId, questionId],
+      { allowCodes: [40909] },
+    );
+    return { dismissed: true, dismissedAt: data.dismissed_at };
   }
 
   // -------------------------------------------------------------------------
@@ -468,6 +704,24 @@ export class WailsKimiWebApi {
     return data.items.map(toAppTask);
   }
 
+  async getTask(
+    sessionId: string,
+    taskId: string,
+    input?: { withOutput?: boolean; outputBytes?: number },
+  ): Promise<AppTask> {
+    const query: Record<string, string | number | boolean | undefined> = {
+      with_output: input?.withOutput,
+      output_bytes: input?.outputBytes,
+    };
+    const data = await this.call<WireTask>('getTask', [sessionId, taskId, query]);
+    return toAppTask(data);
+  }
+
+  async cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: true }> {
+    const data = await this.call<{ cancelled: true }>('cancelTask', [sessionId, taskId]);
+    return data;
+  }
+
   async getGitStatus(
     sessionId: string,
     paths?: string[],
@@ -498,6 +752,134 @@ export class WailsKimiWebApi {
       deletions: data.deletions,
       pullRequest: data.pullRequest ?? null,
     };
+  }
+
+  // -------------------------------------------------------------------------
+  // Slice 4 — structured session filesystem (P1). Each mirrors the daemon
+  // client's `fs:<action>` REST call, routed through ProductCall to the
+  // sidecar facade's ISessionFsService handlers. Request bodies are snake_case
+  // wire; responses are the engine's wire shapes mapped to the App contracts.
+  // -------------------------------------------------------------------------
+
+  async listDirectory(
+    sessionId: string,
+    input: { path?: string; depth?: number; includeGitStatus?: boolean },
+  ): Promise<{ items: FsEntry[]; childrenByPath?: Record<string, FsEntry[]>; truncated: boolean }> {
+    const body: Record<string, unknown> = {};
+    if (input.path !== undefined) body['path'] = input.path;
+    if (input.depth !== undefined) body['depth'] = input.depth;
+    if (input.includeGitStatus !== undefined) body['include_git_status'] = input.includeGitStatus;
+    const data = await this.call<WireListDirectoryResult>('listDirectory', [sessionId, body]);
+    const childrenByPath = data.children_by_path
+      ? Object.fromEntries(
+          Object.entries(data.children_by_path).map(([k, v]) => [k, v.map(toAppFsEntry)]),
+        )
+      : undefined;
+    return {
+      items: data.items.map(toAppFsEntry),
+      childrenByPath,
+      truncated: data.truncated,
+    };
+  }
+
+  async readFile(
+    sessionId: string,
+    input: { path: string; offset?: number; length?: number },
+  ): Promise<{
+    path: string;
+    content: string;
+    encoding: 'utf-8' | 'base64';
+    size: number;
+    truncated: boolean;
+    etag: string;
+    mime: string;
+    languageId?: string;
+    lineCount?: number;
+    isBinary: boolean;
+  }> {
+    const body: Record<string, unknown> = { path: input.path };
+    if (input.offset !== undefined) body['offset'] = input.offset;
+    if (input.length !== undefined) body['length'] = input.length;
+    const data = await this.call<WireReadFileResult>('readFile', [sessionId, body]);
+    return {
+      path: data.path,
+      content: data.content,
+      encoding: data.encoding,
+      size: data.size,
+      truncated: data.truncated,
+      etag: data.etag,
+      mime: data.mime,
+      languageId: data.language_id,
+      lineCount: data.line_count,
+      isBinary: data.is_binary,
+    };
+  }
+
+  async searchFiles(
+    sessionId: string,
+    input: { query: string; limit?: number },
+  ): Promise<{
+    items: Array<{ path: string; name: string; kind: FsKind; score: number; matchPositions: number[] }>;
+    truncated: boolean;
+  }> {
+    const body: Record<string, unknown> = { query: input.query };
+    if (input.limit !== undefined) body['limit'] = input.limit;
+    const data = await this.call<WireSearchFilesResult>('searchFiles', [sessionId, body]);
+    return {
+      items: data.items.map((item) => ({
+        path: item.path,
+        name: item.name,
+        kind: item.kind,
+        score: item.score,
+        matchPositions: item.match_positions,
+      })),
+      truncated: data.truncated,
+    };
+  }
+
+  async grepFiles(
+    sessionId: string,
+    input: { pattern: string; regex?: boolean; caseSensitive?: boolean },
+  ): Promise<{
+    files: Array<{
+      path: string;
+      matches: Array<{ line: number; col: number; text: string; before: string[]; after: string[] }>;
+    }>;
+    filesScanned: number;
+    truncated: boolean;
+    elapsedMs: number;
+  }> {
+    const body: Record<string, unknown> = { pattern: input.pattern };
+    if (input.regex !== undefined) body['regex'] = input.regex;
+    if (input.caseSensitive !== undefined) body['case_sensitive'] = input.caseSensitive;
+    const data = await this.call<WireGrepFilesResult>('grepFiles', [sessionId, body]);
+    return {
+      files: data.files,
+      filesScanned: data.files_scanned,
+      truncated: data.truncated,
+      elapsedMs: data.elapsed_ms,
+    };
+  }
+
+  async getFileDiff(sessionId: string, path: string): Promise<{ path: string; diff: string }> {
+    const data = await this.call<WireDiffResult>('getFileDiff', [sessionId, path]);
+    return { path: data.path, diff: data.diff };
+  }
+
+  // Native open operations — the sidecar resolves the workspace-bounded path
+  // and launches the platform handler (no terminal window), mirroring kap-server.
+  async openFile(sessionId: string, input: { path: string; line?: number }): Promise<{ opened: true }> {
+    const body: Record<string, unknown> = { path: input.path };
+    if (input.line !== undefined) body['line'] = input.line;
+    return this.call<{ opened: true }>('openFile', [sessionId, body]);
+  }
+
+  async revealFile(sessionId: string, input: { path: string }): Promise<{ revealed: true }> {
+    return this.call<{ revealed: true }>('revealFile', [sessionId, { path: input.path }]);
+  }
+
+  async openInApp(sessionId: string, appId: string, path: string, line?: number): Promise<void> {
+    await this.call<{ opened: true }>('openInApp', [sessionId, appId, path, line]);
   }
 
   // -------------------------------------------------------------------------
@@ -605,9 +987,27 @@ export class WailsKimiWebApi {
     return toAppProvider(data);
   }
 
+  async replaceProvider(id: string, input: AppProviderInput): Promise<AppProvider> {
+    const body = providerRequestBody(input);
+    delete body['id'];
+    if (input.id !== id) body['new_id'] = input.id;
+    const data = await this.call<{ provider: WireProvider }>('replaceProvider', [id, body]);
+    return toAppProvider(data.provider);
+  }
+
   async deleteProvider(id: string): Promise<{ deleted: true }> {
     await this.call<{ deleted: boolean }>('deleteProvider', [id]);
     return { deleted: true };
+  }
+
+  async refreshProvider(id: string): Promise<ProviderRefreshResult> {
+    const data = await this.call<WireProviderRefreshResult>('refreshProvider', [id]);
+    return toProviderRefreshResult(data);
+  }
+
+  async refreshAllProviders(): Promise<ProviderRefreshResult> {
+    const data = await this.call<WireProviderRefreshResult>('refreshAllProviders', []);
+    return toProviderRefreshResult(data);
   }
 
   async setDefaultModel(modelId: string): Promise<void> {
@@ -620,15 +1020,79 @@ export class WailsKimiWebApi {
   }
 
   // -------------------------------------------------------------------------
-  // Events — feed product WireEvents into the daemon's toAppEvent pipeline.
+  // Expert teams (v2) — Modes menu / /experts.
+  // -------------------------------------------------------------------------
+
+  async listExpertTeams(sessionId: string): Promise<AppExpertTeam[]> {
+    const data = await this.call<{ experts: WireExpertTeamDefinition[] }>('listExpertTeams', [
+      sessionId,
+    ]);
+    return (data.experts ?? []).map(toAppExpertTeam);
+  }
+
+  async getExpertTeam(sessionId: string): Promise<AppExpertTeamStatus | null> {
+    const data = await this.call<{ expert_team: WireExpertTeamSnapshot | null }>('getExpertTeam', [
+      sessionId,
+    ]);
+    return data.expert_team === null ? null : toAppExpertTeamStatus(data.expert_team);
+  }
+
+  async activateExpertTeam(sessionId: string, pluginId: string): Promise<AppExpertTeamStatus> {
+    const data = await this.call<{ expert_team: WireExpertTeamSnapshot }>('activateExpertTeam', [
+      sessionId,
+      { plugin_id: pluginId },
+    ]);
+    return toAppExpertTeamStatus(data.expert_team);
+  }
+
+  async deactivateExpertTeam(sessionId: string): Promise<void> {
+    await this.call<{ deactivated: true }>('deactivateExpertTeam', [sessionId]);
+  }
+
+  // -------------------------------------------------------------------------
+  // Events — feed product WireEvents into the daemon's toAppEvent pipeline, with
+  // real v2 sync state: per-session resume cursors, journal-backed catch-up on
+  // (re)subscribe, `resync_required` handling, and unsubscribe/reconnect.
   // -------------------------------------------------------------------------
 
   connectEvents(handlers: KimiEventHandlers): KimiEventConnection {
+    // Latest known cursor per session (advanced by every sequenced frame and by
+    // seedSnapshot); reused when (re)subscribing so a reconnect resumes from the
+    // journal instead of re-reading everything.
+    const cursors = new Map<string, AppSessionCursor>();
+    // Sessions with an active bridge subscription — the set reconnect() resumes.
+    const subscribed = new Set<string>();
+    let connected = true;
+
+    const advanceCursor = (sessionId: string, seq: number): void => {
+      if (!Number.isFinite(seq) || seq <= 0) return;
+      const prev = cursors.get(sessionId);
+      if (prev === undefined || seq > prev.seq) {
+        cursors.set(sessionId, { seq, epoch: prev?.epoch });
+      }
+    };
+
     const off = this.bridge.onProductEvent((payload) => {
-      const wireEvent: WireEvent = payload.event;
+      // v2 sync control frame: the stream could not incrementally cover our
+      // cursor. Adopt its watermark and ask the app layer to re-read the
+      // snapshot — never silently continue past the hole. Inspected loosely
+      // because `WireEvent`'s unknown member has `type: string` and cannot
+      // discriminate the control frame at the type level.
+      const control = payload.event as unknown as Partial<DesktopResyncFrame>;
+      if (control.type === 'resync_required' && control.payload !== undefined) {
+        const { session_id: sessionId, current_seq: currentSeq, epoch } = control.payload;
+        cursors.set(sessionId, { seq: currentSeq, epoch });
+        handlers.onResync(sessionId, currentSeq, epoch);
+        return;
+      }
+
+      const wireEvent = payload.event;
       const sessionId = wireEventSessionId(wireEvent);
       const seq = wireEventSeq(wireEvent);
       const appEvent = toAppEvent(wireEvent);
+
+      // Advance the durable cursor so a later reconnect resumes past this frame.
+      if (sessionId.length > 0) advanceCursor(sessionId, seq);
 
       // Mirror the daemon WS path: a non-compaction historyCompacted means the
       // cached transcript is stale → resync. The event still advances lastSeq.
@@ -641,18 +1105,43 @@ export class WailsKimiWebApi {
 
     handlers.onConnectionChange(true);
 
-    return {
-      subscribe: (sessionId: string, _cursor?: AppSessionCursor): void => {
-        void this.bridge.ProductSubscribe(sessionId, MAIN_AGENT_ID).catch((error: unknown) => {
+    const doSubscribe = (sessionId: string): void => {
+      const cursor = cursors.get(sessionId);
+      const streamCursor =
+        cursor === undefined ? undefined : { epoch: cursor.epoch, afterSeq: cursor.seq };
+      void this.bridge.ProductSubscribe(sessionId, MAIN_AGENT_ID, streamCursor).then(
+        () => {
+          if (!connected) {
+            connected = true;
+            handlers.onConnectionChange(true);
+          }
+        },
+        (error: unknown) => {
+          connected = false;
+          handlers.onConnectionChange(false);
           handlers.onError(0, `desktop transport: subscribe failed: ${String(error)}`, false);
+        },
+      );
+    };
+
+    return {
+      subscribe: (sessionId: string, cursor?: AppSessionCursor): void => {
+        if (cursor !== undefined) cursors.set(sessionId, cursor);
+        subscribed.add(sessionId);
+        doSubscribe(sessionId);
+      },
+      unsubscribe: (sessionId: string): void => {
+        subscribed.delete(sessionId);
+        // Keep the cursor: a quick re-open resumes cheaply from the journal.
+        void this.bridge.ProductUnsubscribe(sessionId, MAIN_AGENT_ID).catch((error: unknown) => {
+          handlers.onError(0, `desktop transport: unsubscribe failed: ${String(error)}`, false);
         });
       },
-      unsubscribe: (_sessionId: string): void => {
-        // First slice keeps the product stream attached for the page lifetime.
-      },
-      seedSnapshot: (_sessionId: string, _snapshot: AppSessionSnapshot): void => {
-        // No client-side projector on this transport; the product layer streams
-        // live WireEvents. Snapshot seeding is a later slice.
+      seedSnapshot: (sessionId: string, snapshot: AppSessionSnapshot): void => {
+        // Record the snapshot watermark so the subscribe() that follows resumes
+        // exactly at it (the sidecar projects live WireEvents; there is no
+        // client-side projector to seed on this transport).
+        cursors.set(sessionId, { seq: snapshot.asOfSeq, epoch: snapshot.epoch });
       },
       bindNextPromptId: (_sessionId: string, _promptId: string): void => {
         // The product layer owns prompt ids; no client-side synthesis to bind.
@@ -667,14 +1156,29 @@ export class WailsKimiWebApi {
       terminalResize: (): void => undefined,
       terminalDetach: (): void => undefined,
       terminalClose: (): void => undefined,
-      markSideChannelAgent: (_agentId: string): void => undefined,
+      markSideChannelAgent: (_agentId: string): void => {
+        // No-op on this transport: side-channel (BTW) agent projection lives in
+        // the sidecar, which currently projects only the main agent. Multi-agent
+        // projection is a follow-up; there is no client-side projector to mark.
+      },
       health: (): { connected: boolean; open: boolean; stale: boolean } => ({
-        connected: true,
-        open: true,
+        // The desktop IPC is owned by the Go shell and shares the webview
+        // lifetime, so there is no background-tab half-open state to detect;
+        // `connected` only drops when a subscribe call itself failed.
+        connected,
+        open: connected,
         stale: false,
       }),
-      reconnect: (): void => undefined,
+      reconnect: (): void => {
+        // Re-subscribe every active session at its last cursor; the sidecar
+        // journal catches each up (or sends resync_required).
+        for (const sessionId of subscribed) doSubscribe(sessionId);
+      },
       close: (): void => {
+        for (const sessionId of subscribed) {
+          void this.bridge.ProductUnsubscribe(sessionId, MAIN_AGENT_ID).catch(() => undefined);
+        }
+        subscribed.clear();
         off();
       },
     };

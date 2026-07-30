@@ -110,6 +110,30 @@ function openAdd(): void {
   formOpen.value = true;
 }
 
+function openDeepSeek(): void {
+  editingId.value = undefined;
+  hasStoredKey.value = false;
+  form.id = 'deepseek';
+  form.type = 'openai';
+  form.apiKey = '';
+  form.baseUrl = 'https://api.deepseek.com';
+  form.defaultModel = 'deepseek-v4-flash';
+  form.models = [
+    {
+      model: 'deepseek-v4-flash',
+      displayName: 'DeepSeek V4 Flash',
+      maxContextSize: 1_000_000,
+    },
+    {
+      model: 'deepseek-v4-pro',
+      displayName: 'DeepSeek V4 Pro',
+      maxContextSize: 1_000_000,
+    },
+  ];
+  formError.value = '';
+  formOpen.value = true;
+}
+
 /** The raw model name for a catalog entry (alias ids are `<provider>/<model>`). */
 function rawModelName(aliasId: string, providerId: string): string {
   const prefix = `${providerId}/`;
@@ -129,7 +153,8 @@ async function openEdit(provider: AppProvider): Promise<void> {
     // clearing the field keeps it (see submit()).
     form.apiKey = detail.apiKey ?? '';
     form.baseUrl = detail.baseUrl ?? '';
-    form.defaultModel = detail.defaultModel ?? '';
+    form.defaultModel =
+      detail.defaultModel === undefined ? '' : rawModelName(detail.defaultModel, provider.id);
     const rows = props.models
       .filter((model) => model.provider === provider.id)
       .map((model) => ({
@@ -232,6 +257,23 @@ function statusLabel(status: AppProvider['status']): string {
 <template>
   <Dialog :open="true" :close-on-esc="false" :title="t('providers.title')" size="xl" height="fixed" @close="emit('close')">
     <div ref="dialogRef" class="pm">
+      <div v-if="!formOpen" class="manager-head">
+        <div>
+          <div class="manager-kicker">{{ t('providers.accessKicker') }}</div>
+          <p class="manager-copy">{{ t('providers.accessHint') }}</p>
+        </div>
+        <div class="manager-actions">
+          <Button variant="secondary" size="sm" @click="openDeepSeek">
+            <Icon name="sparkles" size="sm" />
+            {{ t('providers.addDeepSeek') }}
+          </Button>
+          <Button variant="primary" size="sm" @click="openAdd">
+            <Icon name="plus" size="sm" />
+            {{ t('providers.addCustom') }}
+          </Button>
+        </div>
+      </div>
+
       <!-- Provider list -->
       <div v-if="!formOpen" class="prov-list">
         <!-- Loading state -->
@@ -295,10 +337,6 @@ function statusLabel(status: AppProvider['status']): string {
             <Button variant="secondary" size="sm" @click="emit('openLogin', 'anthropic')">
               <Icon name="user" size="sm" />
               {{ t('providers.loginAnthropic') }}
-            </Button>
-            <Button variant="primary" size="sm" @click="openAdd">
-              <Icon name="plus" size="sm" />
-              {{ t('providers.addProvider') }}
             </Button>
           </div>
         </template>
@@ -415,6 +453,36 @@ function statusLabel(status: AppProvider['status']): string {
 
 <style scoped>
 .pm { display: flex; flex-direction: column; gap: var(--space-4); }
+
+.manager-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--color-line);
+}
+.manager-kicker {
+  margin-bottom: var(--space-1);
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+}
+.manager-copy {
+  max-width: 480px;
+  margin: 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+.manager-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
 
 /* Provider list */
 .prov-list {
@@ -568,6 +636,12 @@ function statusLabel(status: AppProvider['status']): string {
 }
 
 @media (max-width: 640px) {
+  .manager-head {
+    flex-direction: column;
+  }
+  .manager-actions {
+    width: 100%;
+  }
   .prov-row {
     align-items: flex-start;
     flex-wrap: wrap;

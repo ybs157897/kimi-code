@@ -3,6 +3,10 @@
 Status: Phase 0 (seam proof). Desktop-first; web retirement and kap-server
 fate are explicitly deferred until the desktop is stable.
 
+Current implementation coverage and the remaining work for full desktop V2
+parity are tracked in
+[Desktop Web full V2 integration plan](./desktop-v2-full-integration.md).
+
 ## 1. Goal & target shape
 
 Make the desktop the product itself (not a wrapper around the web UI), in the

@@ -1,6 +1,10 @@
 export default {
   dialogLabel: 'Manage providers',
-  title: 'Provider management',
+  title: 'Model providers',
+  accessKicker: 'Connect a model service',
+  accessHint: 'Add official DeepSeek or any OpenAI / Anthropic-compatible service, then switch models directly from the composer.',
+  addDeepSeek: 'Add DeepSeek',
+  addCustom: 'Custom service',
   close: 'Close (Esc)',
   loading: 'Loading providers…',
   unavailable: 'The daemon does not support provider management yet',

@@ -4,15 +4,33 @@ import { join } from 'pathe';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
+import { Event } from '#/_base/event';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { IAgentProfileService, type ResolvedAgentProfile } from '#/agent/profile/profile';
+import { IPluginService } from '#/app/plugin/plugin';
+import type { EnabledPluginSystemPrompt } from '#/app/plugin/types';
 
-import { createTestAgent, execEnvServices, hostEnvironmentServices, type TestAgentContext } from '../../harness';
+import {
+  appService,
+  createTestAgent,
+  execEnvServices,
+  hostEnvironmentServices,
+  type TestAgentContext,
+  type TestAgentOptions,
+  type TestAgentServiceOverride,
+} from '../../harness';
 
 const profile: ResolvedAgentProfile = {
   name: 'agents-profile',
   systemPrompt: (context) =>
     typeof context['agentsMd'] === 'string' ? (context['agentsMd'] as string) : '',
+  tools: [],
+};
+
+const pluginProfile: ResolvedAgentProfile = {
+  name: 'plugin-profile',
+  systemPrompt: (context) =>
+    typeof context['pluginSections'] === 'string' ? context['pluginSections'] : '',
   tools: [],
 };
 
@@ -48,12 +66,15 @@ describe('AgentProfileService.applyProfile', () => {
     await rm(workDir, { recursive: true, force: true });
   });
 
-  function buildContext(): { ctx: TestAgentContext; profile: IAgentProfileService } {
+  function buildContext(
+    ...extra: readonly (TestAgentServiceOverride | TestAgentOptions)[]
+  ): { ctx: TestAgentContext; profile: IAgentProfileService } {
     const fs = new HostFileSystem();
     ctx = createTestAgent(
       execEnvServices({ hostFs: fs }),
       hostEnvironmentServices(homeDir),
       { cwd: workDir },
+      ...extra,
     );
     return { ctx, profile: ctx.get(IAgentProfileService) };
   }
@@ -140,7 +161,36 @@ describe('AgentProfileService.applyProfile', () => {
 
     expect(svc.getAgentsMdWarning()).toBeUndefined();
   });
+
+  it('injects enabled plugin instructions into the rendered prompt', async () => {
+    const sections: readonly EnabledPluginSystemPrompt[] = [
+      { pluginId: 'demo', content: 'Always cite sources.' },
+    ];
+    const { profile: svc } = buildContext(
+      appService(IPluginService, pluginStub(sections)),
+    );
+
+    await svc.applyProfile(pluginProfile);
+
+    expect(svc.data().systemPrompt).toBe(
+      '<!-- From: plugin demo -->\nAlways cite sources.',
+    );
+  });
 });
+
+function pluginStub(sections: readonly EnabledPluginSystemPrompt[]): IPluginService {
+  return {
+    onDidReload: Event.None as IPluginService['onDidReload'],
+    pluginSkillRoots: async () => [],
+    pluginAgentRoots: async () => [],
+    enabledExperts: async () => [],
+    enabledSessionStarts: async () => [],
+    enabledSystemPrompts: async () => sections,
+    enabledMcpServers: async () => ({}),
+    enabledHooks: async () => [],
+    listPluginCommands: async () => [],
+  } as unknown as IPluginService;
+}
 
 function exactSystemPrompt(workDir: string, agentsMd: string): string {
   return [

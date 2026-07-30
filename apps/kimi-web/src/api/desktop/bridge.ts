@@ -10,6 +10,7 @@ import type {
   DesktopSessionHandle,
   DesktopSessionListPage,
   ProductEventPayload,
+  ProductStreamCursor,
   WailsAppBindings,
 } from './types';
 import { KIMI_EVENT_CHANNEL } from './types';
@@ -21,6 +22,20 @@ function parseResult<T>(method: string, raw: string): T {
   } catch (error) {
     throw new Error(`desktop bridge: ${method} returned invalid JSON: ${String(error)}`);
   }
+}
+
+/**
+ * Serialize a product resume cursor to the sidecar's snake_case listen-arg JSON
+ * (`{epoch?, after_seq?}`). Returns '' when there is nothing to resume from, so
+ * the Go shell subscribes live.
+ */
+function serializeCursor(cursor?: ProductStreamCursor): string {
+  if (cursor === undefined) return '';
+  const wire: { epoch?: string; after_seq?: number } = {};
+  if (cursor.epoch !== undefined) wire.epoch = cursor.epoch;
+  if (cursor.afterSeq !== undefined) wire.after_seq = cursor.afterSeq;
+  if (wire.epoch === undefined && wire.after_seq === undefined) return '';
+  return JSON.stringify(wire);
 }
 
 export class WailsDesktopBridge implements DesktopBridge {
@@ -69,8 +84,19 @@ export class WailsDesktopBridge implements DesktopBridge {
     return this.bindings().ProductCall(method, argsJSON);
   }
 
-  async ProductSubscribe(sessionId: string, agentId: string): Promise<void> {
-    await this.bindings().ProductSubscribe(sessionId, agentId);
+  async ProductSubscribe(
+    sessionId: string,
+    agentId: string,
+    cursor?: ProductStreamCursor,
+  ): Promise<void> {
+    // Serialize the cursor to the sidecar's snake_case listen arg; an absent or
+    // empty cursor becomes '' (a fresh live subscription).
+    const cursorJSON = serializeCursor(cursor);
+    await this.bindings().ProductSubscribe(sessionId, agentId, cursorJSON);
+  }
+
+  async ProductUnsubscribe(sessionId: string, agentId: string): Promise<void> {
+    await this.bindings().ProductUnsubscribe(sessionId, agentId);
   }
 
   onEvent(callback: (payload: DesktopEventPayload) => void): () => void {

@@ -19,7 +19,9 @@ import {
   IAgentContextSizeService,
   IAgentProfileService,
   IAgentUsageService,
+  IModelCatalog,
   IWireService,
+  SECONDARY_DERIVED_MODEL_ID,
   type IAgentScopeHandle,
   type UsageStatus,
 } from '@moonshot-ai/agent-core-v2';
@@ -135,8 +137,20 @@ export function readLegacyStatus(agent: IAgentScopeHandle): LegacyStatusSnapshot
   const contextTokens = Math.max(contextSize.get().size, measured.tokens);
   const capabilities = profile.getModelCapabilities();
   const maxContextTokens = capabilities.max_input_tokens ?? capabilities.max_context_tokens;
-  const model = profile.getModel();
+  const model = displayModelAlias(agent, profile.getModel());
   return { usage, contextTokens, maxContextTokens, model };
+}
+
+function displayModelAlias(agent: IAgentScopeHandle, alias: string): string {
+  if (alias !== SECONDARY_DERIVED_MODEL_ID) return alias;
+  const catalog = agent.accessor.get(IModelCatalog) as IModelCatalog | undefined;
+  if (catalog === undefined) return alias;
+  try {
+    const model = catalog.get(alias);
+    return model.displayName ?? model.name;
+  } catch {
+    return alias;
+  }
 }
 
 /**

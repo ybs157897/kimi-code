@@ -133,6 +133,7 @@ const emit = defineEmits<{
   toggleGoal: [];
   selectExpertTeam: [pluginId: string];
   clearExpertTeam: [];
+  refreshExpertTeams: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
   compact: [];
@@ -1368,6 +1369,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
               @toggle-goal="emit('toggleGoal')"
               @select-expert-team="emit('selectExpertTeam', $event)"
               @clear-expert-team="emit('clearExpertTeam')"
+              @refresh-expert-teams="emit('refreshExpertTeams')"
               @open-btw="emit('command', '/btw')"
               @create-goal="emit('createGoal', $event)"
               @control-goal="emit('controlGoal', $event)"
@@ -1467,6 +1469,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
         @toggle-goal="emit('toggleGoal')"
           @select-expert-team="emit('selectExpertTeam', $event)"
           @clear-expert-team="emit('clearExpertTeam')"
+          @refresh-expert-teams="emit('refreshExpertTeams')"
           @open-btw="emit('command', '/btw')"
           @create-goal="emit('createGoal', $event)"
           @focus-goal="focusGoal"

@@ -116,6 +116,7 @@ const emit = defineEmits<{
   toggleGoal: [];
   selectExpertTeam: [pluginId: string];
   clearExpertTeam: [];
+  refreshExpertTeams: [];
   openBtw: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
@@ -761,6 +762,9 @@ function toggleModes(): void {
   // Keep the toolbar menus mutually exclusive so they never overlap.
   closeDropdown();
   closePermDropdown();
+  // Re-scan the catalog when opening — packages can appear while the session
+  // is open, and a failed first load (backend still settling) leaves it empty.
+  emit('refreshExpertTeams');
   const r = modesRef.value?.getBoundingClientRect();
   if (r) {
     modesMenuStyle.value = {

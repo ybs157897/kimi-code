@@ -127,6 +127,7 @@ export interface IAgentProfileService {
   bind(input: BindAgentInput): Promise<void>;
   setModel(model: string): Promise<ProfileSetModelResult>;
   setThinking(level: string): void;
+  republishStatus(): void;
   getModel(): string;
   useProfile(profile: ResolvedAgentProfile, context: SystemPromptContext): void;
   applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void>;

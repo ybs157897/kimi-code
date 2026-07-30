@@ -87,3 +87,49 @@ describe('FileStorageService — error translation', () => {
     });
   });
 });
+
+describe('FileStorageService — writeStream', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'fss-stream-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it('replaces the whole value when the source has multiple chunks', async () => {
+    const svc = new FileStorageService(dir);
+    await svc.write('scope', 'k.bin', encoder.encode('old'));
+    await svc.writeStream(
+      'scope',
+      'k.bin',
+      (async function* () {
+        yield encoder.encode('aa');
+        yield encoder.encode('bbb');
+      })(),
+    );
+
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of svc.readStream('scope', 'k.bin')) chunks.push(chunk);
+    expect(Buffer.concat(chunks).toString()).toBe('aabbb');
+  });
+
+  it('leaves no target file when the source fails mid-stream', async () => {
+    const svc = new FileStorageService(dir);
+    await expect(
+      svc.writeStream(
+        'scope',
+        'k.bin',
+        (async function* () {
+          yield encoder.encode('partial');
+          throw new Error('boom');
+        })(),
+      ),
+    ).rejects.toThrow();
+
+    expect(await svc.read('scope', 'k.bin')).toBeUndefined();
+    expect(await svc.list('scope')).toEqual([]);
+  });
+});

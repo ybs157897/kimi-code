@@ -23,11 +23,17 @@
  *    encoding and interleaved-thinking beta stripping.
  */
 
-import { describe, expect, it } from 'vitest';
+import { APIError as OpenAIAPIError } from 'openai';
+import { describe, expect, it, vi } from 'vitest';
 
+import {
+  APIProviderQuotaExhaustedError,
+  isRetryableGenerateError,
+} from '#/kosong/contract/errors';
 import type { Message } from '#/kosong/contract/message';
 import type { Tool } from '#/kosong/contract/tool';
 import type { ProtocolTrait, TraitContext } from '#/kosong/protocol/protocolTrait';
+import { KimiFiles } from '#/kosong/provider/providers/kimi/kimi-files';
 import {
   convertKimiTool,
   kimiAnthropicTrait,
@@ -288,6 +294,7 @@ describe('trait objects are plain declarations', () => {
     expect(hookNames(kimiOpenAITrait).toSorted()).toEqual([
       'buildParams',
       'cacheKey',
+      'convertError',
       'convertMessage',
       'convertTool',
       'endpoint',
@@ -298,7 +305,7 @@ describe('trait objects are plain declarations', () => {
       'withMaxCompletionTokens',
       'withThinking',
     ]);
-    expect(hookNames(kimiAnthropicTrait)).toEqual(['withThinking']);
+    expect(hookNames(kimiAnthropicTrait).toSorted()).toEqual(['convertError', 'withThinking']);
   });
 
   it('marks only the native-transport thinking trait as strict-validation (v1 parity)', () => {
@@ -306,5 +313,37 @@ describe('trait objects are plain declarations', () => {
     // transport the backend may accept them → lenient (warning + pass-through).
     expect(kimiOpenAITrait.strictThinkingValidation).toBe(true);
     expect(kimiAnthropicTrait.strictThinkingValidation).toBeUndefined();
+  });
+});
+
+describe('KimiFiles upload error conversion', () => {
+  it('fails fast on a Moonshot quota-exhausted 429', async () => {
+    const quotaError = new OpenAIAPIError(
+      429,
+      {
+        message: 'Your account is suspended due to insufficient balance, please recharge',
+        type: 'exceeded_current_quota_error',
+      },
+      '429 quota exhausted',
+      new Headers(),
+    );
+    const files = new KimiFiles({
+      baseUrl: 'https://api.example/v1',
+      clientFactory: () =>
+        ({ files: { create: vi.fn().mockRejectedValue(quotaError) } }) as never,
+    });
+
+    const caught = await files
+      .uploadVideo(
+        { data: Buffer.from([1, 2, 3]), mimeType: 'video/mp4' },
+        { auth: { apiKey: 'request-token' } },
+      )
+      .then(
+        () => undefined,
+        (error: unknown) => error,
+      );
+
+    expect(caught).toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(caught)).toBe(false);
   });
 });

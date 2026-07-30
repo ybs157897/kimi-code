@@ -12,10 +12,13 @@ import LanguageSwitcher from './LanguageSwitcher.vue';
 import { serverEndpointLabel } from '../../api/config';
 import { downloadTraceLog, isTraceEnabled } from '../../debug/trace';
 import type { Accent, ColorScheme } from '../../composables/useKimiWebClient';
-import type { AppConfig, AppModel } from '../../api/types';
+import type { AppConfig, AppModel, AppProvider } from '../../api/types';
 import Dialog from '../ui/Dialog.vue';
 import Switch from '../ui/Switch.vue';
 import Button from '../ui/Button.vue';
+import Badge from '../ui/Badge.vue';
+import Card from '../ui/Card.vue';
+import Icon from '../ui/Icon.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
 import Select from '../ui/Select.vue';
 import Tooltip from '../ui/Tooltip.vue';
@@ -44,6 +47,8 @@ const props = defineProps<{
   config?: AppConfig | null;
   /** Models from the daemon catalog, used to label default-model choices. */
   models?: AppModel[];
+  /** Configured providers, surfaced in the dedicated Models settings page. */
+  providers?: AppProvider[];
   /** True while POST /api/v1/config is saving. */
   configSaving?: boolean;
   /** Server version reported by GET /api/v1/meta. */
@@ -65,16 +70,18 @@ const emit = defineEmits<{
   logout: [];
   openOnboarding: [];
   openProviders: [];
+  pickModel: [];
   updateConfig: [patch: Partial<AppConfig>];
   close: [];
 }>();
 
-type SettingsTab = 'general' | 'agent' | 'account' | 'advanced' | 'archived';
+type SettingsTab = 'general' | 'models' | 'agent' | 'account' | 'advanced' | 'archived';
 
 const activeTab = ref<SettingsTab>('general');
 
 const tabs: { id: SettingsTab; labelKey: string }[] = [
   { id: 'general', labelKey: 'settings.tabs.general' },
+  { id: 'models', labelKey: 'settings.tabs.models' },
   { id: 'agent', labelKey: 'settings.tabs.agent' },
   { id: 'account', labelKey: 'settings.tabs.account' },
   { id: 'advanced', labelKey: 'settings.tabs.advanced' },
@@ -448,6 +455,107 @@ function archiveTime(iso: string): string {
           </section>
         </section>
 
+        <!-- Models: Reasonix-style usage + access entry point. -->
+        <section v-show="activeTab === 'models'" class="panel model-settings">
+          <div class="panel-head">
+            <div class="panel-kicker">{{ t('settings.modelsKicker') }}</div>
+            <h4 class="panel-title">{{ t('settings.modelsTitle') }}</h4>
+            <p class="panel-desc">{{ t('settings.modelsDesc') }}</p>
+          </div>
+
+          <div class="model-summary-grid">
+            <Card>
+              <div class="model-summary">
+                <span class="model-summary__icon"><Icon name="sparkles" size="md" /></span>
+                <span class="model-summary__copy">
+                  <span class="model-summary__label">{{ t('settings.defaultModel') }}</span>
+                  <span class="model-summary__value mono">
+                    {{ config?.defaultModel ?? t('settings.noDefaultModel') }}
+                  </span>
+                </span>
+              </div>
+            </Card>
+            <Card>
+              <div class="model-summary">
+                <span class="model-summary__icon"><Icon name="globe" size="md" /></span>
+                <span class="model-summary__copy">
+                  <span class="model-summary__label">{{ t('settings.providers') }}</span>
+                  <span class="model-summary__value">
+                    {{ t('settings.providerCount', { count: providers?.length ?? 0 }) }}
+                  </span>
+                </span>
+              </div>
+            </Card>
+          </div>
+
+          <section class="sec">
+            <div class="sec-head">
+              <div>
+                <h3 class="sec-title">{{ t('settings.modelUsage') }}</h3>
+                <p class="sec-copy">{{ t('settings.modelUsageHint') }}</p>
+              </div>
+              <Button variant="secondary" size="sm" @click="emit('pickModel')">
+                {{ t('settings.chooseModel') }}
+              </Button>
+            </div>
+            <div class="row">
+              <span class="rlabel">
+                {{ t('settings.defaultModel') }}
+                <span class="hint">{{ t('settings.defaultModelHint') }}</span>
+              </span>
+              <div v-if="modelGroups.length > 0" class="select-wrap">
+                <Select
+                  :model-value="config?.defaultModel ?? ''"
+                  :disabled="configSaving"
+                  :aria-label="t('settings.defaultModel')"
+                  @update:model-value="setDefaultModel"
+                >
+                  <option v-if="!config?.defaultModel" value="" disabled>{{ t('settings.noDefaultModel') }}</option>
+                  <optgroup v-for="group in modelGroups" :key="group.provider" :label="group.provider">
+                    <option v-for="model in group.options" :key="model.id" :value="model.id">
+                      {{ model.label }}
+                    </option>
+                  </optgroup>
+                </Select>
+              </div>
+              <span v-else class="rvalue mono">{{ config?.defaultModel ?? t('settings.noDefaultModel') }}</span>
+            </div>
+          </section>
+
+          <section class="sec">
+            <div class="sec-head">
+              <div>
+                <h3 class="sec-title">{{ t('settings.modelAccess') }}</h3>
+                <p class="sec-copy">{{ t('settings.modelAccessHint') }}</p>
+              </div>
+              <Button variant="primary" size="sm" @click="emit('openProviders')">
+                <Icon name="settings" size="sm" />
+                {{ t('settings.manageProviders') }}
+              </Button>
+            </div>
+            <div v-if="providers && providers.length > 0" class="provider-preview">
+              <div v-for="provider in providers.slice(0, 4)" :key="provider.id" class="provider-preview__row">
+                <span class="provider-preview__name">{{ provider.id }}</span>
+                <span class="provider-preview__type mono">{{ provider.type }}</span>
+                <Badge
+                  :variant="provider.status === 'connected' ? 'success' : provider.status === 'error' ? 'danger' : 'neutral'"
+                  size="sm"
+                  dot
+                >
+                  {{ t(`providers.status.${provider.status}`) }}
+                </Badge>
+              </div>
+            </div>
+            <div v-else class="model-empty">
+              <Icon name="globe" size="lg" />
+              <span>{{ t('settings.noProviders') }}</span>
+              <Button variant="primary" size="sm" @click="emit('openProviders')">
+                {{ t('settings.addFirstProvider') }}
+              </Button>
+            </div>
+          </section>
+        </section>
+
         <!-- Account -->
         <section v-show="activeTab === 'account'" class="panel">
           <section class="sec">
@@ -475,29 +583,6 @@ function archiveTime(iso: string): string {
             </div>
 
             <template v-if="config">
-              <div class="row">
-                <span class="rlabel">
-                  {{ t('settings.defaultModel') }}
-                  <span class="hint">{{ t('settings.defaultModelHint') }}</span>
-                </span>
-                <div v-if="modelGroups.length > 0" class="select-wrap">
-                  <Select
-                    :model-value="config.defaultModel ?? ''"
-                    :disabled="configSaving"
-                    :aria-label="t('settings.defaultModel')"
-                    @update:model-value="setDefaultModel"
-                  >
-                    <option v-if="!config.defaultModel" value="" disabled>{{ t('settings.noDefaultModel') }}</option>
-                    <optgroup v-for="group in modelGroups" :key="group.provider" :label="group.provider">
-                      <option v-for="model in group.options" :key="model.id" :value="model.id">
-                        {{ model.label }}
-                      </option>
-                    </optgroup>
-                  </Select>
-                </div>
-                <span v-else class="rvalue mono">{{ config.defaultModel ?? t('settings.noDefaultModel') }}</span>
-              </div>
-
               <div class="row">
                 <span class="rlabel">
                   {{ t('settings.defaultPermission') }}
@@ -787,6 +872,104 @@ function archiveTime(iso: string): string {
 
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
 
+.model-settings { padding-top: var(--space-3); }
+.model-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--space-3);
+}
+.model-summary {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+}
+.model-summary__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.model-summary__copy {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 2px;
+}
+.model-summary__label {
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  color: var(--color-text-muted);
+}
+.model-summary__value {
+  overflow: hidden;
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-summary__value.mono {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+}
+.sec-copy {
+  margin: var(--space-1) 0 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  line-height: var(--leading-normal);
+}
+.provider-preview {
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+}
+.provider-preview__row {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) minmax(110px, 0.7fr) auto;
+  align-items: center;
+  gap: var(--space-3);
+  min-height: 44px;
+  padding: var(--space-2) var(--space-3);
+  border-top: 1px solid var(--color-line);
+}
+.provider-preview__row:first-child { border-top: none; }
+.provider-preview__row:hover { background: var(--color-surface-sunken); }
+.provider-preview__name {
+  overflow: hidden;
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  font-weight: var(--weight-medium);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.provider-preview__type {
+  overflow: hidden;
+  color: var(--color-text-muted);
+  font-size: var(--text-xs);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.model-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-3);
+  min-height: 92px;
+  border: 1px dashed var(--color-line-strong);
+  border-radius: var(--radius-md);
+  color: var(--color-text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+}
+
 @media (max-width: 640px) {
   .sd { flex-direction: column; }
   .settings-tabs {
@@ -804,6 +987,18 @@ function archiveTime(iso: string): string {
   .select-wrap {
     width: 100%;
     max-width: none;
+  }
+  .model-summary-grid { grid-template-columns: 1fr; }
+  .model-settings .sec-head {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .provider-preview__row { grid-template-columns: minmax(0, 1fr) auto; }
+  .provider-preview__type { display: none; }
+  .model-empty {
+    align-items: flex-start;
+    flex-direction: column;
+    padding: var(--space-4);
   }
 }
 /* Archived-sessions tab */

@@ -47,17 +47,21 @@ type App struct {
 	ready  chan struct{}
 	// startErr is populated before ready closes when startup fails.
 	startErr error
-	// subs cancels the forwarding goroutine for each active subscription,
-	// keyed by "sessionId/agentId".
+	// subs cancels the forwarding goroutine for each active Phase 0 agent-event
+	// subscription, keyed by "sessionId/agentId".
 	subs map[string]context.CancelFunc
+	// productSubs tracks each active Phase 1 product-stream subscription (cancel
+	// + ipc listen id for Unlisten), keyed by "product:sessionId/agentId".
+	productSubs map[string]productSub
 }
 
 // NewApp constructs the bound App and its sidecar manager.
 func NewApp() *App {
 	return &App{
-		sidecar: sidecar.New(),
-		ready:   make(chan struct{}),
-		subs:    map[string]context.CancelFunc{},
+		sidecar:     sidecar.New(),
+		ready:       make(chan struct{}),
+		subs:        map[string]context.CancelFunc{},
+		productSubs: map[string]productSub{},
 	}
 }
 
@@ -101,6 +105,10 @@ func (a *App) shutdown(_ context.Context) {
 		cancel()
 	}
 	a.subs = map[string]context.CancelFunc{}
+	for _, sub := range a.productSubs {
+		sub.cancel()
+	}
+	a.productSubs = map[string]productSub{}
 	client := a.client
 	a.client = nil
 	a.mu.Unlock()

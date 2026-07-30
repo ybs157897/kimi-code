@@ -428,6 +428,13 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
   }
 
+  /** Re-scan the active session's expert-team catalog (Modes menu open). */
+  function refreshExpertTeams(): void {
+    const sid = rawState.activeSessionId;
+    if (!sid) return;
+    void loadExpertTeamsForSession(sid);
+  }
+
   async function loadFileDiff(path: string): Promise<void> {
     const sid = rawState.activeSessionId;
     if (!sid) return;
@@ -2902,6 +2909,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     loadExpertTeamsForSession,
     activateExpertTeam,
     deactivateExpertTeam,
+    refreshExpertTeams,
     /** True while any empty-composer first prompt is being created + submitted
      *  (the window covered by startingFirstPromptWorkspaces). Drives the
      *  empty-session "starting conversation…" loading state. Intentionally

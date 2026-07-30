@@ -283,7 +283,7 @@ export function useModelProviderState(
   }
 
   /** Load models (cached — call again to force refresh) */
-  async function loadModels(): Promise<void> {
+  async function loadModels(): Promise<boolean> {
     try {
       const api = getKimiWebApi();
       models.value = await api.listModels();
@@ -295,18 +295,22 @@ export function useModelProviderState(
       if (active !== undefined) {
         rawState.thinking = thinkingLevelForSession(rawState.activeSessionId, active);
       }
+      return true;
     } catch (err) {
       pushOperationFailure('loadModels', err);
+      return false;
     }
   }
 
   /** Load providers */
-  async function loadProviders(): Promise<void> {
+  async function loadProviders(): Promise<boolean> {
     try {
       const api = getKimiWebApi();
       providers.value = await api.listProviders();
+      return true;
     } catch (err) {
       pushOperationFailure('loadProviders', err);
+      return false;
     }
   }
 
@@ -485,8 +489,8 @@ export function useModelProviderState(
       } else {
         await api.replaceProvider(existingId, input);
       }
-      await Promise.all([loadProviders(), loadModels()]);
-      return true;
+      const [, modelsLoaded] = await Promise.all([loadProviders(), loadModels()]);
+      return modelsLoaded;
     } catch (err) {
       pushOperationFailure('saveProvider', err);
       return false;
@@ -530,7 +534,7 @@ export function useModelProviderState(
   }
 
   /** Refresh every refreshable provider's remote model metadata, then reload caches. */
-  async function refreshAllProviders(): Promise<void> {
+  async function refreshAllProviders(): Promise<boolean> {
     try {
       const result = await getKimiWebApi().refreshAllProviders();
       for (const failure of result.failed) {
@@ -538,9 +542,11 @@ export function useModelProviderState(
           message: failure.provider,
         });
       }
-      await Promise.all([loadProviders(), loadModels()]);
+      const [, modelsLoaded] = await Promise.all([loadProviders(), loadModels()]);
+      return modelsLoaded;
     } catch (err) {
       pushOperationFailure('refreshAllProviders', err);
+      return false;
     }
   }
 

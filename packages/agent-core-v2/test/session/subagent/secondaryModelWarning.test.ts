@@ -33,6 +33,7 @@ describe('SessionSecondaryModelWarningService', () => {
   let handles: Map<string, IAgentScopeHandle>;
   let published: DomainEvent[];
   let modelIds: Record<string, Model>;
+  let config: StubConfigService;
 
   beforeEach(() => {
     disposables = new DisposableStore();
@@ -52,7 +53,8 @@ describe('SessionSecondaryModelWarningService', () => {
       onDidCreate: onDidCreate.event,
       get: (agentId: string) => handles.get(agentId),
     } as unknown as IAgentLifecycleService);
-    ix.stub(IConfigService, new StubConfigService(configValues));
+    config = new StubConfigService(configValues);
+    ix.stub(IConfigService, config);
     ix.stub(
       IFlagService,
       stubFlag((id) => flagEnabled && id === SECONDARY_MODEL_FLAG_ID),
@@ -201,6 +203,22 @@ describe('SessionSecondaryModelWarningService', () => {
     const svc = ix.get(ISessionSecondaryModelWarningService);
     createMain();
     expect(svc.getSecondaryModelWarning()?.code).toBe(SECONDARY_MODEL_INVALID_WARNING_CODE);
+    expect(published).toHaveLength(1);
+  });
+
+  it('rechecks automatically when the secondary model configuration changes', async () => {
+    modelIds['provider/secondary'] = modelStub({});
+    setup({ [SECONDARY_MODEL_SECTION]: { model: 'provider/secondary' } });
+    const svc = ix.get(ISessionSecondaryModelWarningService);
+    createMain();
+    expect(svc.getSecondaryModelWarning()).toBeUndefined();
+
+    await config.replace(SECONDARY_MODEL_SECTION, { model: 'provider/typo' });
+    expect(svc.getSecondaryModelWarning()?.code).toBe(SECONDARY_MODEL_INVALID_WARNING_CODE);
+    expect(published).toHaveLength(1);
+
+    await config.replace(SECONDARY_MODEL_SECTION, { model: 'provider/secondary' });
+    expect(svc.getSecondaryModelWarning()).toBeUndefined();
     expect(published).toHaveLength(1);
   });
 });

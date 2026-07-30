@@ -13,13 +13,7 @@
 
 import multipart from '@fastify/multipart';
 
-import {
-  DEFAULT_MAX_UPLOAD_BYTES,
-  ErrorCodes,
-  IFileService,
-  Error2,
-  type Scope,
-} from '@moonshot-ai/agent-core-v2';
+import { ErrorCodes, IFileService, Error2, type Scope } from '@moonshot-ai/agent-core-v2';
 import { z } from 'zod';
 
 import { requestLog } from '../lib/requestLog';
@@ -76,7 +70,7 @@ interface FilesReply {
 export function registerFilesRoutes(app: FilesRouteHost, core: Scope): void {
   app.register(multipart, {
     limits: {
-      fileSize: DEFAULT_MAX_UPLOAD_BYTES,
+      fileSize: Number.MAX_SAFE_INTEGER,
       files: 1,
     },
   });
@@ -108,14 +102,9 @@ export function registerFilesRoutes(app: FilesRouteHost, core: Scope): void {
 
         const store = core.accessor.get(IFileService);
 
-        const partFile = part.file as NodeJS.ReadableStream & { truncated?: boolean };
-        let busboyTruncated = false;
-        partFile.on('limit', () => {
-          busboyTruncated = true;
-        });
         try {
           const meta = await store.save(
-            partFile as unknown as import('node:stream').Readable,
+            part.file as unknown as import('node:stream').Readable,
             part.filename,
             {
               name: nameOverride ?? part.filename,
@@ -123,18 +112,6 @@ export function registerFilesRoutes(app: FilesRouteHost, core: Scope): void {
               expiresInSec,
             },
           );
-          if (busboyTruncated || partFile.truncated === true) {
-            try {
-              await store.delete(meta.id);
-            } catch {
-              // best-effort cleanup of the truncated blob
-            }
-            sendMappedError(reply as unknown as FilesReply, req, new Error2(
-              ErrorCodes.FILE_TOO_LARGE,
-              `upload size exceeds limit ${DEFAULT_MAX_UPLOAD_BYTES} bytes`,
-            ));
-            return;
-          }
           reply.send(okEnvelope(meta, req.id));
         } catch (error) {
           sendMappedError(reply as unknown as FilesReply, req, error);
@@ -237,19 +214,6 @@ function sendMappedError(reply: FilesReply, req: { id: string }, err: unknown): 
   const requestId = req.id;
   if (err instanceof Error2 && err.code === ErrorCodes.FILE_NOT_FOUND) {
     reply.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', requestId));
-    return;
-  }
-  if (err instanceof Error2 && err.code === ErrorCodes.FILE_TOO_LARGE) {
-    reply.code(413).send(errEnvelope(ErrorCode.FILE_TOO_LARGE, 'upload too large (>50MB)', requestId));
-    return;
-  }
-  if (
-    typeof err === 'object' &&
-    err !== null &&
-    'name' in err &&
-    (err as { name: string }).name === 'FST_REQ_FILE_TOO_LARGE'
-  ) {
-    reply.code(413).send(errEnvelope(ErrorCode.FILE_TOO_LARGE, 'upload too large (>50MB)', requestId));
     return;
   }
   requestLog(req)?.error({ err }, 'file request failed');

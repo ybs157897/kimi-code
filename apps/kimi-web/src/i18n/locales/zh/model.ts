@@ -13,4 +13,5 @@ export default {
   starTitle: '添加到收藏',
   unstarTitle: '取消收藏',
   footerHint: '↑↓ 导航 · Enter 选择 · Esc 关闭',
+  manageProviders: '配置模型服务',
 } as const;

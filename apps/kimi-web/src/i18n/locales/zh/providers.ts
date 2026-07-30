@@ -1,6 +1,10 @@
 export default {
   dialogLabel: '管理提供商',
-  title: '提供商管理',
+  title: '模型服务商',
+  accessKicker: '接入模型服务',
+  accessHint: '添加官方 DeepSeek 或任意 OpenAI / Anthropic 兼容服务。保存后即可在对话输入框切换模型。',
+  addDeepSeek: '添加 DeepSeek',
+  addCustom: '自定义服务',
   close: '关闭 (Esc)',
   loading: '加载提供商中…',
   unavailable: 'daemon 暂不支持提供商管理',

@@ -255,6 +255,21 @@ export interface WireFsHomeResult {
   recent_roots: string[];
 }
 
+// Folder-picker browse result (routes/workspaceFs.ts `fs:browse`, backed by
+// IHostFolderBrowser.browse()). Only directories are listed (`is_dir` is
+// always true on the wire), matching kimi-web's `WireFsBrowseResult`.
+export interface WireFsBrowseEntry {
+  name: string;
+  path: string;
+  is_dir: boolean;
+}
+
+export interface WireFsBrowseResult {
+  path: string;
+  parent: string | null;
+  entries: WireFsBrowseEntry[];
+}
+
 // --- Model catalog (routes/modelCatalog.ts) ---
 
 export interface WireModel {
@@ -511,6 +526,68 @@ export interface WireTaskListItem {
   output_bytes?: number;
 }
 
+// Expert teams — mirrors apps/kimi-web/src/api/daemon/wire.ts
+export type WireLocalizedText = string | Record<string, string>;
+
+export interface WireExpertTeamMemberInfo {
+  agent: string;
+  role: 'lead' | 'member';
+  display_name?: string;
+  name?: WireLocalizedText;
+  profession?: WireLocalizedText;
+  description?: string;
+  avatar?: string;
+}
+
+export interface WireExpertTeamDefinition {
+  plugin_id: string;
+  plugin_version?: string;
+  display_name: string;
+  description?: string;
+  profession?: string;
+  tags: string[];
+  lead_agent_name: string;
+  member_agent_names: string[];
+  members: WireExpertTeamMemberInfo[];
+  quick_prompts: string[];
+  default_init_prompt?: string;
+  category_id?: string;
+}
+
+export type WireExpertTeamMemberStatus =
+  | 'spawning'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'shutdown';
+
+export interface WireExpertTeamSnapshot {
+  binding: {
+    plugin_id: string;
+    plugin_version?: string;
+    display_name: string;
+    lead_agent_name: string;
+    lead_profile_name: string;
+    member_agent_names: string[];
+    previous_profile_name?: string;
+    activated_at: string;
+  };
+  team?: {
+    id: string;
+    name: string;
+    description?: string;
+    created_at: string;
+    members: Array<{
+      name: string;
+      agent_id: string;
+      profile_name: string;
+      status: WireExpertTeamMemberStatus;
+      updated_at: string;
+      task_id?: string;
+    }>;
+  };
+}
+
 // POST /sessions/{id}/fs:git_status — note `pullRequest` is camelCase on wire.
 export interface WireGitPullRequest {
   number: number;
@@ -655,3 +732,29 @@ export type WireEvent =
   | WireEventQuestionRequested
   | WireEventQuestionAnswered
   | WireEventNotice;
+
+/**
+ * v2 sync control frame. Pushed to a product subscriber (instead of a normal
+ * `WireEvent`) when the stream cannot incrementally cover its resume cursor —
+ * the journal no longer reaches back to `after_seq`, or the stream restarted
+ * under a new epoch. Mirrors kimi-web's `WireResyncRequired`
+ * (apps/kimi-web/src/api/daemon/wire.ts): the client adopts `current_seq` /
+ * `epoch` and re-reads the snapshot rather than continuing from a hole.
+ */
+export interface WireResyncRequired {
+  type: 'resync_required';
+  timestamp: string;
+  payload: {
+    session_id: string;
+    reason: 'buffer_overflow' | 'session_recreated' | 'epoch_changed';
+    current_seq: number;
+    epoch?: string;
+  };
+}
+
+/**
+ * One frame delivered on a product subscription: either a projected timeline
+ * `WireEvent` or the `resync_required` control frame. The Go shell forwards
+ * both verbatim on `kimi:event`; the desktop client discriminates on `type`.
+ */
+export type ProductFrame = WireEvent | WireResyncRequired;

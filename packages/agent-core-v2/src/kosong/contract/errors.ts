@@ -117,6 +117,18 @@ export class APIProviderRateLimitError extends APIStatusError {
   }
 }
 
+export class APIProviderQuotaExhaustedError extends APIStatusError {
+  constructor(
+    message: string,
+    requestId?: string | null,
+    retryAfterMs?: number | null,
+    traceId?: string | null,
+  ) {
+    super(429, message, requestId, retryAfterMs, traceId);
+    this.name = 'APIProviderQuotaExhaustedError';
+  }
+}
+
 export class APIProviderOverloadedError extends APIStatusError {
   constructor(
     statusCode: number,
@@ -209,6 +221,9 @@ const MEDIA_TYPE_FIELD_PATTERN = /(?:media|mime)_?type/;
 
 export function isImageFormatError(error: unknown): boolean {
   if (error instanceof APIStatusError) {
+    if (error instanceof APIProviderQuotaExhaustedError) {
+      return false;
+    }
     if (error instanceof APIContextOverflowError) return false;
     if (error instanceof APIRequestTooLargeError) return false;
     if (error.statusCode !== 400) return false;
@@ -236,6 +251,9 @@ export function isRetryableGenerateError(error: unknown): boolean {
     return true;
   }
   if (error instanceof APIStatusError) {
+    if (error instanceof APIProviderQuotaExhaustedError) {
+      return false;
+    }
     return [408, 409, 429, 500, 502, 503, 504, 529].includes(error.statusCode);
   }
   return error instanceof ChatProviderError && !isImageFormatError(error);
@@ -424,6 +442,7 @@ export function isRecoverableRequestStructureError(error: unknown): boolean {
 }
 
 export function isProviderRateLimitError(error: unknown): boolean {
+  if (error instanceof APIProviderQuotaExhaustedError) return false;
   if (error instanceof APIProviderRateLimitError) return true;
 
   const statusCode = getStatusCode(error);
@@ -464,6 +483,7 @@ export type ApiErrorKind =
   | 'context_overflow'
   | 'overloaded'
   | 'rate_limit'
+  | 'quota_exhausted'
   | 'auth'
   | '5xx_server'
   | '4xx_client'
@@ -481,6 +501,9 @@ export function classifyApiError(error: unknown): ApiErrorClassification {
   const statusCode = getStatusCode(error);
   if (error instanceof APIContextOverflowError) return { kind: 'context_overflow', statusCode };
   if (error instanceof APIProviderOverloadedError) return { kind: 'overloaded', statusCode };
+  if (error instanceof APIProviderQuotaExhaustedError) {
+    return { kind: 'quota_exhausted', statusCode };
+  }
   if (error instanceof APIStatusError) {
     if (isContextOverflowStatusError(error.statusCode, error.message)) {
       return { kind: 'context_overflow', statusCode };

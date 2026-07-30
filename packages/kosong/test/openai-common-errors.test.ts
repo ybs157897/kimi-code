@@ -1,6 +1,7 @@
 import {
   APIConnectionError,
   APIContextOverflowError,
+  APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
   APIStatusError,
   APITimeoutError,
@@ -13,6 +14,7 @@ import {
   convertContentPart,
   convertOpenAIError,
 } from '#/providers/openai-common';
+import { classifyKimiQuotaError } from '#/providers/kimi-errors';
 import { OpenAILegacyChatProvider, OpenAILegacyStreamedMessage } from '#/providers/openai-legacy';
 import { ReasoningKeyDialect } from '#/providers/reasoning-key';
 import {
@@ -420,5 +422,51 @@ describe('convertOpenAIError: non-Error values', () => {
     const result = convertOpenAIError(new Error('plain error'));
     expect(result.constructor).toBe(ChatProviderError);
     expect(result.message).toContain('plain error');
+  });
+});
+
+describe('convertOpenAIError: quota-exhausted 429', () => {
+  const quotaMessage =
+    'Your account is suspended due to insufficient balance, please recharge your account';
+
+  it("recognizes OpenAI's insufficient_quota code", () => {
+    const error = new OpenAIAPIError(
+      429,
+      { message: 'You exceeded your current quota.', type: 'insufficient_quota' },
+      '429 You exceeded your current quota.',
+      new Headers(),
+    );
+    const result = convertOpenAIError(error);
+
+    expect(result).toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(result)).toBe(false);
+  });
+
+  it('uses the vendor hook for Moonshot quota signals', () => {
+    const error = new OpenAIAPIError(
+      429,
+      { message: quotaMessage, type: 'exceeded_current_quota_error' },
+      `429 ${quotaMessage}`,
+      new Headers(),
+    );
+
+    expect(convertOpenAIError(error)).toBeInstanceOf(APIProviderRateLimitError);
+    const classified = convertOpenAIError(error, classifyKimiQuotaError);
+    expect(classified).toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(classified)).toBe(false);
+  });
+
+  it('keeps transient 429 responses retryable', () => {
+    const error = new OpenAIAPIError(
+      429,
+      { message: 'Too many requests', type: 'rate_limit_reached_error' },
+      'Too many requests',
+      new Headers(),
+    );
+    const result = convertOpenAIError(error, classifyKimiQuotaError);
+
+    expect(result).toBeInstanceOf(APIProviderRateLimitError);
+    expect(result).not.toBeInstanceOf(APIProviderQuotaExhaustedError);
+    expect(isRetryableGenerateError(result)).toBe(true);
   });
 });

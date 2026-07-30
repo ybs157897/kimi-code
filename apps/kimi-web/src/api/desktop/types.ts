@@ -49,8 +49,15 @@ export interface WailsAppBindings {
    * `WireEnvelope.data` the daemon REST surface returns for that endpoint).
    */
   ProductCall(method: string, argsJSON: string): Promise<string>;
-  /** Subscribe the session/agent product stream (frozen contract F). */
-  ProductSubscribe(sessionId: string, agentId: string): Promise<void>;
+  /**
+   * Subscribe the session/agent product stream (frozen contract F). `cursorJSON`
+   * is an optional resume-cursor object (`{epoch?, after_seq?}`) as JSON, or an
+   * empty string for a fresh live subscription; the sidecar replays journaled
+   * frames after `after_seq` or pushes a `resync_required` frame.
+   */
+  ProductSubscribe(sessionId: string, agentId: string, cursorJSON: string): Promise<void>;
+  /** Detach the session/agent product stream (frozen contract F). */
+  ProductUnsubscribe(sessionId: string, agentId: string): Promise<void>;
 }
 
 /**
@@ -300,6 +307,17 @@ export interface ProductEventPayload {
   event: WireEvent;
 }
 
+/**
+ * Product-stream resume cursor (v2 sync). `afterSeq` is the last product seq the
+ * client received; `epoch` is the stream epoch it observed. The bridge serializes
+ * this to the sidecar's snake_case listen arg (`{epoch, after_seq}`). Absent →
+ * a fresh live subscription.
+ */
+export interface ProductStreamCursor {
+  epoch?: string;
+  afterSeq?: number;
+}
+
 // ---------------------------------------------------------------------------
 // Bridge surface — implemented identically by the Wails wrapper and the dev
 // mock, so the demo renders the same with and without the Go shell.
@@ -324,8 +342,14 @@ export interface DesktopBridge {
    * resolves to the kimi-web response wire JSON (the unwrapped `WireEnvelope.data`).
    */
   ProductCall(method: string, argsJSON: string): Promise<string>;
-  /** Subscribe the session/agent product stream (frozen contract F). */
-  ProductSubscribe(sessionId: string, agentId: string): Promise<void>;
+  /**
+   * Subscribe the session/agent product stream (frozen contract F), optionally
+   * resuming from a cursor so a reconnect is caught up from the journal (or told
+   * to resync). Omitting the cursor subscribes live from the current head.
+   */
+  ProductSubscribe(sessionId: string, agentId: string, cursor?: ProductStreamCursor): Promise<void>;
+  /** Detach the session/agent product stream (frozen contract F). */
+  ProductUnsubscribe(sessionId: string, agentId: string): Promise<void>;
   /**
    * Subscribe to product `WireEvent` payloads re-emitted on `kimi:event`.
    * Returns an unsubscribe function; shares the native listener with `onEvent`.

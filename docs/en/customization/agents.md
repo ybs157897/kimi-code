@@ -45,7 +45,7 @@ Beyond the three built-in sub-agents, you can define your own agents as Markdown
 
 ### Agent Locations
 
-Kimi Code CLI discovers agent files by scope; more specific scopes take higher priority: **Explicit (`--agent-file`) > Project > Extra > User > Built-in**. When two files define the same `name`, the higher-priority scope wins. Each directory is scanned recursively for `.md` files.
+Kimi Code CLI discovers agent files by scope; more specific scopes take higher priority: **Explicit (`--agent-file`) > Project > Extra > User > Plugin > Built-in**. When two files define the same `name`, the higher-priority scope wins. Each directory is scanned recursively for `.md` files.
 
 **User level** (applies to all projects):
 - `$KIMI_CODE_HOME/agents/` (default: `~/.kimi-code/agents/`)
@@ -62,6 +62,8 @@ The Kimi-specific user agent directory moves with `KIMI_CODE_HOME`, while the ge
 ```toml
 extra_agent_dirs = ["~/team-agents", ".agents/team-agents"]
 ```
+
+**Plugin level**: directories declared by an enabled plugin's `agents` field. If the field is omitted, an `agents/` directory under the plugin root is discovered automatically. [Plugin agents](./plugins.md#plugin-agents) have higher priority only than built-in agents.
 
 **Built-in agents** are distributed with the CLI and have the lowest priority. A directory-discovered file does not override a same-name built-in Agent unless its frontmatter declares `override: true`. A file loaded through `--agent-file` is treated as explicit launch intent, may override a same-name built-in Agent, outranks every directory scope, and applies to the current launch only. Separately, `$KIMI_CODE_HOME/SYSTEM.md` permanently overrides the default main agent's system prompt (it is not part of agent-file discovery); its precedence interactions are covered in the SYSTEM.md section below.
 
@@ -155,8 +157,9 @@ Like the body of a regular agent file, SYSTEM.md is rendered as a template each 
 | `${now}` | Current time in ISO format |
 | `${additional_dirs_info}` | Additional directories added to the workspace; empty when there are none |
 | `${base_prompt}` | The default system prompt. Inside `SYSTEM.md` itself this is the built-in default; inside an agent file it is the effective default — the built-in default, or your `SYSTEM.md` override when present |
+| `${plugin_sections}` | System-prompt instructions contributed by enabled plugins; empty when no plugin contributes instructions |
 
-Unknown variables stay verbatim, a bare `$` is never special, and a variable with no context value renders as an empty string. Three pre-composed blocks — `${windows_notes}`, `${additional_dirs_section}`, and `${skills_section}` — render the matching built-in prompt section, or an empty string when it does not apply. The variables are enough to rebuild the skeleton of the built-in prompt, for example:
+Unknown variables stay verbatim, a bare `$` is never special, and a variable with no context value renders as an empty string. Four pre-composed blocks — `${windows_notes}`, `${additional_dirs_section}`, `${skills_section}`, and `${plugin_sections}` — render the matching built-in prompt section, or an empty string when it does not apply. The variables are enough to rebuild the skeleton of the built-in prompt, for example:
 
 ```markdown
 You are Kimi, running at ${cwd} on ${os}.

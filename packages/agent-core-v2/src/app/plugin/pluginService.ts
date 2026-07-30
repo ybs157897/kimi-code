@@ -20,6 +20,7 @@ import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { HookDef } from '#/agent/externalHooks/types';
 import type { McpServerConfig } from '#/agent/mcp/config-schema';
+import type { AgentFileRoot } from '#/app/agentFileCatalog/types';
 import type { SkillRoot } from '#/app/skillCatalog/types';
 
 import { PluginManager } from './manager';
@@ -34,6 +35,7 @@ import {
 import type {
   EnabledPluginExpert,
   EnabledPluginSessionStart,
+  EnabledPluginSystemPrompt,
   PluginCommandDef,
   PluginInfo,
   PluginSummary,
@@ -159,12 +161,20 @@ export class PluginService extends Disposable implements IPluginService {
     return this.runConsumptionRead([], async () => this.manager.pluginSkillRoots());
   }
 
+  pluginAgentRoots(): Promise<readonly AgentFileRoot[]> {
+    return this.runConsumptionRead([], async () => this.manager.pluginAgentRoots());
+  }
+
   enabledExperts(): Promise<readonly EnabledPluginExpert[]> {
     return this.runConsumptionRead([], async () => this.manager.enabledExperts());
   }
 
   enabledSessionStarts(): Promise<readonly EnabledPluginSessionStart[]> {
     return this.runConsumptionRead([], async () => this.manager.enabledSessionStarts());
+  }
+
+  enabledSystemPrompts(): Promise<readonly EnabledPluginSystemPrompt[]> {
+    return this.runConsumptionRead([], async () => this.manager.enabledSystemPrompts());
   }
 
   enabledMcpServers(): Promise<Record<string, McpServerConfig>> {

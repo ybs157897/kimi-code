@@ -28,6 +28,7 @@ import { encodeFrame, NdjsonDecoder, type IpcFrame } from '@moonshot-ai/klient/t
 
 import { ProductFacade, PRODUCT_SERVICE } from './facade.js';
 import { ProductProjector } from './projector.js';
+import { ProductStreamHub, type ProductStreamCursor } from './stream.js';
 
 const REQUEST_INVALID = 40001;
 const UNAUTHORIZED = 40100;
@@ -84,14 +85,34 @@ function eventSourceFromFrame(frame: IpcFrame): EventSourceRef {
   throw new RPCError(REQUEST_INVALID, `unknown event stream: ${String(frame.event)}`);
 }
 
+/**
+ * Read a product resume cursor from a `listen` frame's `arg`. The Go shell puts
+ * `{ epoch?, after_seq? }` (snake_case, matching the wire) as the first arg;
+ * absent / malformed → a fresh live subscription. `after_seq` is coerced from a
+ * finite number only.
+ */
+function productCursorFromFrame(frame: IpcFrame): ProductStreamCursor | undefined {
+  const arg = Array.isArray(frame.arg) ? frame.arg[0] : frame.arg;
+  if (arg === null || typeof arg !== 'object') return undefined;
+  const record = arg as Record<string, unknown>;
+  const cursor: ProductStreamCursor = {};
+  if (typeof record['epoch'] === 'string') cursor.epoch = record['epoch'];
+  const afterSeq = record['after_seq'];
+  if (typeof afterSeq === 'number' && Number.isFinite(afterSeq)) cursor.afterSeq = afterSeq;
+  if (cursor.epoch === undefined && cursor.afterSeq === undefined) return undefined;
+  return cursor;
+}
+
 export async function serveProductIpc(options: ServeProductIpcOptions): Promise<ProductIpcHost> {
   // Fallthrough reflector for every existing klient service (Phase 0 surface).
   const dispatcher = createMemoryDispatcher(options.scope);
   // In-process klient the product facade + projector fulfill through (validated).
   const klient = createKlient({ scope: options.scope });
-  const facade = new ProductFacade(klient, options.scope);
   const projector = new ProductProjector(klient);
-
+  // The hub owns the per-(session, agent) epoch/seq/journal; the facade reads the
+  // same watermark for getSessionSnapshot so snapshot + subscription share a cursor.
+  const hub = new ProductStreamHub(projector);
+  const facade = new ProductFacade(klient, options.scope, hub);
   const tcp = parseTcpEndpoint(options.endpoint);
   if (tcp === undefined) {
     // Best-effort cleanup of a stale Unix socket file.
@@ -184,7 +205,10 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
             sendError(id, new RPCError(REQUEST_INVALID, 'expected hello first'));
             return;
           }
-          // Interception point 2: the projected product event stream.
+          // Interception point 2: the projected product event stream. The
+          // stream hub owns the epoch/seq/journal and does cursor catch-up or a
+          // resync_required control frame; a plain `WireEvent` and the control
+          // frame both cross as `event` data (the client discriminates on type).
           if (frame.event === PRODUCT_EVENT) {
             const scope = scopeRefFromFrame(frame);
             if (scope.sessionId === undefined) {
@@ -192,9 +216,14 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
               return;
             }
             try {
-              const sub = projector.subscribe(scope.sessionId, scope.agentId ?? 'main', (data) => {
-                send({ type: 'event', id, data });
-              });
+              const sub = hub.subscribe(
+                scope.sessionId,
+                scope.agentId ?? 'main',
+                productCursorFromFrame(frame),
+                (data) => {
+                  send({ type: 'event', id, data });
+                },
+              );
               listens.set(id, sub);
               send({ type: 'listen_result', id });
             } catch (error) {

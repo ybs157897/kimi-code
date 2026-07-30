@@ -96,6 +96,18 @@ function matchesChildOf(summary: SessionSummary, parentId: string | undefined): 
   );
 }
 
+function isSessionSummaryShape(value: unknown): value is SessionSummary {
+  if (value === null || typeof value !== 'object') return false;
+  const summary = value as Record<string, unknown>;
+  return (
+    typeof summary['id'] === 'string' &&
+    typeof summary['workspaceId'] === 'string' &&
+    typeof summary['createdAt'] === 'number' &&
+    typeof summary['updatedAt'] === 'number' &&
+    typeof summary['archived'] === 'boolean'
+  );
+}
+
 export class FileSessionIndex implements ISessionIndex {
   declare readonly _serviceBrand: undefined;
 
@@ -186,8 +198,8 @@ export class FileSessionIndex implements ISessionIndex {
   }
 
   private async getFromReadModel(id: string): Promise<SessionSummary | undefined> {
-    const cached = await this.queryStore.get<SessionSummary>(SESSION_COLLECTION, id);
-    if (cached !== undefined) return cached;
+    const cached: unknown = await this.queryStore.get(SESSION_COLLECTION, id);
+    if (isSessionSummaryShape(cached)) return cached;
     for (const workspaceId of await this.listWorkspaceIds()) {
       if (!(await this.hasSession(workspaceId, id))) continue;
       return this.getCachedSummary(workspaceId, id);
@@ -234,8 +246,8 @@ export class FileSessionIndex implements ISessionIndex {
     workspaceId: string,
     sessionId: string,
   ): Promise<SessionSummary | undefined> {
-    const cached = await this.queryStore.get<SessionSummary>(SESSION_COLLECTION, sessionId);
-    if (cached !== undefined) return cached;
+    const cached: unknown = await this.queryStore.get(SESSION_COLLECTION, sessionId);
+    if (isSessionSummaryShape(cached)) return cached;
     const summary = await this.readSummary(workspaceId, sessionId);
     if (summary !== undefined) {
       await this.queryStore.put(SESSION_COLLECTION, sessionId, summary);

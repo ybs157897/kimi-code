@@ -2936,6 +2936,7 @@ export function useKimiWebClient() {
     expertTeamStatus,
     activateExpertTeam: workspaceState.activateExpertTeam,
     deactivateExpertTeam: workspaceState.deactivateExpertTeam,
+    refreshExpertTeams: workspaceState.refreshExpertTeams,
     createGoal: workspaceState.createGoal,
     controlGoal: workspaceState.controlGoal,
     enqueue: workspaceState.enqueue,

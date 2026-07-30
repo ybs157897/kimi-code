@@ -1002,7 +1002,7 @@ export class SessionEventBroadcaster {
     const disposables: IDisposable[] = [
       eventBus.subscribe((event) => {
         let projected = event;
-        if (handle.id === MAIN_AGENT_ID && event.type === 'agent.status.updated') {
+        if (event.type === 'agent.status.updated') {
           const snapshot = readLegacyStatus(handle);
           if (snapshot !== undefined) {
             lastLegacyStatus = JSON.stringify(snapshot);

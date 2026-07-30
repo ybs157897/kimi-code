@@ -21,6 +21,7 @@ import {
 
 import {
   APIConnectionError,
+  APIProviderQuotaExhaustedError,
   APITimeoutError,
   ChatProviderError,
   classifyBaseApiError,
@@ -98,13 +99,31 @@ export function toolToOpenAI(tool: Tool): OpenAIToolParam {
   };
 }
 
-export function convertOpenAIError(error: unknown): ChatProviderError {
+export function isOpenAIInsufficientQuotaCode(code: string | null | undefined): boolean {
+  return code === 'insufficient_quota';
+}
+
+function isOpenAIInsufficientQuotaError(error: OpenAIAPIError): boolean {
+  if (error.status !== 429) return false;
+  if (typeof error.code === 'string' && isOpenAIInsufficientQuotaCode(error.code)) return true;
+  if (typeof error.type === 'string' && isOpenAIInsufficientQuotaCode(error.type)) return true;
+  return error.message.toLowerCase().includes('insufficient_quota');
+}
+
+export function convertOpenAIError(
+  error: unknown,
+  convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
+): ChatProviderError {
   // Abort guard FIRST: throws (never returns) the standard abort DOMException
   // for any abort shape, so a user cancellation is never misclassified as a
   // retryable provider failure.
   throwIfAbortError(error);
   if (error instanceof ChatProviderError) {
     return error;
+  }
+  const hooked = convertErrorHook?.(error);
+  if (hooked !== undefined) {
+    return hooked;
   }
   if (error instanceof OpenAITimeoutError) {
     return new APITimeoutError(error.message);
@@ -114,13 +133,12 @@ export function convertOpenAIError(error: unknown): ChatProviderError {
   }
   if (error instanceof OpenAIAPIError && typeof error.status === 'number') {
     const reqId = error.requestID ?? null;
-    return normalizeAPIStatusError(
-      error.status,
-      error.message,
-      reqId,
-      parseRetryAfterMs(error.headers),
-      parseTraceId(error.headers),
-    );
+    const retryAfterMs = parseRetryAfterMs(error.headers);
+    const traceId = parseTraceId(error.headers);
+    if (isOpenAIInsufficientQuotaError(error)) {
+      return new APIProviderQuotaExhaustedError(error.message, reqId, retryAfterMs, traceId);
+    }
+    return normalizeAPIStatusError(error.status, error.message, reqId, retryAfterMs, traceId);
   }
   if (
     error instanceof OpenAIAPIError &&

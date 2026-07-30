@@ -12,24 +12,58 @@
 import type { AgentHandle, Klient } from '@moonshot-ai/klient';
 import type { ScopeLike } from '@moonshot-ai/klient/memory';
 import { RPCError } from '@moonshot-ai/klient';
+import { isAbsolute } from 'node:path';
 import { ISessionLifecycleService } from '@moonshot-ai/agent-core-v2/app/sessionLifecycle/sessionLifecycle';
 import {
   ISessionLegacyService,
 } from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionLegacy';
 import { ISessionActivityView } from '@moonshot-ai/agent-core-v2/session/sessionActivity/sessionActivity';
 import type { QuestionAnswers } from '@moonshot-ai/agent-core-v2/session/question/question';
-import { isError2 } from '@moonshot-ai/agent-core-v2/_base/errors/errors';
+import type {
+  FsDiffResponse,
+  FsGrepResponse,
+  FsListResponse,
+  FsReadResponse,
+  FsSearchResponse,
+} from '@moonshot-ai/agent-core-v2/session/sessionFs/fs';
+import {
+  fsDiffRequestSchema,
+  fsGrepRequestSchema,
+  fsListRequestSchema,
+  fsReadRequestSchema,
+  fsSearchRequestSchema,
+} from '@moonshot-ai/agent-core-v2/session/sessionFs/fs';
+import { Error2, isError2 } from '@moonshot-ai/agent-core-v2/_base/errors/errors';
 import {
   IAgentContextMemoryService,
+  IAgentConversationUndoService,
+  IAgentFullCompactionService,
   IAgentLifecycleService,
   IAgentProfileService,
+  IAgentPromptService,
+  IAgentRPCService,
   IAgentTaskService,
   IAuthLegacyService,
+  IAuthSummaryService,
   IConfigService,
+  IEventService,
+  IHostFileSystem,
+  IHostFolderBrowser,
+  HostFolderNotAbsoluteError,
+  HostFolderNotFoundError,
+  HostFolderPermissionError,
+  IKosongConfigService,
+  IMessageLegacyService,
+  IModelCatalog,
+  PROVIDER_ID_PATTERN,
+  ISessionBtwService,
   ISessionContext,
+  ISessionExpertTeamService,
   ISessionFsService,
+  ISessionIndex,
   ISessionInteractionService,
   ISessionMetadata,
+  ISessionQuestionService,
   ISessionSecondaryModelWarningService,
   ISessionSkillCatalog,
   IWorkspaceService,
@@ -38,14 +72,31 @@ import {
   ensureMainAgent,
   toProtocolMessage,
 } from '@moonshot-ai/agent-core-v2';
+import {
+  DEFAULT_MODEL_SECTION,
+  DEFAULT_PROVIDER_SECTION,
+  MODELS_SECTION,
+  PROVIDERS_SECTION,
+} from '@moonshot-ai/agent-core-v2/app/kosongConfig/configSection';
+import type {
+  ModelRecord,
+  ModelsSection,
+} from '@moonshot-ai/agent-core-v2/kosong/model/model';
+import type {
+  ProviderConfig,
+  ProvidersSection,
+} from '@moonshot-ai/agent-core-v2/kosong/provider/provider';
 
 import {
   buildWireMeta,
   COLD_SESSION_FACTS,
   toWireApproval,
   toWireConfig,
+  toWireExpertTeamDefinition,
+  toWireExpertTeamSnapshot,
   toWireQuestion,
   toWireSession,
+  toWireTask,
   toWireWorkspace,
   ulid,
   wireContentToPromptParts,
@@ -56,6 +107,9 @@ import type {
   WireAuthResult,
   WireConfig,
   WireEnvelope,
+  WireExpertTeamDefinition,
+  WireExpertTeamSnapshot,
+  WireFsBrowseResult,
   WireFsHomeResult,
   WireGitStatusResult,
   WireGoalSnapshot,
@@ -78,11 +132,48 @@ import type {
   WireTaskListItem,
   WireWorkspace,
 } from './wire.js';
+import type { ProductStreamHub } from './stream.js';
+import {
+  launchDetached,
+  openFileCommandFor,
+  openInAppCommandFor,
+  OPEN_IN_APP_IDS,
+  revealFileCommandFor,
+  type OpenInAppId,
+} from './fileLaunch.js';
 
 const REQUEST_INVALID = 40001;
+const REQUEST_MALFORMED = 40002;
 const SESSION_NOT_FOUND = 40401;
+const PROMPT_NOT_FOUND = 40402;
+const QUESTION_NOT_FOUND = 40405;
+const TASK_NOT_FOUND = 40406;
+const FS_PATH_NOT_FOUND = 40409;
 const WORKSPACE_NOT_FOUND = 40410;
+const FS_PERMISSION_DENIED = 40411;
 const PROVIDER_NOT_FOUND = 40412;
+const SESSION_BUSY = 40901;
+const APPROVAL_ALREADY_RESOLVED = 40902;
+const TASK_ALREADY_FINISHED = 40904;
+const FS_IS_DIRECTORY = 40906;
+const FS_IS_BINARY = 40907;
+const FS_GIT_UNAVAILABLE = 40908;
+const QUESTION_DISMISSED = 40909;
+const COMPACTION_UNABLE = 40910;
+const SESSION_UNDO_UNAVAILABLE = 40911;
+const FS_ALREADY_EXISTS = 40919;
+const FS_TOO_LARGE = 41302;
+const FS_TOO_MANY_RESULTS = 41303;
+const FS_PATH_ESCAPES_SESSION = 41304;
+const FS_GREP_TIMEOUT = 41305;
+const INTERNAL_ERROR = 50001;
+
+/** Default cap (bytes) for getTask output preview — mirrors kap-server. */
+const DEFAULT_TASK_OUTPUT_PREVIEW_BYTES = 32 * 1024;
+
+/** v1 `:undo` message page-size clamp. */
+const DEFAULT_UNDO_MESSAGE_PAGE_SIZE = 50;
+const MAX_UNDO_MESSAGE_PAGE_SIZE = 100;
 
 /** Most-recent messages included in a snapshot page (mirrors kap-server). */
 const SNAPSHOT_MESSAGE_PAGE_SIZE = 100;
@@ -117,16 +208,21 @@ export class ProductFacade {
   private readonly serverId = ulid('srv_');
   private readonly startedAt = new Date().toISOString();
   /**
-   * Stable snapshot epoch. The sidecar does not run kap-server's transcript seq
-   * journal, and the desktop product transport subscribes via the product event
-   * stream (not seq cursors), so a fixed per-process epoch + `as_of_seq: 0` is a
-   * well-formed watermark for boot.
+   * Stable snapshot epoch fallback. Used only when no stream hub is wired (e.g.
+   * a unit test constructs the facade directly); with a hub, the snapshot reads
+   * the hub's per-(session, agent) watermark so snapshot + subscription share a
+   * cursor space (docs/plan/desktop-v2-full-integration.md, event consistency).
    */
   private readonly epoch = ulid('ep_');
+  /** Serialize multi-section provider edits so concurrent saves cannot interleave. */
+  private providerWriteChain: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly klient: Klient,
     private readonly scope: ScopeLike,
+    /** The stream hub whose watermark backs getSessionSnapshot. Optional so the
+     *  facade stays constructible without the event layer (tests). */
+    private readonly streamHub?: ProductStreamHub,
   ) {}
 
   /** Dispatch a `desktopProduct` method by name over a positional arg array. */
@@ -144,6 +240,42 @@ export class ProductFacade {
         return this.respondApproval(this.argSessionId(args[0], ctx), args[1], args[2]);
       case 'respondQuestion':
         return this.respondQuestion(this.argSessionId(args[0], ctx), args[1], args[2]);
+      // Slice 1 — obvious breakpoints (expert teams + session/history/task gaps).
+      case 'listExpertTeams':
+        return this.listExpertTeams(this.argSessionId(args[0], ctx));
+      case 'getExpertTeam':
+        return this.getExpertTeam(this.argSessionId(args[0], ctx));
+      case 'activateExpertTeam':
+        return this.activateExpertTeam(this.argSessionId(args[0], ctx), args[1]);
+      case 'deactivateExpertTeam':
+        return this.deactivateExpertTeam(this.argSessionId(args[0], ctx));
+      case 'getSession':
+        return this.getSession(this.argSessionId(args[0], ctx));
+      case 'listMessages':
+        return this.listMessages(this.argSessionId(args[0], ctx), args[1]);
+      case 'dismissQuestion':
+        return this.dismissQuestion(this.argSessionId(args[0], ctx), args[1]);
+      case 'getTask':
+        return this.getTask(this.argSessionId(args[0], ctx), args[1], args[2]);
+      case 'cancelTask':
+        return this.cancelTask(this.argSessionId(args[0], ctx), args[1]);
+      // Slice 2 — session control.
+      case 'steerPrompts':
+        return this.steerPrompts(this.argSessionId(args[0], ctx), args[1]);
+      case 'abortSession':
+        return this.abortSession(this.argSessionId(args[0], ctx));
+      case 'compactSession':
+        return this.compactSession(this.argSessionId(args[0], ctx), args[1]);
+      case 'undoSession':
+        return this.undoSession(this.argSessionId(args[0], ctx), args[1]);
+      case 'forkSession':
+        return this.forkSession(this.argSessionId(args[0], ctx), args[1]);
+      case 'createChildSession':
+        return this.createChildSession(this.argSessionId(args[0], ctx), args[1]);
+      case 'listChildSessions':
+        return this.listChildSessions(this.argSessionId(args[0], ctx), args[1]);
+      case 'startBtw':
+        return this.startBtw(this.argSessionId(args[0], ctx));
       // Slice 2 — read-only clean-boot methods (no-arg calls take []).
       case 'getAuth':
         return this.getAuth();
@@ -165,6 +297,12 @@ export class ProductFacade {
         return this.getConfig();
       case 'listWorkspaces':
         return this.listWorkspaces();
+      case 'addWorkspace':
+        return this.addWorkspace(args[0]);
+      case 'updateWorkspace':
+        return this.updateWorkspace(args[0], args[1]);
+      case 'browseFs':
+        return this.browseFs(args[0]);
       case 'getFsHome':
         return this.getFsHome();
       case 'listModels':
@@ -184,6 +322,23 @@ export class ProductFacade {
         return this.listTasks(this.argSessionId(args[0], ctx), args[1]);
       case 'getGitStatus':
         return this.getGitStatus(this.argSessionId(args[0], ctx), args[1]);
+      // Slice 4 — workspace + structured filesystem (P1).
+      case 'listDirectory':
+        return this.listDirectory(this.argSessionId(args[0], ctx), args[1]);
+      case 'readFile':
+        return this.readFile(this.argSessionId(args[0], ctx), args[1]);
+      case 'searchFiles':
+        return this.searchFiles(this.argSessionId(args[0], ctx), args[1]);
+      case 'grepFiles':
+        return this.grepFiles(this.argSessionId(args[0], ctx), args[1]);
+      case 'getFileDiff':
+        return this.getFileDiff(this.argSessionId(args[0], ctx), args[1]);
+      case 'openFile':
+        return this.openFile(this.argSessionId(args[0], ctx), args[1]);
+      case 'revealFile':
+        return this.revealFile(this.argSessionId(args[0], ctx), args[1]);
+      case 'openInApp':
+        return this.openInApp(this.argSessionId(args[0], ctx), args[1], args[2], args[3]);
       // Slice C — write methods.
       case 'updateSession':
         return this.updateSession(this.argSessionId(args[0], ctx), args[1]);
@@ -204,8 +359,14 @@ export class ProductFacade {
         return this.getProvider(args[0]);
       case 'createProvider':
         return this.createProvider(args[0]);
+      case 'replaceProvider':
+        return this.replaceProvider(args[0], args[1]);
       case 'deleteProvider':
         return this.deleteProvider(args[0]);
+      case 'refreshProvider':
+        return this.refreshProvider(args[0]);
+      case 'refreshAllProviders':
+        return this.refreshAllProviders();
       case 'setDefaultModel':
         return this.setDefaultModel(args[0]);
       default:
@@ -424,7 +585,443 @@ export class ProductFacade {
   }
 
   // ---------------------------------------------------------------------------
-  // Slice 2 — read-only clean-boot methods. Each returns the kap-server-compatible
+  // Slice 1 — obvious breakpoints. Mirror kap-server routes/expertTeams.ts,
+  // sessions.ts (GET by id), messages.ts, questions.ts (:dismiss), tasks.ts.
+  // ---------------------------------------------------------------------------
+
+  async listExpertTeams(
+    sessionId: string,
+  ): Promise<WireEnvelope<{ experts: WireExpertTeamDefinition[] }>> {
+    const handle = await this.resumeSession(sessionId);
+    const experts = await handle.accessor.get(ISessionExpertTeamService).listAvailable();
+    return ok({ experts: experts.map(toWireExpertTeamDefinition) });
+  }
+
+  async getExpertTeam(
+    sessionId: string,
+  ): Promise<WireEnvelope<{ expert_team: WireExpertTeamSnapshot | null }>> {
+    const handle = await this.resumeSession(sessionId);
+    const snapshot = handle.accessor.get(ISessionExpertTeamService).snapshot();
+    return ok({
+      expert_team: snapshot === null ? null : toWireExpertTeamSnapshot(snapshot),
+    });
+  }
+
+  async activateExpertTeam(
+    sessionId: string,
+    bodyRaw: unknown,
+  ): Promise<WireEnvelope<{ expert_team: WireExpertTeamSnapshot }>> {
+    const pluginId = requireString(
+      isRecord(bodyRaw) ? bodyRaw['plugin_id'] : undefined,
+      'plugin_id',
+    );
+    const handle = await this.resumeSession(sessionId);
+    try {
+      const snapshot = await handle.accessor.get(ISessionExpertTeamService).activate(pluginId);
+      return ok({ expert_team: toWireExpertTeamSnapshot(snapshot) });
+    } catch (error) {
+      if (error instanceof Error2) {
+        throw new RPCError(REQUEST_MALFORMED, error.message);
+      }
+      throw error;
+    }
+  }
+
+  async deactivateExpertTeam(
+    sessionId: string,
+  ): Promise<WireEnvelope<{ deactivated: true }>> {
+    const handle = await this.resumeSession(sessionId);
+    try {
+      await handle.accessor.get(ISessionExpertTeamService).deactivate();
+      return ok({ deactivated: true as const });
+    } catch (error) {
+      if (error instanceof Error2) {
+        throw new RPCError(REQUEST_MALFORMED, error.message);
+      }
+      throw error;
+    }
+  }
+
+  /** GET /sessions/{id} — ISessionIndex only (no resume), mirrors kap-server. */
+  async getSession(sessionId: string): Promise<WireEnvelope<WireSession>> {
+    const summary = await this.scope.accessor.get(ISessionIndex).get(sessionId);
+    if (summary === undefined) {
+      throw new RPCError(SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    }
+    const cwd =
+      summary.cwd ??
+      (await this.scope.accessor.get(IWorkspaceService).get(summary.workspaceId))?.root;
+    if (cwd === undefined) {
+      throw new RPCError(SESSION_NOT_FOUND, `session ${sessionId} has no recoverable cwd`);
+    }
+    return ok(toWireSession(summary, cwd, this.resolveFacts(sessionId)));
+  }
+
+  /** GET /sessions/{id}/messages — App-scope IMessageLegacyService (cold-readable). */
+  async listMessages(
+    sessionId: string,
+    queryRaw: unknown,
+  ): Promise<WireEnvelope<WirePage<WireMessage>>> {
+    const q = (queryRaw ?? {}) as Record<string, unknown>;
+    if (typeof q['before_id'] === 'string' && typeof q['after_id'] === 'string') {
+      throw new RPCError(REQUEST_INVALID, 'before_id and after_id are mutually exclusive');
+    }
+    const query: {
+      before_id?: string;
+      after_id?: string;
+      page_size?: number;
+      role?: 'user' | 'assistant' | 'tool' | 'system';
+    } = {
+      before_id: typeof q['before_id'] === 'string' ? q['before_id'] : undefined,
+      after_id: typeof q['after_id'] === 'string' ? q['after_id'] : undefined,
+      page_size: typeof q['page_size'] === 'number' ? q['page_size'] : undefined,
+      role:
+        q['role'] === 'user' ||
+        q['role'] === 'assistant' ||
+        q['role'] === 'tool' ||
+        q['role'] === 'system'
+          ? q['role']
+          : undefined,
+    };
+    try {
+      const page = await this.scope.accessor.get(IMessageLegacyService).list(sessionId, query);
+      return ok(page as WirePage<WireMessage>);
+    } catch (error) {
+      throw mapEngineError(error);
+    }
+  }
+
+  /**
+   * POST /sessions/{id}/questions/{qid}:dismiss — success is envelope code 40909
+   * (question.dismissed), matching kap-server / the daemon allowCodes path.
+   */
+  async dismissQuestion(
+    sessionId: string,
+    questionIdRaw: unknown,
+  ): Promise<WireEnvelope<unknown>> {
+    const questionId = requireString(questionIdRaw, 'questionId');
+    const handle = await this.resumeSession(sessionId);
+    const interaction = handle.accessor.get(ISessionInteractionService);
+    const pendingInteraction = interaction
+      .listPending('question')
+      .find((i) => i.id === questionId);
+
+    if (pendingInteraction === undefined) {
+      if (interaction.isRecentlyResolved(questionId)) {
+        return {
+          code: APPROVAL_ALREADY_RESOLVED,
+          msg: `question ${questionId} already resolved`,
+          data: { resolved: false as const },
+          request_id: ulid('req_'),
+        };
+      }
+      throw new RPCError(QUESTION_NOT_FOUND, `question ${questionId} not found`);
+    }
+
+    handle.accessor.get(ISessionQuestionService).dismiss(questionId);
+    return {
+      code: QUESTION_DISMISSED,
+      msg: `question ${questionId} dismissed`,
+      data: { dismissed: true as const, dismissed_at: new Date().toISOString() },
+      request_id: ulid('req_'),
+    };
+  }
+
+  /**
+   * GET /sessions/{id}/tasks/{tid} — index existence + live lifecycle.get (no
+   * resume), matching kap-server resolveSessionTasks.
+   */
+  async getTask(
+    sessionId: string,
+    taskIdRaw: unknown,
+    queryRaw: unknown,
+  ): Promise<WireEnvelope<WireTaskListItem>> {
+    const taskId = requireString(taskIdRaw, 'taskId');
+    const resolved = await this.resolveSessionTasks(sessionId);
+    if (resolved.kind === 'not_found') {
+      throw new RPCError(SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    }
+    const found = resolved.tasks?.getTask(taskId);
+    if (found === undefined) {
+      throw new RPCError(TASK_NOT_FOUND, `task ${taskId} does not exist in session ${sessionId}`);
+    }
+
+    const query = (queryRaw ?? {}) as Record<string, unknown>;
+    let output: { preview: string; bytes: number } | undefined;
+    if (query['with_output'] === true && resolved.tasks !== undefined) {
+      const tailBytes =
+        typeof query['output_bytes'] === 'number'
+          ? query['output_bytes']
+          : DEFAULT_TASK_OUTPUT_PREVIEW_BYTES;
+      try {
+        const preview = await resolved.tasks.readOutput(taskId, tailBytes);
+        if (preview.length > 0) {
+          output = { preview, bytes: Buffer.byteLength(preview, 'utf-8') };
+        }
+      } catch {
+        // Output may not be available yet; fall back to task metadata only.
+      }
+    }
+    return ok(toWireTask(sessionId, found, output));
+  }
+
+  async cancelTask(
+    sessionId: string,
+    taskIdRaw: unknown,
+  ): Promise<WireEnvelope<unknown>> {
+    const taskId = requireString(taskIdRaw, 'taskId');
+    const resolved = await this.resolveSessionTasks(sessionId);
+    if (resolved.kind === 'not_found') {
+      throw new RPCError(SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    }
+    const found = resolved.tasks?.getTask(taskId);
+    if (found === undefined) {
+      throw new RPCError(TASK_NOT_FOUND, `task ${taskId} does not exist in session ${sessionId}`);
+    }
+    const wireStatus = toWireTask(sessionId, found).status;
+    if (wireStatus === 'completed' || wireStatus === 'failed' || wireStatus === 'cancelled') {
+      return {
+        code: TASK_ALREADY_FINISHED,
+        msg: `task ${taskId} already finished (status: ${wireStatus})`,
+        data: { cancelled: false },
+        request_id: ulid('req_'),
+      };
+    }
+    await resolved.tasks?.stopByUser(taskId);
+    return ok({ cancelled: true as const });
+  }
+
+  /**
+   * Walk core → ISessionIndex → live ISessionLifecycleService.get → main agent
+   * task service. Mirrors kap-server `resolveSessionTasks` (no resume).
+   */
+  private async resolveSessionTasks(
+    sessionId: string,
+  ): Promise<
+    | { readonly kind: 'not_found' }
+    | { readonly kind: 'resolved'; readonly tasks: IAgentTaskService | undefined }
+  > {
+    const summary = await this.scope.accessor.get(ISessionIndex).get(sessionId);
+    if (summary === undefined) return { kind: 'not_found' };
+    const session = this.scope.accessor.get(ISessionLifecycleService).get(sessionId);
+    if (session === undefined) return { kind: 'resolved', tasks: undefined };
+    const agent = await ensureMainAgent(session);
+    return { kind: 'resolved', tasks: agent.accessor.get(IAgentTaskService) };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Slice 2 — session control. Mirror kap-server prompts.ts + sessions.ts
+  // action handlers (steer / abort / compact / undo / fork / children / btw).
+  // ---------------------------------------------------------------------------
+
+  async steerPrompts(
+    sessionId: string,
+    bodyRaw: unknown,
+  ): Promise<WireEnvelope<{ steered: true; prompt_ids: string[] }>> {
+    const body = isRecord(bodyRaw) ? bodyRaw : {};
+    const promptIdsRaw = body['prompt_ids'];
+    if (!Array.isArray(promptIdsRaw) || promptIdsRaw.some((id) => typeof id !== 'string')) {
+      throw new RPCError(REQUEST_INVALID, 'prompt_ids must be a string array');
+    }
+    const promptIds = promptIdsRaw as string[];
+    try {
+      const handle = await this.resumeSession(sessionId);
+      const agent = await ensureMainAgent(handle);
+      await agent.accessor.get(IAgentPromptService).steer(promptIds);
+      return ok({ steered: true as const, prompt_ids: [...promptIds] });
+    } catch (error) {
+      throw mapEngineError(error);
+    }
+  }
+
+  async abortSession(sessionId: string): Promise<WireEnvelope<{ aborted: true }>> {
+    try {
+      const handle = await this.resumeSession(sessionId);
+      const agent = await ensureMainAgent(handle);
+      await agent.accessor.get(IAgentRPCService).cancel({});
+      return ok({ aborted: true as const });
+    } catch (error) {
+      throw mapEngineError(error);
+    }
+  }
+
+  async compactSession(
+    sessionId: string,
+    bodyRaw: unknown,
+  ): Promise<WireEnvelope<Record<string, never>>> {
+    try {
+      const handle = await this.resumeSession(sessionId);
+      const agent = await ensureMainAgent(handle);
+      const instruction =
+        isRecord(bodyRaw) && typeof bodyRaw['instruction'] === 'string'
+          ? normalizeOptional(bodyRaw['instruction'])
+          : undefined;
+      // begin returns false when busy — kap-server treats that as silent success.
+      agent.accessor
+        .get(IAgentFullCompactionService)
+        .begin({ source: 'manual', instruction });
+      return ok({});
+    } catch (error) {
+      throw mapEngineError(error);
+    }
+  }
+
+  async undoSession(
+    sessionId: string,
+    bodyRaw: unknown,
+  ): Promise<WireEnvelope<{ messages: WirePage<WireMessage>; status: WireSessionStatus }>> {
+    try {
+      const handle = await this.resumeSession(sessionId);
+      const agent = await ensureMainAgent(handle);
+      const body = isRecord(bodyRaw) ? bodyRaw : {};
+      const count = typeof body['count'] === 'number' && body['count'] > 0 ? body['count'] : 1;
+      const pageSize =
+        typeof body['page_size'] === 'number' ? body['page_size'] : undefined;
+      await agent.accessor.get(IAgentConversationUndoService).undo(count);
+      const history = agent.accessor.get(IAgentContextMemoryService).get();
+      const [summary, status] = await Promise.all([
+        this.scope.accessor.get(ISessionIndex).get(sessionId),
+        this.scope.accessor.get(ISessionLegacyService).status(sessionId),
+      ]);
+      return ok({
+        messages: pageUndoMessages(
+          sessionId,
+          summary?.createdAt ?? 0,
+          history,
+          pageSize,
+        ),
+        status,
+      });
+    } catch (error) {
+      throw mapEngineError(error);
+    }
+  }
+
+  async forkSession(
+    sessionId: string,
+    bodyRaw: unknown,
+  ): Promise<WireEnvelope<WireSession>> {
+    try {
+      const body = isRecord(bodyRaw) ? bodyRaw : {};
+      const title = typeof body['title'] === 'string' ? body['title'] : undefined;
+      const metadata = isRecord(body['metadata']) ? body['metadata'] : undefined;
+      const handle = await this.scope.accessor.get(ISessionLifecycleService).fork({
+        sourceSessionId: sessionId,
+        title,
+        metadata,
+      });
+      const meta = await handle.accessor.get(ISessionMetadata).read();
+      const ctx = handle.accessor.get(ISessionContext);
+      const session = toWireSession(
+        { ...meta, workspaceId: ctx.workspaceId },
+        ctx.cwd,
+        this.resolveFacts(meta.id),
+      );
+      this.scope.accessor.get(IEventService).publish({
+        type: 'event.session.created',
+        payload: { agentId: 'main', sessionId: session.id, session },
+      });
+      return ok(session);
+    } catch (error) {
+      throw mapEngineError(error);
+    }
+  }
+
+  async createChildSession(
+    sessionId: string,
+    bodyRaw: unknown,
+  ): Promise<WireEnvelope<WireSession>> {
+    try {
+      const body = isRecord(bodyRaw) ? bodyRaw : {};
+      const title = typeof body['title'] === 'string' ? body['title'] : undefined;
+      const metadata = isRecord(body['metadata']) ? body['metadata'] : undefined;
+      const handle = await this.scope.accessor.get(ISessionLifecycleService).createChild({
+        sourceSessionId: sessionId,
+        title,
+        metadata,
+      });
+      const meta = await handle.accessor.get(ISessionMetadata).read();
+      const ctx = handle.accessor.get(ISessionContext);
+      const session = toWireSession(
+        { ...meta, workspaceId: ctx.workspaceId },
+        ctx.cwd,
+        this.resolveFacts(meta.id),
+      );
+      this.scope.accessor.get(IEventService).publish({
+        type: 'event.session.created',
+        payload: { agentId: 'main', sessionId: session.id, session },
+      });
+      return ok(session);
+    } catch (error) {
+      throw mapEngineError(error);
+    }
+  }
+
+  async listChildSessions(
+    sessionId: string,
+    queryRaw: unknown,
+  ): Promise<WireEnvelope<WirePage<WireSession>>> {
+    try {
+      const exists =
+        this.scope.accessor.get(ISessionLifecycleService).get(sessionId) !== undefined ||
+        (await this.scope.accessor.get(ISessionIndex).get(sessionId)) !== undefined;
+      if (!exists) {
+        throw new RPCError(SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+      }
+      const children = (await this.scope.accessor.get(ISessionIndex).list({ childOf: sessionId }))
+        .items;
+      const q = isRecord(queryRaw) ? queryRaw : {};
+      let pivotIndex = -1;
+      if (typeof q['before_id'] === 'string') {
+        pivotIndex = children.findIndex((s) => s.id === q['before_id']);
+      } else if (typeof q['after_id'] === 'string') {
+        pivotIndex = children.findIndex((s) => s.id === q['after_id']);
+      }
+      let slice = children;
+      if (typeof q['before_id'] === 'string' && pivotIndex >= 0) {
+        slice = children.slice(pivotIndex + 1);
+      } else if (typeof q['after_id'] === 'string' && pivotIndex >= 0) {
+        slice = children.slice(0, pivotIndex);
+      }
+      const pageSize =
+        typeof q['page_size'] === 'number' && q['page_size'] > 0
+          ? Math.min(q['page_size'], 100)
+          : 100;
+      const window = slice.slice(0, pageSize);
+      const roots = new Map(
+        (await this.scope.accessor.get(IWorkspaceService).list()).map((w) => [w.id, w.root]),
+      );
+      const projected = window.map((summary) =>
+        toWireSession(
+          summary,
+          summary.cwd ?? roots.get(summary.workspaceId) ?? '',
+          this.resolveFacts(summary.id),
+        ),
+      );
+      const busyFilter = typeof q['busy'] === 'boolean' ? q['busy'] : undefined;
+      const items =
+        busyFilter !== undefined
+          ? projected.filter((session) => session.busy === busyFilter)
+          : projected;
+      return ok({ items, has_more: slice.length > pageSize });
+    } catch (error) {
+      throw mapEngineError(error);
+    }
+  }
+
+  async startBtw(sessionId: string): Promise<WireEnvelope<{ agent_id: string }>> {
+    try {
+      const handle = await this.resumeSession(sessionId);
+      await this.scope.accessor.get(IAuthSummaryService).ensureReady();
+      const agentId = await handle.accessor.get(ISessionBtwService).start();
+      return ok({ agent_id: agentId });
+    } catch (error) {
+      throw mapEngineError(error);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Earlier slices — read-only clean-boot methods. Each returns the kap-server-compatible
   // WireEnvelope JSON (routes named in desktop-product.md §12.3), fulfilled via
   // the in-process klient facade, or the app-scope engine service where no klient
   // method fits (getAuth / getSessionSnapshot mirror the kap-server route logic).
@@ -499,6 +1096,64 @@ export class ProductFacade {
     return ok<WireFsHomeResult>(data);
   }
 
+  // addWorkspace — POST /workspaces → WireWorkspace. Mirrors kap-server
+  // (routes/workspaces.ts): the root must be an absolute path that exists and
+  // is a directory (validated through IHostFileSystem, never raw Node fs), then
+  // createOrTouch registers it idempotently and the wire shape carries the
+  // derived session_count.
+  async addWorkspace(inputRaw: unknown): Promise<WireEnvelope<WireWorkspace>> {
+    const input = (inputRaw ?? {}) as Record<string, unknown>;
+    const root = typeof input['root'] === 'string' ? input['root'] : '';
+    const name = typeof input['name'] === 'string' ? input['name'] : undefined;
+    if (!isAbsolute(root)) {
+      throw new RPCError(REQUEST_INVALID, 'root must be an absolute path');
+    }
+    const hostFs = this.scope.accessor.get(IHostFileSystem);
+    try {
+      const stat = await hostFs.stat(root);
+      if (!stat.isDirectory) {
+        throw new RPCError(FS_PATH_NOT_FOUND, `root ${root} is not a directory`);
+      }
+    } catch (error) {
+      if (error instanceof RPCError) throw error;
+      throw new RPCError(FS_PATH_NOT_FOUND, `root ${root} does not exist`);
+    }
+    const registry = this.scope.accessor.get(IWorkspaceService);
+    const ws = await registry.createOrTouch(root, name);
+    const sessionCount = await this.scope.accessor.get(IWorkspaceSessions).count(ws.id);
+    return ok(toWireWorkspace(ws, sessionCount));
+  }
+
+  // updateWorkspace — PATCH /workspaces/{id} → WireWorkspace. Renames the
+  // display name only (never moves the on-disk directory); unknown id →
+  // WORKSPACE_NOT_FOUND, matching kap-server.
+  async updateWorkspace(idRaw: unknown, inputRaw: unknown): Promise<WireEnvelope<WireWorkspace>> {
+    const id = requireString(idRaw, 'workspaceId');
+    const input = (inputRaw ?? {}) as Record<string, unknown>;
+    const name = requireString(input['name'], 'name');
+    const registry = this.scope.accessor.get(IWorkspaceService);
+    const ws = await registry.update(id, { name });
+    if (ws === undefined) {
+      throw new RPCError(WORKSPACE_NOT_FOUND, `workspace ${id} does not exist`);
+    }
+    const sessionCount = await this.scope.accessor.get(IWorkspaceSessions).count(ws.id);
+    return ok(toWireWorkspace(ws, sessionCount));
+  }
+
+  // browseFs — GET /fs:browse → WireFsBrowseResult (IHostFolderBrowser.browse()).
+  // HostFolder domain errors map onto the kap-server wire codes (validation /
+  // path-not-found / permission-denied); the klient surface returns the wire
+  // shape directly.
+  async browseFs(pathRaw?: unknown): Promise<WireEnvelope<WireFsBrowseResult>> {
+    const path = typeof pathRaw === 'string' && pathRaw.length > 0 ? pathRaw : undefined;
+    try {
+      const data = await this.klient.global.hostFs.browse(path);
+      return ok<WireFsBrowseResult>(data);
+    } catch (error) {
+      throw mapBrowseError(error);
+    }
+  }
+
   // listModels — GET /models → { items: WireModel[] } (secondary-derived filtered).
   async listModels(): Promise<WireEnvelope<{ items: WireModel[] }>> {
     await this.scope.accessor.get(IConfigService).ready;
@@ -510,10 +1165,10 @@ export class ProductFacade {
   // getSessionSnapshot — GET /sessions/{id}/snapshot → WireSessionSnapshot.
   // Mirrors kap-server `readViaLegacyAssembly` (routes/snapshot.ts): resume the
   // session, project the wire session + the main agent's most-recent message
-  // page + pending interactions through the same builders. The broadcaster-sourced
-  // watermark / in-flight turn / subagents resolve to the boot defaults (seq 0, a
-  // stable epoch, no in-flight turn) — the desktop product transport subscribes
-  // via the product event stream, not the seq-cursor protocol.
+  // page + pending interactions through the same builders. The watermark
+  // (`as_of_seq` + `epoch`) is read from the stream hub so the subsequent
+  // product subscription resumes from exactly this point; without a hub it
+  // falls back to the boot default (seq 0, a stable per-process epoch).
   async getSessionSnapshot(sessionId: string): Promise<WireEnvelope<WireSessionSnapshot>> {
     const handle = await this.scope.accessor.get(ISessionLifecycleService).resume(sessionId);
     if (handle === undefined) {
@@ -550,9 +1205,16 @@ export class ProductFacade {
       .listPending('question')
       .map((i) => toWireQuestion(i, sessionId));
 
-    return ok<WireSessionSnapshot>({
-      as_of_seq: 0,
+    // Watermark shared with the product event stream: a snapshot taken now and
+    // the subscription started next resume from the same (epoch, seq).
+    const watermark = this.streamHub?.watermark(sessionId, 'main') ?? {
       epoch: this.epoch,
+      asOfSeq: 0,
+    };
+
+    return ok<WireSessionSnapshot>({
+      as_of_seq: watermark.asOfSeq,
+      epoch: watermark.epoch,
       session,
       messages: { items, has_more: hasMore },
       in_flight_turn: null,
@@ -654,7 +1316,7 @@ export class ProductFacade {
     const agent = await ensureMainAgent(handle);
     const taskService = agent.accessor.get(IAgentTaskService);
     const all = taskService.list(false);
-    let items = all.map((info) => toWireTaskListItem(info, sessionId));
+    let items = all.map((info) => toWireTask(sessionId, info));
     const statusFilter =
       typeof statusFilterRaw === 'string' ? statusFilterRaw : undefined;
     if (statusFilter !== undefined) {
@@ -674,6 +1336,146 @@ export class ProductFacade {
       Array.isArray(pathsRaw) ? pathsRaw.filter((p): p is string => typeof p === 'string') : undefined;
     const result = await fs.gitStatus(paths !== undefined && paths.length > 0 ? { paths } : {});
     return ok<WireGitStatusResult>(result);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Slice 4 — structured session filesystem (P1). Each mirrors kap-server's
+  // `fs:<action>` dispatcher (routes/fs.ts): cold-resume the session, resolve
+  // the Session-scoped ISessionFsService, pass the snake_case request straight
+  // through (the engine's zod defaults fill omitted fields), and return the
+  // engine response — already the wire shape — wrapped in the envelope. Domain
+  // Error2 codes map onto the kap-server wire codes via mapFsError. Relative
+  // paths stay confined to the session workspace inside ISessionFsService.
+  // ---------------------------------------------------------------------------
+
+  // fs:list → WireListDirectoryResult (depth / git status / truncated preserved).
+  async listDirectory(sessionId: string, inputRaw: unknown): Promise<WireEnvelope<FsListResponse>> {
+    const fs = await this.sessionFs(sessionId);
+    try {
+      const data = await fs.list(fsListRequestSchema.parse(inputRaw ?? {}));
+      return ok(data);
+    } catch (error) {
+      throw mapFsError(error);
+    }
+  }
+
+  // fs:read → WireReadFileResult (offset / length / binary / etag / mime / size).
+  async readFile(sessionId: string, inputRaw: unknown): Promise<WireEnvelope<FsReadResponse>> {
+    const fs = await this.sessionFs(sessionId);
+    try {
+      const data = await fs.read(fsReadRequestSchema.parse(inputRaw ?? {}));
+      return ok(data);
+    } catch (error) {
+      throw mapFsError(error);
+    }
+  }
+
+  // fs:search → WireSearchFilesResult (limit / score / match positions).
+  async searchFiles(sessionId: string, inputRaw: unknown): Promise<WireEnvelope<FsSearchResponse>> {
+    const fs = await this.sessionFs(sessionId);
+    try {
+      const data = await fs.search(fsSearchRequestSchema.parse(inputRaw ?? {}));
+      return ok(data);
+    } catch (error) {
+      throw mapFsError(error);
+    }
+  }
+
+  // fs:grep → WireGrepFilesResult (regex / case sensitivity / context lines).
+  async grepFiles(sessionId: string, inputRaw: unknown): Promise<WireEnvelope<FsGrepResponse>> {
+    const fs = await this.sessionFs(sessionId);
+    try {
+      const data = await fs.grep(fsGrepRequestSchema.parse(inputRaw ?? {}));
+      return ok(data);
+    } catch (error) {
+      throw mapFsError(error);
+    }
+  }
+
+  // fs:diff → WireDiffResult (unified diff; git-unavailable preserved).
+  async getFileDiff(sessionId: string, pathRaw: unknown): Promise<WireEnvelope<FsDiffResponse>> {
+    const fs = await this.sessionFs(sessionId);
+    try {
+      const data = await fs.diff(fsDiffRequestSchema.parse({ path: pathRaw }));
+      return ok(data);
+    } catch (error) {
+      throw mapFsError(error);
+    }
+  }
+
+  // fs:open → { opened: true }. Resolve the workspace-bounded absolute path in
+  // the sidecar, then launch the platform default handler (no terminal window).
+  async openFile(sessionId: string, inputRaw: unknown): Promise<WireEnvelope<{ opened: true }>> {
+    const fs = await this.sessionFs(sessionId);
+    const input = (inputRaw ?? {}) as Record<string, unknown>;
+    const path = requireString(input['path'], 'path');
+    const line = typeof input['line'] === 'number' ? input['line'] : undefined;
+    try {
+      const resolved = await fs.resolvePath(path);
+      await launchDetached(openFileCommandFor(resolved.absolute, line));
+      return ok({ opened: true as const });
+    } catch (error) {
+      throw mapFsError(error);
+    }
+  }
+
+  // fs:reveal → { revealed: true }. Reveal the resolved path in the file
+  // manager (Finder / Explorer / xdg-open parent dir).
+  async revealFile(sessionId: string, inputRaw: unknown): Promise<WireEnvelope<{ revealed: true }>> {
+    const fs = await this.sessionFs(sessionId);
+    const input = (inputRaw ?? {}) as Record<string, unknown>;
+    const path = requireString(input['path'], 'path');
+    try {
+      const resolved = await fs.resolvePath(path);
+      await launchDetached(revealFileCommandFor(resolved.absolute));
+      return ok({ revealed: true as const });
+    } catch (error) {
+      throw mapFsError(error);
+    }
+  }
+
+  // fs:open-in → { opened: true }. Open the resolved path in a whitelisted
+  // external app; an unknown app id is a validation error and a launch failure
+  // maps to INTERNAL_ERROR (kap-server parity).
+  async openInApp(
+    sessionId: string,
+    appIdRaw: unknown,
+    pathRaw: unknown,
+    lineRaw?: unknown,
+  ): Promise<WireEnvelope<{ opened: true }>> {
+    const fs = await this.sessionFs(sessionId);
+    const appId = requireString(appIdRaw, 'app_id');
+    const path = requireString(pathRaw, 'path');
+    const line = typeof lineRaw === 'number' ? lineRaw : undefined;
+    if (!OPEN_IN_APP_IDS.includes(appId as OpenInAppId)) {
+      throw new RPCError(REQUEST_INVALID, `unsupported app_id: ${appId}`);
+    }
+    let resolved: Awaited<ReturnType<ISessionFsService['resolvePath']>>;
+    try {
+      resolved = await fs.resolvePath(path);
+    } catch (error) {
+      throw mapFsError(error);
+    }
+    try {
+      await launchDetached(
+        openInAppCommandFor(appId as OpenInAppId, resolved.absolute, {
+          line,
+          isDirectory: resolved.isDirectory,
+        }),
+      );
+    } catch (error) {
+      throw new RPCError(
+        INTERNAL_ERROR,
+        `failed to open in ${appId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    return ok({ opened: true as const });
+  }
+
+  /** Cold-resume the session and resolve its Session-scoped fs service. */
+  private async sessionFs(sessionId: string): Promise<ISessionFsService> {
+    const handle = await this.resumeSession(sessionId);
+    return handle.accessor.get(ISessionFsService);
   }
 
   // ---------------------------------------------------------------------------
@@ -810,52 +1612,149 @@ export class ProductFacade {
   // createProvider — POST /providers → ProviderCatalogItem.
   // Maps the web client's wire body to the klient's ProviderInput.
   async createProvider(inputRaw: unknown): Promise<WireEnvelope<Record<string, unknown>>> {
-    const input = (inputRaw ?? {}) as Record<string, unknown>;
-    const id = requireString(input['id'], 'provider id');
-    const type = typeof input['type'] === 'string' ? input['type'] : '';
-    const apiKey = typeof input['api_key'] === 'string' ? input['api_key'] : '';
-    const baseUrl = typeof input['base_url'] === 'string' ? input['base_url'] : undefined;
-    const defaultModel =
-      typeof input['default_model'] === 'string' && input['default_model'].length > 0
-        ? `${id}/${input['default_model']}`
-        : undefined;
+    return this.enqueueProviderWrite(async () => {
+      const input = parseProviderInput(inputRaw, true);
+      const config = await this.loadWritableConfig();
+      const providers = config.inspect<ProvidersSection>(PROVIDERS_SECTION).userValue ?? {};
+      if (providers[input.id] !== undefined) {
+        throw new RPCError(REQUEST_INVALID, `provider ${input.id} already exists`);
+      }
 
-    await this.klient.global.kosong.addProvider(id, {
-      type,
-      ...(baseUrl !== undefined ? { baseUrl } : {}),
-      auth: { method: 'api-key', apiKey },
-      ...(defaultModel !== undefined ? { defaultModel } : {}),
+      const provider = providerConfigFromInput(input, input.id);
+      await config.set(PROVIDERS_SECTION, { [input.id]: provider });
+      await config.set(MODELS_SECTION, modelRecordsFromInput(input, input.id));
+
+      const firstModel = input.models[0];
+      const currentDefault = config.inspect<string>(DEFAULT_MODEL_SECTION).userValue;
+      if ((currentDefault === undefined || currentDefault.trim() === '') && firstModel !== undefined) {
+        await config.replace(
+          DEFAULT_MODEL_SECTION,
+          provider.defaultModel ?? `${input.id}/${firstModel.model}`,
+        );
+      }
+
+      const created = await this.scope.accessor.get(IModelCatalog).getProvider(input.id);
+      return ok<Record<string, unknown>>({ ...created });
     });
+  }
 
-    // Seed the global default model if models were provided and no default is set.
-    const models = Array.isArray(input['models']) ? input['models'] as Array<Record<string, unknown>> : [];
-    if (models.length > 0) {
-      const config = this.scope.accessor.get(IConfigService);
-      await config.ready;
-      const current = config.inspect<string>('defaultModel').userValue;
-      if (current === undefined || current.trim() === '') {
-        const firstModelName = typeof models[0]?.['model'] === 'string' ? models[0]['model'] as string : '';
-        if (firstModelName.length > 0) {
-          await this.klient.global.kosong.setDefaultModel(`${id}/${firstModelName}`);
+  // replaceProvider — PUT /providers/{id} → { provider }.
+  async replaceProvider(
+    idRaw: unknown,
+    inputRaw: unknown,
+  ): Promise<WireEnvelope<{ provider: Record<string, unknown> }>> {
+    const existingId = requireString(idRaw, 'providerId');
+    return this.enqueueProviderWrite(async () => {
+      const input = parseProviderInput(inputRaw, false, existingId);
+      const config = await this.loadWritableConfig();
+      const providers = config.inspect<ProvidersSection>(PROVIDERS_SECTION).userValue ?? {};
+      const current = providers[existingId];
+      if (current === undefined) {
+        throw new RPCError(PROVIDER_NOT_FOUND, `provider ${existingId} does not exist`);
+      }
+      if (current.oauth !== undefined) {
+        throw new RPCError(REQUEST_INVALID, `provider ${existingId} is managed by OAuth`);
+      }
+
+      const newId = input.id;
+      if (newId !== existingId && providers[newId] !== undefined) {
+        throw new RPCError(REQUEST_INVALID, `provider ${newId} already exists`);
+      }
+
+      const nextProvider: ProviderConfig = {
+        ...current,
+        ...providerConfigFromInput(input, newId),
+        apiKey: input.apiKey === undefined ? current.apiKey : input.apiKey,
+      };
+      const nextProviders = { ...providers };
+      delete nextProviders[existingId];
+      nextProviders[newId] = nextProvider;
+
+      const models = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
+      const newAliasKeys = new Set(
+        input.models.map((entry) => `${newId}/${entry.model}`),
+      );
+      const collidingAliases = Object.entries(models)
+        .filter(([, record]) => record.provider !== existingId)
+        .map(([aliasId]) => aliasId)
+        .filter((aliasId) => newAliasKeys.has(aliasId));
+      if (collidingAliases.length > 0) {
+        throw new RPCError(
+          REQUEST_INVALID,
+          `model alias key already owned by another provider: ${collidingAliases.join(', ')}`,
+        );
+      }
+      const previousAliasIds = new Set(
+        Object.entries(models)
+          .filter(([, record]) => record.provider === existingId)
+          .map(([aliasId]) => aliasId),
+      );
+      const nextModels = Object.fromEntries(
+        Object.entries(models).filter(([, record]) => record.provider !== existingId),
+      );
+      Object.assign(nextModels, modelRecordsFromInput(input, newId, models, existingId));
+
+      await config.replace(PROVIDERS_SECTION, nextProviders);
+      await config.replace(MODELS_SECTION, nextModels);
+
+      if (newId !== existingId) {
+        const defaultProvider = config.inspect<string>(DEFAULT_PROVIDER_SECTION).userValue;
+        if (defaultProvider === existingId) {
+          await config.replace(DEFAULT_PROVIDER_SECTION, newId);
+        }
+        const defaultModel = config.inspect<string>(DEFAULT_MODEL_SECTION).userValue;
+        if (defaultModel !== undefined && previousAliasIds.has(defaultModel)) {
+          const renamedModel = models[defaultModel]?.model;
+          const renamedAlias =
+            renamedModel === undefined ? undefined : `${newId}/${renamedModel}`;
+          if (renamedAlias !== undefined && nextModels[renamedAlias] !== undefined) {
+            await config.replace(DEFAULT_MODEL_SECTION, renamedAlias);
+          }
         }
       }
-    }
 
-    const provider = await this.klient.global.kosong.getProvider(id);
-    return ok<Record<string, unknown>>({ ...provider });
+      const provider = await this.scope.accessor.get(IModelCatalog).getProvider(newId);
+      return ok({ provider: { ...provider } });
+    });
   }
 
   // deleteProvider — DELETE /providers/{id} → { deleted: true }.
   async deleteProvider(idRaw: unknown): Promise<WireEnvelope<{ deleted: boolean }>> {
     const id = requireString(idRaw, 'providerId');
-    // Check existence first (kap-server returns 40412 PROVIDER_NOT_FOUND).
-    try {
-      await this.klient.global.kosong.getProvider(id);
-    } catch {
-      throw new RPCError(PROVIDER_NOT_FOUND, `provider ${id} does not exist`);
-    }
-    await this.klient.global.kosong.removeProvider(id);
-    return ok({ deleted: true });
+    return this.enqueueProviderWrite(async () => {
+      const config = await this.loadWritableConfig();
+      const providers = config.inspect<ProvidersSection>(PROVIDERS_SECTION).userValue ?? {};
+      const provider = providers[id];
+      if (provider === undefined) {
+        throw new RPCError(PROVIDER_NOT_FOUND, `provider ${id} does not exist`);
+      }
+      if (provider.oauth !== undefined) {
+        throw new RPCError(REQUEST_INVALID, `provider ${id} is managed by OAuth`);
+      }
+
+      const models = config.inspect<ModelsSection>(MODELS_SECTION).userValue ?? {};
+      const nextProviders = { ...providers };
+      delete nextProviders[id];
+      const nextModels = Object.fromEntries(
+        Object.entries(models).filter(([, record]) => record.provider !== id),
+      );
+      await config.replace(PROVIDERS_SECTION, nextProviders);
+      await config.replace(MODELS_SECTION, nextModels);
+      return ok({ deleted: true });
+    });
+  }
+
+  // refreshProvider — POST /providers/{id}:refresh.
+  async refreshProvider(idRaw: unknown): Promise<WireEnvelope<WireProviderRefreshResult>> {
+    const providerId = requireString(idRaw, 'providerId');
+    const result = await this.klient.global.kosong.refreshProviders({ providerId });
+    return ok(result);
+  }
+
+  // refreshAllProviders — POST /providers:refresh.
+  async refreshAllProviders(): Promise<WireEnvelope<WireProviderRefreshResult>> {
+    const result = await this.klient.global.kosong.refreshProviders();
+    return ok(result);
   }
 
   // setDefaultModel — POST /models/{id}:set_default → SetDefaultModelResponse.
@@ -864,6 +1763,142 @@ export class ProductFacade {
     const result = await this.klient.global.kosong.setDefaultModel(id);
     return ok<Record<string, unknown>>({ ...result });
   }
+
+  private async loadWritableConfig(): Promise<IConfigService> {
+    const config = this.scope.accessor.get(IConfigService);
+    await config.ready;
+    await this.scope.accessor.get(IKosongConfigService).ready;
+    return config;
+  }
+
+  private enqueueProviderWrite<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.providerWriteChain.then(task, task);
+    this.providerWriteChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
+  }
+}
+
+interface ProviderModelInput {
+  readonly model: string;
+  readonly displayName?: string;
+  readonly maxContextSize: number;
+}
+
+interface ProviderInput {
+  readonly id: string;
+  readonly type: string;
+  readonly apiKey?: string;
+  readonly baseUrl?: string;
+  readonly defaultModel?: string;
+  readonly models: readonly ProviderModelInput[];
+}
+
+const PROVIDER_TYPES = new Set([
+  'kimi',
+  'openai',
+  'openai_responses',
+  'anthropic',
+  'google-genai',
+  'vertexai',
+]);
+
+function parseProviderInput(
+  raw: unknown,
+  requireId: boolean,
+  fallbackId?: string,
+): ProviderInput {
+  if (!isRecord(raw)) throw new RPCError(REQUEST_INVALID, 'provider input must be an object');
+  const idValue = raw['new_id'] ?? raw['id'] ?? fallbackId;
+  const id = requireString(idValue, requireId ? 'provider id' : 'provider id or new_id');
+  if (!PROVIDER_ID_PATTERN.test(id)) {
+    throw new RPCError(REQUEST_INVALID, `invalid provider id: ${id}`);
+  }
+  const type = requireString(raw['type'], 'provider type');
+  if (!PROVIDER_TYPES.has(type)) {
+    throw new RPCError(REQUEST_INVALID, `unsupported provider type: ${type}`);
+  }
+  if (!Array.isArray(raw['models']) || raw['models'].length === 0) {
+    throw new RPCError(REQUEST_INVALID, 'provider must define at least one model');
+  }
+  const modelNames = new Set<string>();
+  const models = raw['models'].map((value) => {
+    if (!isRecord(value)) throw new RPCError(REQUEST_INVALID, 'provider model must be an object');
+    const model = requireString(value['model'], 'model name');
+    if (modelNames.has(model)) {
+      throw new RPCError(REQUEST_INVALID, `duplicate model: ${model}`);
+    }
+    modelNames.add(model);
+    const size = value['max_context_size'];
+    if (typeof size !== 'number' || !Number.isInteger(size) || size < 1) {
+      throw new RPCError(REQUEST_INVALID, `model ${model} has an invalid context size`);
+    }
+    return {
+      model,
+      displayName: optionalString(value['display_name']),
+      maxContextSize: size,
+    };
+  });
+  const apiKey =
+    Object.prototype.hasOwnProperty.call(raw, 'api_key')
+      ? optionalString(raw['api_key']) ?? ''
+      : undefined;
+  const baseUrl = optionalString(raw['base_url']);
+  if (baseUrl?.includes('${') === true) {
+    throw new RPCError(REQUEST_INVALID, 'base_url must not contain an environment placeholder');
+  }
+  const defaultModel = optionalString(raw['default_model']);
+  if (defaultModel !== undefined && !modelNames.has(defaultModel)) {
+    throw new RPCError(REQUEST_INVALID, 'default_model must be one of models[].model');
+  }
+  return {
+    id,
+    type,
+    apiKey,
+    baseUrl,
+    defaultModel,
+    models,
+  };
+}
+
+function providerConfigFromInput(input: ProviderInput, id: string): ProviderConfig {
+  return {
+    type: input.type,
+    apiKey: input.apiKey,
+    baseUrl: input.baseUrl,
+    defaultModel:
+      input.defaultModel === undefined ? undefined : `${id}/${input.defaultModel}`,
+  };
+}
+
+function modelRecordsFromInput(
+  input: ProviderInput,
+  id: string,
+  previous: ModelsSection = {},
+  previousProviderId = id,
+): ModelsSection {
+  const records: ModelsSection = {};
+  for (const item of input.models) {
+    const previousRecord = Object.values(previous).find(
+      (record) => record.provider === previousProviderId && record.model === item.model,
+    );
+    const alias = `${id}/${item.model}`;
+    const record: ModelRecord = {
+      ...previousRecord,
+      provider: id,
+      model: item.model,
+      displayName: item.displayName,
+      maxContextSize: item.maxContextSize,
+    };
+    records[alias] = record;
+  }
+  return records;
+}
+
+function optionalString(value: unknown): string | undefined {
+  return typeof value === 'string' && value.length > 0 ? value : undefined;
 }
 
 function requireString(value: unknown, name: string): string {
@@ -875,58 +1910,6 @@ function requireString(value: unknown, name: string): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/** Mirrors kap-server `toWireTask` (routes/tasks.ts): project the engine
- *  `AgentTaskInfo` (camelCase + ms timestamps) to the wire `Task` (snake_case
- *  + ISO timestamps), collapsing the engine-only status/kind literals. */
-function toWireTaskListItem(
-  info: {
-    readonly taskId: string;
-    readonly kind: string;
-    readonly description: string;
-    readonly status: string;
-    readonly startedAt: number;
-    readonly endedAt: number | null;
-    readonly command?: string;
-  },
-  sessionId: string,
-): WireTaskListItem {
-  const mapKind = (k: string): WireTaskListItem['kind'] => {
-    switch (k) {
-      case 'process': return 'bash';
-      case 'agent': return 'subagent';
-      default: return 'tool';
-    }
-  };
-  const mapStatus = (s: string): WireTaskListItem['status'] => {
-    switch (s) {
-      case 'running': return 'running';
-      case 'completed': return 'completed';
-      case 'failed':
-      case 'timed_out':
-      case 'lost': return 'failed';
-      case 'killed': return 'cancelled';
-      default: return 'failed';
-    }
-  };
-  const createdIso = new Date(info.startedAt).toISOString();
-  const item: WireTaskListItem = {
-    id: info.taskId,
-    session_id: sessionId,
-    kind: mapKind(info.kind),
-    description: info.description,
-    status: mapStatus(info.status),
-    created_at: createdIso,
-    started_at: createdIso,
-  };
-  if (info.endedAt !== null && info.endedAt !== undefined) {
-    item.completed_at = new Date(info.endedAt).toISOString();
-  }
-  if (info.kind === 'process' && info.command !== undefined) {
-    item.command = info.command;
-  }
-  return item;
 }
 
 /** Mirrors kap-server `customMetadataFromWire`: drop `cwd` from the persisted
@@ -941,20 +1924,150 @@ function customMetadataFromWire(
 
 /**
  * Mirror kap-server's `sendMappedError`: translate engine `Error2` codes to the
- * wire error codes the daemon HTTP transport returns. Only the codes the slice-A
- * methods can throw are mapped; anything else passes through as a generic 50001.
+ * wire error codes the daemon HTTP transport returns.
  */
 function mapEngineError(error: unknown): RPCError {
+  if (error instanceof RPCError) return error;
   if (isError2(error)) {
     switch (error.code) {
       case 'session.not_found':
       case 'agent.not_found':
         return new RPCError(SESSION_NOT_FOUND, error.message);
+      case 'prompt.not_found':
+        return new RPCError(PROMPT_NOT_FOUND, error.message);
+      case 'session.fork_active_turn':
+      case 'session.busy':
+        return new RPCError(SESSION_BUSY, error.message);
+      case 'compaction.unable':
+        return new RPCError(COMPACTION_UNABLE, error.message);
+      case 'session.undo_unavailable':
+        return new RPCError(SESSION_UNDO_UNAVAILABLE, error.message);
       default:
         break;
     }
   }
   throw error;
+}
+
+/**
+ * Mirror kap-server's fs `sendMappedError` (routes/fs.ts): translate the
+ * `sessionFs` + `os.fs` domain Error2 codes onto the v1 wire codes. ENOTDIR
+ * collapses into path-not-found, matching the route.
+ */
+function mapFsError(error: unknown): RPCError {
+  if (error instanceof RPCError) return error;
+  const zodIssue = firstZodIssue(error);
+  if (zodIssue !== undefined) {
+    const path = zodIssue.path.map((p) => String(p)).join('.');
+    const msg = path === '' ? zodIssue.message : `${path}: ${zodIssue.message}`;
+    return new RPCError(REQUEST_INVALID, msg);
+  }
+  if (isError2(error)) {
+    switch (error.code) {
+      case 'fs.path_escapes':
+        return new RPCError(FS_PATH_ESCAPES_SESSION, error.message);
+      case 'fs.path_not_found':
+      case 'os.fs.not_found':
+      case 'os.fs.not_directory':
+        return new RPCError(FS_PATH_NOT_FOUND, error.message);
+      case 'fs.is_directory':
+      case 'os.fs.is_directory':
+        return new RPCError(FS_IS_DIRECTORY, error.message);
+      case 'fs.already_exists':
+      case 'os.fs.already_exists':
+        return new RPCError(FS_ALREADY_EXISTS, error.message);
+      case 'fs.is_binary':
+        return new RPCError(FS_IS_BINARY, error.message);
+      case 'fs.too_large':
+        return new RPCError(FS_TOO_LARGE, error.message);
+      case 'fs.too_many_results':
+        return new RPCError(FS_TOO_MANY_RESULTS, error.message);
+      case 'fs.grep_timeout':
+        return new RPCError(FS_GREP_TIMEOUT, error.message);
+      case 'fs.git_unavailable':
+        return new RPCError(FS_GIT_UNAVAILABLE, error.message);
+      case 'fs.permission_denied':
+      case 'os.fs.permission_denied':
+        return new RPCError(FS_PERMISSION_DENIED, error.message);
+      case 'session.not_found':
+        return new RPCError(SESSION_NOT_FOUND, error.message);
+      default:
+        break;
+    }
+  }
+  return new RPCError(
+    INTERNAL_ERROR,
+    error instanceof Error ? error.message : String(error),
+  );
+}
+
+/**
+ * Structurally detect a zod validation failure (the sidecar cannot import zod
+ * directly — it is not a kimi-desktop dependency). Matches the shape the
+ * request schemas throw so fs request validation maps onto VALIDATION_FAILED.
+ */
+function firstZodIssue(
+  error: unknown,
+): { path: readonly PropertyKey[]; message: string } | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const issues = (error as { issues?: unknown }).issues;
+  if (!Array.isArray(issues)) return undefined;
+  const first = issues[0] as { path?: unknown; message?: unknown } | undefined;
+  if (first === undefined) return undefined;
+  return {
+    path: Array.isArray(first.path) ? (first.path as readonly PropertyKey[]) : [],
+    message: typeof first.message === 'string' ? first.message : 'validation failed',
+  };
+}
+
+/**
+ * Mirror kap-server's workspaceFs `sendMappedError` (routes/workspaceFs.ts):
+ * IHostFolderBrowser domain errors onto the folder-picker wire codes.
+ */
+function mapBrowseError(error: unknown): RPCError {
+  if (error instanceof RPCError) return error;
+  if (error instanceof HostFolderNotAbsoluteError) {
+    return new RPCError(REQUEST_INVALID, error.message);
+  }
+  if (error instanceof HostFolderNotFoundError) {
+    return new RPCError(FS_PATH_NOT_FOUND, error.message);
+  }
+  if (error instanceof HostFolderPermissionError) {
+    return new RPCError(FS_PERMISSION_DENIED, error.message);
+  }
+  throw error;
+}
+
+function normalizeOptional(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
+/** Mirrors kap-server `pageUndoMessages` (routes/sessions.ts). */
+function pageUndoMessages(
+  sessionId: string,
+  sessionCreatedAtMs: number,
+  history: readonly unknown[],
+  requestedPageSize: number | undefined,
+): WirePage<WireMessage> {
+  const pageSize = Math.min(
+    Math.max(requestedPageSize ?? DEFAULT_UNDO_MESSAGE_PAGE_SIZE, 1),
+    MAX_UNDO_MESSAGE_PAGE_SIZE,
+  );
+  const all = history.map((message, index) =>
+    toProtocolMessage(
+      sessionId,
+      index,
+      message as Parameters<typeof toProtocolMessage>[2],
+      sessionCreatedAtMs,
+    ),
+  ) as unknown as WireMessage[];
+  const desc = [...all].reverse();
+  return {
+    items: desc.slice(0, pageSize),
+    has_more: desc.length > pageSize,
+  };
 }
 
 /** Mirrors kap-server `convertKeysSnakeToCamel` (routes/config.ts). */

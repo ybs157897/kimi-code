@@ -411,29 +411,26 @@ async function openModelPicker(): Promise<void> {
   modelsLoading.value = true;
   modelsUnavailable.value = false;
   showModelPicker.value = true;
-  try {
-    // Full refresh first (every refreshable provider, not just OAuth), so the
-    // list always reflects the live catalog — the WS model-catalog event that
-    // used to keep the cache warm is no longer forwarded by the daemon.
-    await client.refreshAllProviders();
-  } catch {
-    modelsUnavailable.value = true;
-  } finally {
-    modelsLoading.value = false;
-  }
+  // Full refresh first (every refreshable provider, not just OAuth), so the
+  // list always reflects the live catalog — the WS model-catalog event that
+  // used to keep the cache warm is no longer forwarded by the daemon.
+  const loaded = await client.refreshAllProviders();
+  modelsUnavailable.value = !loaded && client.models.value.length === 0;
+  modelsLoading.value = false;
 }
 
 async function openProviders(): Promise<void> {
   providersLoading.value = true;
   providersUnavailable.value = false;
   showProviders.value = true;
-  try {
-    await client.loadProviders();
-  } catch {
-    providersUnavailable.value = true;
-  } finally {
-    providersLoading.value = false;
-  }
+  const loaded = await client.loadProviders();
+  providersUnavailable.value = !loaded && client.providers.value.length === 0;
+  providersLoading.value = false;
+}
+
+function openSettings(): void {
+  showSettings.value = true;
+  void Promise.all([client.loadModels(), client.loadProviders()]);
 }
 
 function openLogin(): void {
@@ -561,6 +558,21 @@ function handleCommand(cmd: string): void {
     else if (arg === 'off') client.setSwarmMode(false);
     else if (arg) { client.setSwarmMode(true); void client.sendPrompt(arg); }
     else void client.toggleSwarmMode();
+    return;
+  }
+  // `/experts` activates an expert team by plugin id; `/experts off|standard`
+  // restores the standard agent; `/experts status` opens the status panel.
+  // Bare `/experts` deactivates when a team is on (Modes menu is the picker).
+  if (cmd === '/experts' || cmd.startsWith('/experts ')) {
+    const arg = cmd.slice('/experts'.length).trim();
+    const lower = arg.toLowerCase();
+    if (lower === 'status') {
+      showStatusPanel.value = true;
+    } else if (lower === 'off' || lower === 'standard' || (arg.length === 0 && client.expertTeamStatus.value)) {
+      void client.deactivateExpertTeam();
+    } else if (arg.length > 0) {
+      void client.activateExpertTeam(arg);
+    }
     return;
   }
   // `/goal <objective>` creates a goal (and submits it); `/goal pause|resume|cancel`
@@ -816,7 +828,7 @@ function openPr(url: string): void {
         @set-workspace-sort-mode="client.setWorkspaceSortMode($event)"
         @load-more-sessions="(id) => void client.loadMoreSessions(id)"
         @load-all-sessions="void client.loadAllSessions()"
-        @open-settings="showSettings = true"
+        @open-settings="openSettings"
         @collapse="toggleSidebarCollapse"
       />
       <ResizeHandle
@@ -926,6 +938,7 @@ function openPr(url: string): void {
           @toggle-goal="client.toggleGoalMode()"
           @select-expert-team="client.activateExpertTeam($event)"
           @clear-expert-team="client.deactivateExpertTeam()"
+          @refresh-expert-teams="client.refreshExpertTeams()"
           @create-goal="client.createGoal($event)"
           @control-goal="client.controlGoal($event)"
           @refresh-git-status="client.activeSessionId.value && client.loadGitStatus(client.activeSessionId.value)"
@@ -1099,6 +1112,7 @@ function openPr(url: string): void {
       :unavailable="modelsUnavailable"
       @select="handleSelectModel($event)"
       @toggle-star="client.toggleStarModel($event)"
+      @manage="() => { showModelPicker = false; openProviders(); }"
       @close="showModelPicker = false"
     />
 
@@ -1118,6 +1132,7 @@ function openPr(url: string): void {
       :conversation-toc="client.conversationToc.value"
       :config="client.config.value"
       :models="client.models.value"
+      :providers="client.providers.value"
       :config-saving="configSaving"
       :server-version="client.serverVersion.value"
       :backend="client.backend.value"
@@ -1134,6 +1149,7 @@ function openPr(url: string): void {
       @logout="client.logout"
       @open-onboarding="() => { showSettings = false; openOnboarding(); }"
       @open-providers="() => { showSettings = false; openProviders(); }"
+      @pick-model="() => { showSettings = false; openModelPicker(); }"
       @close="showSettings = false"
     />
 
@@ -1159,6 +1175,7 @@ function openPr(url: string): void {
       :thinking="statusPanelThinking"
       :plan-mode="client.planMode.value"
       :swarm-mode="client.swarmMode.value"
+      :expert-team-name="client.expertTeamStatus.value?.displayName ?? null"
       :cost-usd="client.sessionCost.value"
       @close="showStatusPanel = false"
     />

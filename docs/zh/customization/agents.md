@@ -45,7 +45,7 @@ Kimi Code CLI 内置三种子 Agent，开箱即用，分别面向不同任务形
 
 ### Agent 目录
 
-Kimi Code CLI 按作用域发现 Agent 文件，作用域越具体，优先级越高：**显式（`--agent-file`）> 项目 > 额外 > 用户 > 内置**。两个文件定义了相同的 `name` 时，高优先级作用域胜出。每个目录都会递归扫描 `.md` 文件。
+Kimi Code CLI 按作用域发现 Agent 文件，作用域越具体，优先级越高：**显式（`--agent-file`）> 项目 > 额外 > 用户 > Plugin > 内置**。两个文件定义了相同的 `name` 时，高优先级作用域胜出。每个目录都会递归扫描 `.md` 文件。
 
 **用户级**（对所有项目生效）：
 - `$KIMI_CODE_HOME/agents/`（默认：`~/.kimi-code/agents/`）
@@ -62,6 +62,8 @@ Kimi 专属的用户 Agent 目录随 `KIMI_CODE_HOME` 移动，通用的 `~/.age
 ```toml
 extra_agent_dirs = ["~/team-agents", ".agents/team-agents"]
 ```
+
+**Plugin 级**：已启用 plugin 通过 `agents` 字段声明的目录。省略该字段时，会自动发现 plugin 根目录下的 `agents/` 目录。[Plugin Agent](./plugins.md#plugin-agent) 的优先级仅高于内置 Agent。
 
 **内置 Agent** 随 CLI 分发，优先级最低。目录中发现的文件不会仅凭同名覆盖内置 Agent；如确需替换，必须在 Frontmatter 中声明 `override: true`。通过 `--agent-file` 加载的文件视为显式启动意图，可以覆盖同名内置 Agent，优先级高于所有目录作用域，且仅对本次启动生效。另外，`$KIMI_CODE_HOME/SYSTEM.md` 可永久覆盖默认主 Agent 的系统提示词（它不参与 Agent 文件发现），其优先级交互见下文 SYSTEM.md 小节。
 
@@ -155,8 +157,9 @@ SYSTEM.md 是纯 Markdown 正文，不需要也不读取 Frontmatter。文件缺
 | `${now}` | 当前时间（ISO 格式） |
 | `${additional_dirs_info}` | 加入工作区的额外目录信息；没有时为空 |
 | `${base_prompt}` | 默认系统提示词。在 `SYSTEM.md` 中指内置默认提示词；在 Agent 文件中指有效默认提示词（内置默认，或存在时为你的 `SYSTEM.md` 覆盖） |
+| `${plugin_sections}` | 已启用 plugin 贡献的系统提示词指令；没有 plugin 贡献指令时为空 |
 
-未知变量原样保留，单独的 `$` 没有特殊含义；上下文中缺失的变量渲染为空字符串。另有三个预组合块——`${windows_notes}`、`${additional_dirs_section}`、`${skills_section}`——渲染对应的内置提示词段落，不适用时为空字符串。利用这些变量可以重建内置提示词的骨架，例如：
+未知变量原样保留，单独的 `$` 没有特殊含义；上下文中缺失的变量渲染为空字符串。另有四个预组合块——`${windows_notes}`、`${additional_dirs_section}`、`${skills_section}`、`${plugin_sections}`——渲染对应的内置提示词段落，不适用时为空字符串。利用这些变量可以重建内置提示词的骨架，例如：
 
 ```markdown
 You are Kimi, running at ${cwd} on ${os}.

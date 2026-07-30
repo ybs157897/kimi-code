@@ -43,6 +43,7 @@ import { ISessionStateService } from '#/session/state/sessionState';
 
 import { IExplicitFileAgentSource } from './explicitFileAgentSource';
 import { IExtraFileAgentSource } from './extraFileAgentSource';
+import { IPluginAgentProfileSource } from './pluginAgentProfileSource';
 import { IProjectFileAgentSource } from './projectFileAgentSource';
 import { IPluginExpertAgentSource } from './pluginExpertAgentSource';
 import { ISessionAgentProfileCatalog } from './sessionAgentProfileCatalog';
@@ -70,6 +71,7 @@ export class SessionAgentProfileCatalogService
   constructor(
     @ISessionStateService private readonly states: ISessionStateService,
     @IAgentProfileCatalogService private readonly builtin: IAgentProfileCatalogService,
+    @IPluginAgentProfileSource plugin: IPluginAgentProfileSource,
     @IUserFileAgentSource user: IUserFileAgentSource,
     @IExtraFileAgentSource extra: IExtraFileAgentSource,
     @IProjectFileAgentSource project: IProjectFileAgentSource,
@@ -80,7 +82,7 @@ export class SessionAgentProfileCatalogService
     super();
     this.states.register(agentProfileCatalogContributionsKey);
     this.states.register(agentProfileCatalogMergedKey);
-    this.sources = [user, extra, project, explicit, pluginExpert].toSorted(
+    this.sources = [plugin, user, extra, project, explicit, pluginExpert].toSorted(
       (a, b) => a.priority - b.priority,
     );
     for (const s of this.sources) {

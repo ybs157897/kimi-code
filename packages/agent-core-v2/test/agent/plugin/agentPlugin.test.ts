@@ -59,8 +59,10 @@ function pluginServiceStub(options: PluginServiceStubOptions): IPluginService {
     listPluginCommands: async () => [],
     checkUpdates: async () => [],
     pluginSkillRoots: async () => [],
+    pluginAgentRoots: async () => [],
     enabledExperts: async () => [],
     enabledSessionStarts: async () => options.sessionStarts,
+    enabledSystemPrompts: async () => [],
     enabledMcpServers: async () => ({}),
     enabledHooks: async () => [],
   };

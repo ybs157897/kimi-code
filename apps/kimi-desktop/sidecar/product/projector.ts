@@ -10,6 +10,10 @@
  * First-slice coverage: turn lifecycle (work_changed), assistant text/thinking
  * deltas, tool dispatch/progress/result, usage, approval/question request +
  * resolve, and notice/warning/error.
+ *
+ * Seq is NOT stamped here: the projector emits unsequenced draft frames and the
+ * `ProductStreamHub` owns the monotonic per-(session, agent) seq + journal, so
+ * the same seq space survives detach/re-attach (see stream.ts).
  */
 
 import type { IDisposable, Klient } from '@moonshot-ai/klient';
@@ -27,7 +31,6 @@ import type {
 type RawEvent = Record<string, unknown>;
 
 interface ProjectState {
-  seq: number;
   currentAssistantMsgId: string | undefined;
   /** Wire content of the in-flight assistant message (drives content_index). */
   content: WireMessageContent[];
@@ -47,7 +50,6 @@ interface ProjectState {
 
 function createState(): ProjectState {
   return {
-    seq: 0,
     currentAssistantMsgId: undefined,
     content: [],
     currentPromptId: undefined,
@@ -105,11 +107,11 @@ export class ProductProjector {
       }
     };
 
-    /** Build a wire frame, stamping monotonic seq + timestamp. */
+    /** Build a wire draft. Seq is left at 0 and stamped by the stream hub. */
     const frame = <P>(type: string, payload: P): WireEvent =>
       ({
         type,
-        seq: ++state.seq,
+        seq: 0,
         session_id: sessionId,
         timestamp: new Date().toISOString(),
         payload,

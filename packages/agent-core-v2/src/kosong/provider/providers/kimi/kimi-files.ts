@@ -23,6 +23,7 @@ import {
   requireProviderApiKey,
   resolveAuthBackedClient,
 } from '../../bases/request-auth';
+import { classifyKimiQuotaError } from './kimi-errors';
 
 export interface KimiUploadOptions {
   auth?: ProviderRequestAuth;
@@ -99,7 +100,7 @@ export class KimiFiles {
         options?.signal ? { signal: options.signal } : undefined,
       )) as unknown as { id: string };
     } catch (error: unknown) {
-      throw convertOpenAIError(error);
+      throw convertOpenAIError(error, classifyKimiQuotaError);
     }
 
     return {

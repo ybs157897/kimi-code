@@ -82,6 +82,7 @@ import type {
 
 import { type OpenAIToolParam, toolToOpenAI } from '../../bases/openai/openai-common';
 import { registerProviderDefinition } from '../../providerDefinition';
+import { classifyKimiQuotaError } from './kimi-errors';
 import { KimiFiles } from './kimi-files';
 import { normalizeKimiToolSchema } from './kimi-schema';
 
@@ -175,6 +176,8 @@ export const kimiOpenAITrait: ProtocolTrait = {
     baseUrlEnv: KIMI_BASE_URL_ENV,
     defaultBaseUrl: KIMI_DEFAULT_BASE_URL,
   }),
+
+  convertError: (error) => classifyKimiQuotaError(error),
 
   cacheKey: (key) => ({ prompt_cache_key: key }),
 
@@ -274,6 +277,8 @@ export const kimiOpenAITrait: ProtocolTrait = {
 };
 
 export const kimiAnthropicTrait: ProtocolTrait = {
+  convertError: (error) => classifyKimiQuotaError(error),
+
   withThinking: (effort, _options, generationKwargs) => {
     const seeded = generationKwargs['betaFeatures'];
     const betaFeatures = (Array.isArray(seeded) ? (seeded as string[]) : []).filter(

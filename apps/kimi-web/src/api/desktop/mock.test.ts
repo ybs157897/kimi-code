@@ -1,3 +1,6 @@
+// Scenario: the browser-only desktop bridge mirrors product response/event
+// contracts without a Go process. Exercises ProductCall/ProductSubscribe with
+// no additional stubs. Run with `pnpm --filter @moonshot-ai/kimi-web test`.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { WireSession } from '../daemon/wire';
@@ -182,11 +185,67 @@ describe('MockDesktopBridge product surface (contracts E + F)', () => {
     }
   });
 
+  // Slice 3 event convergence: the mock stream mirrors the sidecar hub — per-
+  // session monotonic seq, a bounded journal, a subscription gate, and cursor
+  // replay / resync on resubscribe.
+
+  it('gates delivery on subscription and replays journaled frames on resume', async () => {
+    const bridge = new MockDesktopBridge();
+    const events: ProductEventPayload[] = [];
+    bridge.onProductEvent((payload) => events.push(payload));
+    const session = await call<WireSession>(bridge, 'createSession', [{}]);
+
+    // First turn while subscribed: frames are delivered and journaled.
+    await bridge.ProductSubscribe(session.id, 'main');
+    await call(bridge, 'submitPrompt', [session.id, { content: [{ type: 'text', text: 'one' }] }]);
+    await vi.runAllTimersAsync();
+    const deliveredSeqs = events.map((e) => e.event.seq);
+    const lastSeq = Math.max(...deliveredSeqs);
+    expect(lastSeq).toBeGreaterThan(0);
+
+    // Detach, then run another turn while detached: journaled, NOT delivered.
+    await bridge.ProductUnsubscribe(session.id, 'main');
+    await call(bridge, 'submitPrompt', [session.id, { content: [{ type: 'text', text: 'two' }] }]);
+    await vi.runAllTimersAsync();
+    expect(events.map((e) => e.event.seq)).toEqual(deliveredSeqs);
+
+    // Resubscribe from the last delivered seq: the journal replays exactly the
+    // missed frames (all seq > lastSeq), no earlier frame repeated.
+    await bridge.ProductSubscribe(session.id, 'main', { epoch: 'mock-epoch', afterSeq: lastSeq });
+    const replayed = events.slice(deliveredSeqs.length);
+    expect(replayed.length).toBeGreaterThan(0);
+    expect(replayed.every((e) => e.event.seq > lastSeq)).toBe(true);
+    const allSeqs = events.map((e) => e.event.seq);
+    expect(new Set(allSeqs).size).toBe(allSeqs.length);
+    expect(allSeqs).toEqual([...allSeqs].sort((a, b) => a - b));
+  });
+
+  it('pushes a resync_required frame when the cursor epoch no longer matches', async () => {
+    const bridge = new MockDesktopBridge();
+    const events: ProductEventPayload[] = [];
+    bridge.onProductEvent((payload) => events.push(payload));
+    const session = await call<WireSession>(bridge, 'createSession', [{}]);
+
+    // A cursor from a different epoch cannot be covered incrementally.
+    await bridge.ProductSubscribe(session.id, 'main', { epoch: 'stale-epoch', afterSeq: 1 });
+
+    const frame = events.at(-1)?.event as unknown as {
+      type: string;
+      payload: { reason: string; session_id: string; epoch?: string };
+    };
+    expect(frame.type).toBe('resync_required');
+    expect(frame.payload.reason).toBe('epoch_changed');
+    expect(frame.payload.session_id).toBe(session.id);
+    expect(frame.payload.epoch).toBe('mock-epoch');
+  });
+
   it('abortPrompt reports aborted and flips the session idle', async () => {
     const bridge = new MockDesktopBridge();
     const events: ProductEventPayload[] = [];
     bridge.onProductEvent((payload) => events.push(payload));
     const session = await call<WireSession>(bridge, 'createSession', [{}]);
+    // Product frames are delivered only while subscribed (unsubscribe stops them).
+    await bridge.ProductSubscribe(session.id, 'main');
 
     const result = await call<{ aborted: boolean }>(bridge, 'abortPrompt', [session.id, 'pr-1']);
     expect(result.aborted).toBe(true);
@@ -200,6 +259,7 @@ describe('MockDesktopBridge product surface (contracts E + F)', () => {
     const events: ProductEventPayload[] = [];
     bridge.onProductEvent((payload) => events.push(payload));
     const session = await call<WireSession>(bridge, 'createSession', [{}]);
+    await bridge.ProductSubscribe(session.id, 'main');
 
     const approval = await call<{ resolved: true; resolved_at: string }>(
       bridge,
@@ -220,12 +280,34 @@ describe('MockDesktopBridge product surface (contracts E + F)', () => {
 
   it('unknown product methods throw a clear error', async () => {
     const bridge = new MockDesktopBridge();
-    const pending = bridge.ProductCall('listProviders', '[]');
+    const pending = bridge.ProductCall('unsupportedProductMethod', '[]');
     // Attach the rejection handler before advancing timers so the rejected
     // promise never sits unhandled (the mock throws after its async delay).
     const assertion = expect(pending).rejects.toThrow(/not yet supported/);
     await vi.advanceTimersByTimeAsync(100);
     await assertion;
+  });
+
+  it('updateSession persists model + thinking and getSessionStatus echoes them', async () => {
+    const bridge = new MockDesktopBridge();
+    const session = await call<WireSession>(bridge, 'createSession', [{}]);
+    expect(session.agent_config.model).toBe('mock-model');
+
+    const updated = await call<WireSession>(bridge, 'updateSession', [
+      session.id,
+      { agent_config: { model: 'mock-model-mini', thinking: 'high' } },
+    ]);
+    expect(updated.agent_config.model).toBe('mock-model-mini');
+    expect(updated.agent_config.thinking).toBe('high');
+
+    const status = await call<{
+      model: string;
+      thinking_level: string;
+      plan_mode: boolean;
+      swarm_mode: boolean;
+    }>(bridge, 'getSessionStatus', [session.id]);
+    expect(status.model).toBe('mock-model-mini');
+    expect(status.thinking_level).toBe('high');
   });
 
   // Slice 2 clean-boot methods (docs §12.3): the mock returns canned kap-server

@@ -16,6 +16,8 @@ const props = defineProps<{
   thinking: ThinkingLevel;
   planMode: boolean;
   swarmMode?: boolean;
+  /** Active expert-team display name, when a team is bound. */
+  expertTeamName?: string | null;
   /** Cumulative session cost in USD, when known (>= 0). */
   costUsd?: number;
 }>();
@@ -61,6 +63,11 @@ const permColor = computed(() => {
 
 const planText = computed(() => (props.planMode ? t('status.planOn') : t('status.planOff')));
 const swarmText = computed(() => (props.swarmMode ? t('status.swarmOn') : t('status.swarmOff')));
+const expertTeamText = computed(() =>
+  props.expertTeamName && props.expertTeamName.length > 0
+    ? props.expertTeamName
+    : t('status.expertTeamOff'),
+);
 
 const showCost = computed(() => typeof props.costUsd === 'number' && props.costUsd > 0);
 const costText = computed(() =>
@@ -90,6 +97,10 @@ const costText = computed(() =>
       <div class="row">
         <dt>{{ t('status.statusSwarmMode') }}</dt>
         <dd :class="{ 'swarm-on': swarmMode }">{{ swarmText }}</dd>
+      </div>
+      <div class="row">
+        <dt>{{ t('status.statusExpertTeam') }}</dt>
+        <dd :class="{ 'expert-on': Boolean(expertTeamName) }">{{ expertTeamText }}</dd>
       </div>
       <div class="row">
         <dt>{{ t('status.statusContext') }}</dt>
@@ -137,6 +148,7 @@ const costText = computed(() =>
 }
 .row dd.plan-on { color: var(--color-accent); }
 .row dd.swarm-on { color: var(--color-accent); }
+.row dd.expert-on { color: var(--color-accent); }
 
 .ctx-text { flex: none; }
 .bar {
