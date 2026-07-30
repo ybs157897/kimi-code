@@ -11,6 +11,7 @@ import type {
   WireEvent,
   WireExpertTeamDefinition,
   WireExpertTeamSnapshot,
+  WireFileMeta,
   WireFsBrowseResult,
   WireFsEntry,
   WireFsHomeResult,
@@ -27,6 +28,8 @@ import type {
   WireTask,
   WireWorkspace,
 } from '../daemon/wire';
+import { base64FromBytes, bytesFromBase64 } from './base64';
+import { assembleStreamToBlob } from './bridge';
 import type {
   DesktopAgentEvent,
   DesktopBridge,
@@ -35,6 +38,8 @@ import type {
   DesktopSessionHandle,
   DesktopSessionListPage,
   DesktopSessionSummary,
+  DesktopStreamEvent,
+  DesktopTerminalEvent,
   ProductEventPayload,
   ProductStreamCursor,
 } from './types';
@@ -97,6 +102,11 @@ function delay(ms: number): Promise<void> {
 
 function turnKey(sessionId: string, agentId: string): string {
   return `${sessionId}::${agentId}`;
+}
+
+/** Slice 6 terminal attachment key (mirrors the Go shell's map key). */
+function terminalKey(sessionId: string, terminalId: string): string {
+  return `${sessionId}\u0000${terminalId}`;
 }
 
 function chunkText(text: string, size: number): string[] {
@@ -173,6 +183,19 @@ export class MockDesktopBridge implements DesktopBridge {
   private productWorkspaceSeq = 0;
   /** In-memory file tree per session (Slice 4 structured fs). */
   private productFsBySession = new Map<string, Map<string, string>>();
+  // Slice 5 binary files: in-flight chunked uploads (uploadStart → chunks →
+  // uploadFinish) and the `kimi:stream` download surface (ProductStreamStart /
+  // ProductStreamCancel / onStreamEvent), so the desktop client exercises the
+  // same wire contract as the real sidecar without the Go shell.
+  private streamListeners = new Set<(event: DesktopStreamEvent) => void>();
+  private mockUploads = new Map<string, { name: string; mediaType: string; received: number }>();
+  private mockUploadSeq = 0;
+  private mockStreamSeq = 0;
+  private mockCancelledStreams = new Set<string>();
+  // Slice 6 terminals: the `kimi:terminal` output/exit surface (onTerminalEvent)
+  // plus active attach subscriptions keyed by sessionId
+  private terminalListeners = new Set<(event: DesktopTerminalEvent) => void>();
+  private terminalAttachments = new Map<string, ReturnType<typeof setTimeout>>();
   private productProviders = new Map<string, MockProviderRecord>([
     [
       'mock',
@@ -547,6 +570,41 @@ export class MockDesktopBridge implements DesktopBridge {
       case 'openInApp':
         data = this.productOpenInApp(args[0] as string, args[1], args[2]);
         break;
+      // Slice 5 — chunked binary upload (uploadStart → uploadChunk* →
+      // uploadFinish). Downloads ride the stream surface below, not ProductCall.
+      case 'uploadStart':
+        data = this.productUploadStart(args[0]);
+        break;
+      case 'uploadChunk':
+        data = this.productUploadChunk(args[0], args[1]);
+        break;
+      case 'uploadFinish':
+        data = this.productUploadFinish(args[0]);
+        break;
+      // Slice 6 — session terminals. CRUD rides ProductCall; input/resize/close
+      // (the connectEvents fire-and-forget ops) resolve to simple ack shapes, and
+      // attach/detach ride the bridge methods below (not ProductCall).
+      case 'listTerminals':
+        data = { items: [this.mockTerminal(args[0] as string)] };
+        break;
+      case 'createTerminal':
+        data = this.mockTerminal(args[0] as string);
+        break;
+      case 'getTerminal':
+        data = this.mockTerminal(args[0] as string);
+        break;
+      case 'closeTerminal':
+        data = { closed: true };
+        break;
+      case 'terminalInput':
+        data = { accepted: true };
+        break;
+      case 'terminalResize':
+        data = { resized: true };
+        break;
+      case 'terminalClose':
+        data = { closed: true };
+        break;
       default:
         throw new Error(`mock desktop bridge: product method "${method}" is not yet supported`);
     }
@@ -611,6 +669,142 @@ export class MockDesktopBridge implements DesktopBridge {
     return () => {
       this.productListeners.delete(callback);
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Slice 5 binary-stream surface. ProductStreamStart emits a canned download
+  // stream (two base64 chunks + an `end` frame) through onStreamEvent, so the
+  // shared assembleStreamToBlob path runs unchanged under the browser mock.
+  // ---------------------------------------------------------------------------
+
+  async ProductStreamStart(method: string, argsJSON: string): Promise<string> {
+    const args = JSON.parse(argsJSON) as unknown[];
+    const streamId = `mock-stream-${++this.mockStreamSeq}`;
+    // Emit on a macrotask so the caller has subscribed before the first frame
+    // lands (mirrors the IPC round-trip the real shell makes).
+    setTimeout(() => this.emitMockStream(method, args, streamId), 20);
+    return streamId;
+  }
+
+  async ProductStreamCancel(streamId: string): Promise<void> {
+    this.mockCancelledStreams.add(streamId);
+  }
+
+  onStreamEvent(callback: (event: DesktopStreamEvent) => void): () => void {
+    this.streamListeners.add(callback);
+    return () => {
+      this.streamListeners.delete(callback);
+    };
+  }
+
+  streamToBlob(method: string, args: unknown[], signal?: AbortSignal): Promise<Blob> {
+    return assembleStreamToBlob(this, method, args, signal);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Slice 6 terminal surface. ProductTerminalAttach records the subscription and
+  // emits one canned output frame on `kimi:terminal` shortly after (mirroring the
+  // IPC round-trip); ProductTerminalDetach tears it down. onTerminalEvent is the
+  // refcounted subscription the desktop client fans out to its terminal handlers.
+  // ---------------------------------------------------------------------------
+
+  async ProductTerminalAttach(
+    sessionId: string,
+    terminalId: string,
+    sinceSeq?: number,
+  ): Promise<void> {
+    const key = terminalKey(sessionId, terminalId);
+    const existing = this.terminalAttachments.get(key);
+    if (existing !== undefined) clearTimeout(existing);
+    const timer = setTimeout(() => {
+      this.terminalAttachments.delete(key);
+      this.emitTerminal({
+        sessionId,
+        terminalId,
+        type: 'output',
+        data: 'mock terminal output\n',
+        seq: (sinceSeq ?? 0) + 1,
+      });
+    }, 20);
+    this.terminalAttachments.set(key, timer);
+  }
+
+  async ProductTerminalDetach(sessionId: string, terminalId: string): Promise<void> {
+    const key = terminalKey(sessionId, terminalId);
+    const timer = this.terminalAttachments.get(key);
+    if (timer !== undefined) clearTimeout(timer);
+    this.terminalAttachments.delete(key);
+  }
+
+  onTerminalEvent(callback: (event: DesktopTerminalEvent) => void): () => void {
+    this.terminalListeners.add(callback);
+    return () => {
+      this.terminalListeners.delete(callback);
+    };
+  }
+
+  /** Fan out one `kimi:terminal` frame to the registered listeners. */
+  private emitTerminal(event: DesktopTerminalEvent): void {
+    for (const listener of Array.from(this.terminalListeners)) listener(event);
+  }
+
+  /** Canned session terminal (wire shape, snake_case) scoped to a session. */
+  private mockTerminal(sessionId: string): {
+    id: string;
+    session_id: string;
+    cwd: string;
+    shell: string;
+    cols: number;
+    rows: number;
+    status: 'running' | 'exited';
+    created_at: string;
+  } {
+    return {
+      id: 'term_mock_1',
+      session_id: sessionId,
+      cwd: '/mock',
+      shell: '/bin/bash',
+      cols: 80,
+      rows: 24,
+      status: 'running',
+      created_at: new Date().toISOString(),
+    };
+  }
+
+  /** Deliver the canned download frames for one mock stream. */
+  private emitMockStream(method: string, args: unknown[], streamId: string): void {
+    const deliver = (event: DesktopStreamEvent): void => {
+      if (this.mockCancelledStreams.has(streamId)) return;
+      for (const listener of Array.from(this.streamListeners)) listener(event);
+    };
+    let payload: string;
+    let filename: string;
+    if (method === 'getFileBlob') {
+      payload = 'mock-binary';
+      filename = 'mock-file.bin';
+    } else if (method === 'getWorkspaceFileBlob') {
+      payload = 'mock-workspace-file';
+      const path = typeof args[1] === 'string' ? args[1] : '';
+      filename = path.split('/').pop() ?? 'download';
+    } else {
+      deliver({
+        streamId,
+        type: 'error',
+        code: 40001,
+        msg: `mock desktop bridge: stream method "${method}" is not yet supported`,
+      });
+      return;
+    }
+    const bytes = new TextEncoder().encode(payload);
+    const mid = Math.floor(bytes.length / 2);
+    deliver({ streamId, type: 'data', chunk: base64FromBytes(bytes.subarray(0, mid)), seq: 0 });
+    deliver({ streamId, type: 'data', chunk: base64FromBytes(bytes.subarray(mid)), seq: 1 });
+    deliver({
+      streamId,
+      type: 'end',
+      meta: { mime: 'application/octet-stream', size: bytes.length, filename },
+    });
+    this.mockCancelledStreams.delete(streamId);
   }
 
   /** Create-or-get a session's product stream, pinning a stable epoch. */
@@ -1310,6 +1504,48 @@ export class MockDesktopBridge implements DesktopBridge {
       throw mockEnvelopeError(40409, `path not found: ${path}`);
     }
     return { opened: true };
+  }
+
+  // Slice 5 — chunked upload handlers. The mock tallies the decoded chunk
+  // sizes so uploadFinish reports the true byte count, and hands back the
+  // kap-server WireFileMeta wire shape (snake_case).
+  private productUploadStart(inputRaw: unknown): { upload_id: string } {
+    const input = isRecord(inputRaw) ? inputRaw : {};
+    const name =
+      typeof input['name'] === 'string' && input['name'].length > 0 ? input['name'] : 'upload';
+    const mediaType =
+      typeof input['media_type'] === 'string' && input['media_type'].length > 0
+        ? input['media_type']
+        : 'application/octet-stream';
+    const uploadId = `up_mock_${++this.mockUploadSeq}`;
+    this.mockUploads.set(uploadId, { name, mediaType, received: 0 });
+    return { upload_id: uploadId };
+  }
+
+  private productUploadChunk(uploadIdRaw: unknown, chunkRaw: unknown): { received: number } {
+    const uploadId = requireMockString(uploadIdRaw, 'upload id');
+    const upload = this.mockUploads.get(uploadId);
+    if (upload === undefined) {
+      throw mockEnvelopeError(40407, `upload ${uploadId} not found`);
+    }
+    upload.received += bytesFromBase64(requireMockString(chunkRaw, 'chunk')).length;
+    return { received: upload.received };
+  }
+
+  private productUploadFinish(uploadIdRaw: unknown): WireFileMeta {
+    const uploadId = requireMockString(uploadIdRaw, 'upload id');
+    const upload = this.mockUploads.get(uploadId);
+    if (upload === undefined) {
+      throw mockEnvelopeError(40407, `upload ${uploadId} not found`);
+    }
+    this.mockUploads.delete(uploadId);
+    return {
+      id: 'f_mock_1',
+      name: upload.name,
+      media_type: upload.mediaType,
+      size: upload.received,
+      created_at: new Date().toISOString(),
+    };
   }
 
   private productListModels(): { items: WireModel[] } {

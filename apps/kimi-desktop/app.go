@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -53,15 +54,28 @@ type App struct {
 	// productSubs tracks each active Phase 1 product-stream subscription (cancel
 	// + ipc listen id for Unlisten), keyed by "product:sessionId/agentId".
 	productSubs map[string]productSub
+	// productStreams tracks each active product download stream (cancel + ipc
+	// stream id for StreamCancel), keyed by the web-facing streamId returned
+	// from ProductStreamStart.
+	productStreams map[string]productStream
+	// terminalSubs tracks each active Slice 6 terminal attach subscription
+	// (cancel + ipc listen id for Unlisten), keyed by
+	// sessionId + "\x00" + terminalId.
+	terminalSubs map[string]terminalSub
+	// productStreamSeq disambiguates product streamIds generated within the
+	// same nanosecond.
+	productStreamSeq atomic.Uint64
 }
 
 // NewApp constructs the bound App and its sidecar manager.
 func NewApp() *App {
 	return &App{
-		sidecar:     sidecar.New(),
-		ready:       make(chan struct{}),
-		subs:        map[string]context.CancelFunc{},
-		productSubs: map[string]productSub{},
+		sidecar:        sidecar.New(),
+		ready:          make(chan struct{}),
+		subs:           map[string]context.CancelFunc{},
+		productSubs:    map[string]productSub{},
+		productStreams: map[string]productStream{},
+		terminalSubs:   map[string]terminalSub{},
 	}
 }
 
@@ -109,6 +123,16 @@ func (a *App) shutdown(_ context.Context) {
 		sub.cancel()
 	}
 	a.productSubs = map[string]productSub{}
+	// Cancelling stops the stream forwarding goroutines; the host side aborts
+	// when the client closes the socket right below.
+	for _, stream := range a.productStreams {
+		stream.cancel()
+	}
+	a.productStreams = map[string]productStream{}
+	for _, sub := range a.terminalSubs {
+		sub.cancel()
+	}
+	a.terminalSubs = map[string]terminalSub{}
 	client := a.client
 	a.client = nil
 	a.mu.Unlock()

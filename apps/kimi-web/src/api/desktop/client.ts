@@ -41,6 +41,7 @@ import type {
   AppSkill,
   AppTask,
   AppTaskStatus,
+  AppTerminal,
   ApprovalResponse,
   AppSessionCursor,
   AppSessionSnapshot,
@@ -86,6 +87,7 @@ import type {
   WireEnvelope,
   WireExpertTeamDefinition,
   WireExpertTeamSnapshot,
+  WireFileMeta,
   WireFsBrowseResult,
   WireFsEntry,
   WireFsHomeResult,
@@ -110,6 +112,7 @@ import type {
   WireTask,
   WireWorkspace,
 } from '../daemon/wire';
+import { base64FromBytes } from './base64';
 import type { DesktopBridge } from './types';
 
 // ---------------------------------------------------------------------------
@@ -191,8 +194,49 @@ interface WireDiffResult {
   diff: string;
 }
 
+// ---------------------------------------------------------------------------
+// Slice 6 — session terminals. Mirrored field-for-field from the daemon
+// client's local DTO (daemon/client.ts `WireTerminal`); there is no shared
+// wire.ts entry, so the desktop client keeps its own copy matching the
+// sidecar's kap-server-parity wire exactly.
+// ---------------------------------------------------------------------------
+
+interface WireTerminal {
+  id: string;
+  session_id: string;
+  cwd: string;
+  shell: string;
+  cols: number;
+  rows: number;
+  status: 'running' | 'exited';
+  created_at: string;
+  exited_at?: string;
+  exit_code?: number | null;
+}
+
+function toAppTerminal(data: WireTerminal): AppTerminal {
+  return {
+    id: data.id,
+    sessionId: data.session_id,
+    cwd: data.cwd,
+    shell: data.shell,
+    cols: data.cols,
+    rows: data.rows,
+    status: data.status,
+    createdAt: data.created_at,
+    exitedAt: data.exited_at,
+    exitCode: data.exit_code,
+  };
+}
+
 /** Conventional main-agent id used to scope the product subscription. */
 const MAIN_AGENT_ID = 'main';
+
+/**
+ * Slice 5 upload chunk size: 512 KiB raw per `uploadChunk`, ~684 KiB base64 —
+ * comfortably inside one NDJSON IPC frame (frozen Slice 5 protocol).
+ */
+const UPLOAD_CHUNK_BYTES = 512 * 1024;
 
 /**
  * The v2 sync control frame the product stream pushes (instead of a `WireEvent`)
@@ -722,6 +766,41 @@ export class WailsKimiWebApi {
     return data;
   }
 
+  // -------------------------------------------------------------------------
+  // Slice 6 — session terminals (CRUD). Input/resize/attach/detach live on the
+  // connectEvents connection below; these are the REST read/create/close calls,
+  // routed through ProductCall to the sidecar facade's ISessionTerminalService
+  // handlers. Wire shapes match the daemon client field-for-field.
+  // -------------------------------------------------------------------------
+
+  async listTerminals(sessionId: string): Promise<AppTerminal[]> {
+    const data = await this.call<{ items: WireTerminal[] }>('listTerminals', [sessionId]);
+    return data.items.map(toAppTerminal);
+  }
+
+  async createTerminal(
+    sessionId: string,
+    input: { cwd?: string; shell?: string; cols?: number; rows?: number } = {},
+  ): Promise<AppTerminal> {
+    const body: Record<string, unknown> = {
+      cwd: input.cwd,
+      shell: input.shell,
+      cols: input.cols,
+      rows: input.rows,
+    };
+    const data = await this.call<WireTerminal>('createTerminal', [sessionId, body]);
+    return toAppTerminal(data);
+  }
+
+  async getTerminal(sessionId: string, terminalId: string): Promise<AppTerminal> {
+    const data = await this.call<WireTerminal>('getTerminal', [sessionId, terminalId]);
+    return toAppTerminal(data);
+  }
+
+  async closeTerminal(sessionId: string, terminalId: string): Promise<{ closed: true }> {
+    return this.call<{ closed: true }>('closeTerminal', [sessionId, terminalId]);
+  }
+
   async getGitStatus(
     sessionId: string,
     paths?: string[],
@@ -880,6 +959,55 @@ export class WailsKimiWebApi {
 
   async openInApp(sessionId: string, appId: string, path: string, line?: number): Promise<void> {
     await this.call<{ opened: true }>('openInApp', [sessionId, appId, path, line]);
+  }
+
+  // -------------------------------------------------------------------------
+  // Slice 5 — binary files. Uploads chunk the Blob into 512 KiB base64 pieces
+  // through ProductCall (uploadStart / uploadChunk / uploadFinish, kap-server
+  // WireFileMeta wire); downloads stream base64 frames over `kimi:stream` and
+  // assemble into a Blob via bridge.streamToBlob. The HTTP-only URL getters
+  // have no desktop equivalent — there is no HTTP hop to authenticate — so
+  // they throw and point callers at the Blob methods instead.
+  // -------------------------------------------------------------------------
+
+  async uploadFile(input: {
+    file: Blob;
+    name?: string;
+  }): Promise<{ id: string; name: string; mediaType: string; size: number }> {
+    const name = input.name ?? (input.file instanceof File ? input.file.name : 'upload');
+    const mediaType = input.file.type !== '' ? input.file.type : 'application/octet-stream';
+    const start = await this.call<{ upload_id: string }>('uploadStart', [
+      { name, media_type: mediaType },
+    ]);
+    const uploadId = start.upload_id;
+    for (let offset = 0; offset < input.file.size; offset += UPLOAD_CHUNK_BYTES) {
+      const slice = input.file.slice(offset, offset + UPLOAD_CHUNK_BYTES);
+      const chunk = base64FromBytes(new Uint8Array(await slice.arrayBuffer()));
+      await this.call<{ received: number }>('uploadChunk', [uploadId, chunk]);
+    }
+    const meta = await this.call<WireFileMeta>('uploadFinish', [uploadId]);
+    return { id: meta.id, name: meta.name, mediaType: meta.media_type, size: meta.size };
+  }
+
+  async getFileBlob(fileId: string): Promise<Blob> {
+    return this.bridge.streamToBlob('getFileBlob', [fileId]);
+  }
+
+  getFileUrl(_fileId: string): string {
+    throw new Error(
+      'desktop transport: getFileUrl is not available without HTTP — use getFileBlob() instead',
+    );
+  }
+
+  getFileDownloadUrl(_sessionId: string, _path: string): string {
+    throw new Error(
+      'desktop transport: getFileDownloadUrl is not available without HTTP — use getWorkspaceFileBlob() instead',
+    );
+  }
+
+  /** Download a session workspace file's bytes over the IPC stream. */
+  async getWorkspaceFileBlob(sessionId: string, path: string): Promise<Blob> {
+    return this.bridge.streamToBlob('getWorkspaceFileBlob', [sessionId, path]);
   }
 
   // -------------------------------------------------------------------------
@@ -1103,6 +1231,17 @@ export class WailsKimiWebApi {
       handlers.onEvent(appEvent, { sessionId, seq });
     });
 
+    // Slice 6 terminal frames ride the dedicated `kimi:terminal` channel (never
+    // the chat `kimi:event` stream); fan them out to the optional terminal
+    // handlers based on the frame type.
+    const terminalOff = this.bridge.onTerminalEvent((event) => {
+      if (event.type === 'output') {
+        handlers.onTerminalOutput?.(event.sessionId, event.terminalId, event.data ?? '', event.seq ?? 0);
+      } else {
+        handlers.onTerminalExit?.(event.sessionId, event.terminalId, event.exitCode ?? null);
+      }
+    });
+
     handlers.onConnectionChange(true);
 
     const doSubscribe = (sessionId: string): void => {
@@ -1151,11 +1290,31 @@ export class WailsKimiWebApi {
           handlers.onError(0, `desktop transport: abort failed: ${String(error)}`, false);
         });
       },
-      terminalAttach: (): void => undefined,
-      terminalInput: (): void => undefined,
-      terminalResize: (): void => undefined,
-      terminalDetach: (): void => undefined,
-      terminalClose: (): void => undefined,
+      terminalAttach: (sessionId: string, terminalId: string, sinceSeq?: number): void => {
+        void this.bridge.ProductTerminalAttach(sessionId, terminalId, sinceSeq).catch((error: unknown) => {
+          handlers.onError(0, `desktop transport: terminal attach failed: ${String(error)}`, false);
+        });
+      },
+      terminalInput: (sessionId: string, terminalId: string, data: string): void => {
+        void this.call('terminalInput', [sessionId, terminalId, data]).catch((error: unknown) => {
+          handlers.onError(0, `desktop transport: terminal input failed: ${String(error)}`, false);
+        });
+      },
+      terminalResize: (sessionId: string, terminalId: string, cols: number, rows: number): void => {
+        void this.call('terminalResize', [sessionId, terminalId, cols, rows]).catch((error: unknown) => {
+          handlers.onError(0, `desktop transport: terminal resize failed: ${String(error)}`, false);
+        });
+      },
+      terminalDetach: (sessionId: string, terminalId: string): void => {
+        void this.bridge.ProductTerminalDetach(sessionId, terminalId).catch((error: unknown) => {
+          handlers.onError(0, `desktop transport: terminal detach failed: ${String(error)}`, false);
+        });
+      },
+      terminalClose: (sessionId: string, terminalId: string): void => {
+        void this.call('terminalClose', [sessionId, terminalId]).catch((error: unknown) => {
+          handlers.onError(0, `desktop transport: terminal close failed: ${String(error)}`, false);
+        });
+      },
       markSideChannelAgent: (_agentId: string): void => {
         // No-op on this transport: side-channel (BTW) agent projection lives in
         // the sidecar, which currently projects only the main agent. Multi-agent
@@ -1180,6 +1339,7 @@ export class WailsKimiWebApi {
         }
         subscribed.clear();
         off();
+        terminalOff();
       },
     };
   }

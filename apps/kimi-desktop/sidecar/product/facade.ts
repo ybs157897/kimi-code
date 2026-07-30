@@ -9,10 +9,12 @@
  * through the klient facade.
  */
 
-import type { AgentHandle, Klient } from '@moonshot-ai/klient';
+import type { AgentHandle, IDisposable, Klient } from '@moonshot-ai/klient';
 import type { ScopeLike } from '@moonshot-ai/klient/memory';
 import { RPCError } from '@moonshot-ai/klient';
-import { isAbsolute } from 'node:path';
+import { createReadStream } from 'node:fs';
+import { basename, isAbsolute } from 'node:path';
+import { Readable } from 'node:stream';
 import { ISessionLifecycleService } from '@moonshot-ai/agent-core-v2/app/sessionLifecycle/sessionLifecycle';
 import {
   ISessionLegacyService,
@@ -47,6 +49,7 @@ import {
   IAuthSummaryService,
   IConfigService,
   IEventService,
+  IFileService,
   IHostFileSystem,
   IHostFolderBrowser,
   HostFolderNotAbsoluteError,
@@ -66,12 +69,15 @@ import {
   ISessionQuestionService,
   ISessionSecondaryModelWarningService,
   ISessionSkillCatalog,
+  ISessionTerminalService,
   IWorkspaceService,
   IWorkspaceSessions,
   SECONDARY_DERIVED_MODEL_ID,
+  createTerminalRequestSchema,
   ensureMainAgent,
   toProtocolMessage,
 } from '@moonshot-ai/agent-core-v2';
+import type { FileMeta, Terminal, TerminalAttachSink } from '@moonshot-ai/agent-core-v2';
 import {
   DEFAULT_MODEL_SECTION,
   DEFAULT_PROVIDER_SECTION,
@@ -148,10 +154,12 @@ const SESSION_NOT_FOUND = 40401;
 const PROMPT_NOT_FOUND = 40402;
 const QUESTION_NOT_FOUND = 40405;
 const TASK_NOT_FOUND = 40406;
+const FILE_NOT_FOUND = 40407;
 const FS_PATH_NOT_FOUND = 40409;
 const WORKSPACE_NOT_FOUND = 40410;
 const FS_PERMISSION_DENIED = 40411;
 const PROVIDER_NOT_FOUND = 40412;
+const TERMINAL_NOT_FOUND = 40414;
 const SESSION_BUSY = 40901;
 const APPROVAL_ALREADY_RESOLVED = 40902;
 const TASK_ALREADY_FINISHED = 40904;
@@ -184,6 +192,13 @@ const SERVER_VERSION = '0.1.0';
 /** Reserved service name the sidecar intercepts (frozen contract E). */
 export const PRODUCT_SERVICE = 'desktopProduct';
 
+/** Slice 5 — chunked upload session TTL and concurrency cap. */
+const UPLOAD_SESSION_TTL_MS = 5 * 60 * 1000;
+const MAX_UPLOAD_SESSIONS = 10;
+
+/** Raw bytes per product binary stream frame (512 KiB → ~684 KiB in base64). */
+const PRODUCT_STREAM_CHUNK_BYTES = 512 * 1024;
+
 function ok<T>(data: T): WireEnvelope<T> {
   return { code: 0, msg: 'success', data, request_id: ulid('req_') };
 }
@@ -192,6 +207,35 @@ function ok<T>(data: T): WireEnvelope<T> {
 export interface ProductCallContext {
   readonly sessionId?: string;
   readonly agentId?: string;
+}
+
+/** One data frame of a product binary stream (`stream_data` payload). */
+export interface ProductStreamChunk {
+  readonly chunk: string;
+  readonly seq: number;
+}
+
+/**
+ * Final sentinel yielded by a product stream. The IPC host converts it into
+ * the `stream_end` payload (`{ mime, size, filename }`) instead of a
+ * `stream_data` frame.
+ */
+export interface ProductStreamEnd {
+  readonly end: true;
+  readonly mime: string;
+  readonly size: number;
+  readonly filename: string;
+}
+
+export type ProductStreamItem = ProductStreamChunk | ProductStreamEnd;
+
+/** In-flight chunked upload state (Slice 5); TTL-cleaned and capped. */
+interface UploadSession {
+  readonly name: string;
+  readonly mimeType: string | undefined;
+  readonly chunks: Buffer[];
+  received: number;
+  readonly timer: NodeJS.Timeout;
 }
 
 interface PromptRoute {
@@ -203,6 +247,9 @@ interface PromptRoute {
 export class ProductFacade {
   /** Synthesized prompt_id → engine turn coordinates (for abort by promptId). */
   private readonly promptRoutes = new Map<string, PromptRoute>();
+
+  /** In-flight chunked uploads keyed by upload_id (Slice 5). */
+  private readonly uploads = new Map<string, UploadSession>();
 
   /** Per-process server identity minted once (mirrors kap-server's boot-time ULID). */
   private readonly serverId = ulid('srv_');
@@ -369,6 +416,30 @@ export class ProductFacade {
         return this.refreshAllProviders();
       case 'setDefaultModel':
         return this.setDefaultModel(args[0]);
+      // Slice 5 — binary files (chunked upload; downloads are product streams).
+      case 'uploadStart':
+        return this.uploadStart(args[0]);
+      case 'uploadChunk':
+        return this.uploadChunk(args[0], args[1]);
+      case 'uploadFinish':
+        return this.uploadFinish(args[0]);
+      case 'uploadCancel':
+        return this.uploadCancel(args[0]);
+      // Slice 6 — session terminals (PTY CRUD + input/resize; attach/detach
+      // rides the IPC `listen` mechanism, see host.ts + terminalListen).
+      case 'listTerminals':
+        return this.listTerminals(this.argSessionId(args[0], ctx));
+      case 'createTerminal':
+        return this.createTerminal(this.argSessionId(args[0], ctx), args[1]);
+      case 'getTerminal':
+        return this.getTerminal(this.argSessionId(args[0], ctx), args[1]);
+      case 'closeTerminal':
+      case 'terminalClose':
+        return this.closeTerminal(this.argSessionId(args[0], ctx), args[1]);
+      case 'terminalInput':
+        return this.terminalInput(this.argSessionId(args[0], ctx), args[1], args[2]);
+      case 'terminalResize':
+        return this.terminalResize(this.argSessionId(args[0], ctx), args[1], args[2], args[3]);
       default:
         throw new RPCError(REQUEST_INVALID, `unknown product method: ${method}`);
     }
@@ -1764,6 +1835,270 @@ export class ProductFacade {
     return ok<Record<string, unknown>>({ ...result });
   }
 
+  // ---------------------------------------------------------------------------
+  // Slice 5 — binary files. Chunked uploads arrive as ordinary product calls
+  // (uploadStart / uploadChunk / uploadFinish / uploadCancel) and land in the
+  // App-scope IFileService exactly like kap-server's POST /files multipart
+  // route; downloads (getFileBlob / getWorkspaceFileBlob) are product streams
+  // dispatched through streamDispatch, mirroring GET /files/{id} and
+  // GET /sessions/{id}/fs/*:download (routes/files.ts, routes/fs.ts).
+  // ---------------------------------------------------------------------------
+
+  // uploadStart — open a chunked upload session → { upload_id }.
+  async uploadStart(inputRaw: unknown): Promise<WireEnvelope<{ upload_id: string }>> {
+    if (!isRecord(inputRaw)) {
+      throw new RPCError(REQUEST_INVALID, 'uploadStart requires an object with a file name');
+    }
+    const name = requireString(inputRaw['name'], 'name');
+    const mimeType = optionalString(inputRaw['media_type']);
+    if (this.uploads.size >= MAX_UPLOAD_SESSIONS) {
+      throw new RPCError(
+        REQUEST_INVALID,
+        `too many concurrent upload sessions (max ${MAX_UPLOAD_SESSIONS})`,
+      );
+    }
+    const uploadId = ulid('up_');
+    const timer = setTimeout(() => {
+      this.uploads.delete(uploadId);
+    }, UPLOAD_SESSION_TTL_MS);
+    timer.unref();
+    this.uploads.set(uploadId, { name, mimeType, chunks: [], received: 0, timer });
+    return ok({ upload_id: uploadId });
+  }
+
+  // uploadChunk — append a base64 chunk → { received } (total bytes so far).
+  async uploadChunk(
+    uploadIdRaw: unknown,
+    chunkRaw: unknown,
+  ): Promise<WireEnvelope<{ received: number }>> {
+    const uploadId = requireString(uploadIdRaw, 'uploadId');
+    if (typeof chunkRaw !== 'string') {
+      throw new RPCError(REQUEST_INVALID, 'uploadChunk requires a base64 chunk string');
+    }
+    const session = this.uploads.get(uploadId);
+    if (session === undefined) {
+      throw new RPCError(REQUEST_INVALID, `unknown upload session: ${uploadId}`);
+    }
+    const chunk = Buffer.from(chunkRaw, 'base64');
+    session.chunks.push(chunk);
+    session.received += chunk.byteLength;
+    return ok({ received: session.received });
+  }
+
+  // uploadFinish — assemble the chunks, save through IFileService → FileMeta.
+  async uploadFinish(uploadIdRaw: unknown): Promise<WireEnvelope<FileMeta>> {
+    const uploadId = requireString(uploadIdRaw, 'uploadId');
+    const session = this.uploads.get(uploadId);
+    if (session === undefined) {
+      throw new RPCError(REQUEST_INVALID, `unknown upload session: ${uploadId}`);
+    }
+    clearTimeout(session.timer);
+    this.uploads.delete(uploadId);
+    const body = Buffer.concat(session.chunks);
+    const meta = await this.scope.accessor
+      .get(IFileService)
+      .save(Readable.from([body]), session.name, { mimeType: session.mimeType });
+    return ok(meta);
+  }
+
+  // uploadCancel — drop the session (idempotent) → { cancelled: true }.
+  async uploadCancel(uploadIdRaw: unknown): Promise<WireEnvelope<{ cancelled: true }>> {
+    const uploadId = requireString(uploadIdRaw, 'uploadId');
+    const session = this.uploads.get(uploadId);
+    if (session !== undefined) {
+      clearTimeout(session.timer);
+      this.uploads.delete(uploadId);
+    }
+    return ok({ cancelled: true as const });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Slice 6 — session terminals. Mirrors kap-server routes/terminals.ts:
+  // cold-resume the session, resolve the Session-scoped ISessionTerminalService,
+  // and return the engine's snake_case Terminal objects unchanged (they already
+  // match terminalSchema — the wire shape). Attach/detach rides the IPC `listen`
+  // mechanism (terminalListen below) instead of a product call. Terminal frames
+  // never touch the product WireEvent stream. Errors map via mapTerminalError.
+  // ---------------------------------------------------------------------------
+
+  // listTerminals — GET /sessions/{id}/terminals → { items: Terminal[] }.
+  async listTerminals(sessionId: string): Promise<WireEnvelope<{ items: readonly Terminal[] }>> {
+    try {
+      const service = await this.sessionTerminal(sessionId);
+      return ok({ items: await service.list() });
+    } catch (error) {
+      throw mapTerminalError(error);
+    }
+  }
+
+  // createTerminal — POST /sessions/{id}/terminals → Terminal.
+  async createTerminal(sessionId: string, bodyRaw: unknown): Promise<WireEnvelope<Terminal>> {
+    try {
+      const service = await this.sessionTerminal(sessionId);
+      const terminal = await service.create(createTerminalRequestSchema.parse(bodyRaw ?? {}));
+      return ok(terminal);
+    } catch (error) {
+      throw mapTerminalError(error);
+    }
+  }
+
+  // getTerminal — GET /sessions/{id}/terminals/{tid} → Terminal.
+  async getTerminal(sessionId: string, terminalIdRaw: unknown): Promise<WireEnvelope<Terminal>> {
+    const terminalId = requireString(terminalIdRaw, 'terminalId');
+    try {
+      const service = await this.sessionTerminal(sessionId);
+      return ok(await service.get(terminalId));
+    } catch (error) {
+      throw mapTerminalError(error);
+    }
+  }
+
+  // closeTerminal / terminalClose — POST .../terminals/{tid}:close → { closed: true }.
+  async closeTerminal(
+    sessionId: string,
+    terminalIdRaw: unknown,
+  ): Promise<WireEnvelope<{ closed: true }>> {
+    const terminalId = requireString(terminalIdRaw, 'terminalId');
+    try {
+      const service = await this.sessionTerminal(sessionId);
+      return ok(await service.close(terminalId));
+    } catch (error) {
+      throw mapTerminalError(error);
+    }
+  }
+
+  // terminalInput — write stdin data to the PTY → { accepted: true }.
+  async terminalInput(
+    sessionId: string,
+    terminalIdRaw: unknown,
+    dataRaw: unknown,
+  ): Promise<WireEnvelope<{ accepted: true }>> {
+    const terminalId = requireString(terminalIdRaw, 'terminalId');
+    if (typeof dataRaw !== 'string') {
+      throw new RPCError(REQUEST_INVALID, 'terminalInput requires a data string');
+    }
+    try {
+      const service = await this.sessionTerminal(sessionId);
+      await service.write(terminalId, dataRaw);
+      return ok({ accepted: true as const });
+    } catch (error) {
+      throw mapTerminalError(error);
+    }
+  }
+
+  // terminalResize — resize the PTY → { resized: true }.
+  async terminalResize(
+    sessionId: string,
+    terminalIdRaw: unknown,
+    colsRaw: unknown,
+    rowsRaw: unknown,
+  ): Promise<WireEnvelope<{ resized: true }>> {
+    const terminalId = requireString(terminalIdRaw, 'terminalId');
+    if (typeof colsRaw !== 'number' || typeof rowsRaw !== 'number') {
+      throw new RPCError(REQUEST_INVALID, 'terminalResize requires numeric cols and rows');
+    }
+    try {
+      const service = await this.sessionTerminal(sessionId);
+      await service.resize(terminalId, colsRaw, rowsRaw);
+      return ok({ resized: true as const });
+    } catch (error) {
+      throw mapTerminalError(error);
+    }
+  }
+
+  /**
+   * Attach a sink to a terminal's output/exit frame stream (the IPC host's
+   * `listen` interception point for `event:"terminal"`). Resumes the session,
+   * attaches with replay from `sinceSeq`, and forwards every TerminalFrame
+   * through `onFrame`; the returned disposable detaches the sink on `unlisten`.
+   */
+  async terminalListen(
+    sessionId: string,
+    terminalId: string,
+    sinceSeq: number,
+    onFrame: (frame: unknown) => void,
+  ): Promise<IDisposable> {
+    const service = await this.sessionTerminal(sessionId);
+    const sink: TerminalAttachSink = {
+      id: ulid('sink_'),
+      send: (frame) => {
+        onFrame(frame);
+      },
+    };
+    try {
+      await service.attach(terminalId, sink, { sinceSeq });
+    } catch (error) {
+      throw mapTerminalError(error);
+    }
+    return {
+      dispose: () => {
+        service.detach(terminalId, sink.id);
+      },
+    };
+  }
+
+  /** Cold-resume the session and resolve its Session-scoped terminal service. */
+  private async sessionTerminal(sessionId: string): Promise<ISessionTerminalService> {
+    const handle = await this.resumeSession(sessionId);
+    return handle.accessor.get(ISessionTerminalService);
+  }
+
+  /**
+   * Dispatch a `desktopProduct` stream method (Slice 5 binary downloads).
+   * Returns an async iterable of `{ chunk, seq }` base64 data frames ending in
+   * a `{ end: true, mime, size, filename }` sentinel the IPC host turns into
+   * the `stream_end` payload. Unknown methods throw synchronously.
+   */
+  streamDispatch(
+    method: string,
+    args: readonly unknown[],
+    ctx: ProductCallContext,
+  ): AsyncIterable<ProductStreamItem> {
+    switch (method) {
+      case 'getFileBlob':
+        return this.getFileBlobStream(requireString(args[0], 'fileId'));
+      case 'getWorkspaceFileBlob':
+        return this.getWorkspaceFileBlobStream(
+          this.argSessionId(args[0], ctx),
+          requireString(args[1], 'path'),
+        );
+      default:
+        throw new RPCError(REQUEST_INVALID, `unknown product stream method: ${method}`);
+    }
+  }
+
+  // files:download → IFileService.get, streamed as 512 KiB base64 frames.
+  private async *getFileBlobStream(fileId: string): AsyncGenerator<ProductStreamItem> {
+    try {
+      const file = await this.scope.accessor.get(IFileService).get(fileId);
+      const { meta } = file;
+      yield* base64ChunkStream(file.stream());
+      yield { end: true, mime: meta.media_type, size: meta.size, filename: meta.name };
+    } catch (error) {
+      throw mapBlobStreamError(error);
+    }
+  }
+
+  // fs:download → ISessionFsService.resolveDownload + createReadStream.
+  private async *getWorkspaceFileBlobStream(
+    sessionId: string,
+    relPath: string,
+  ): AsyncGenerator<ProductStreamItem> {
+    try {
+      const fs = await this.sessionFs(sessionId);
+      const resolved = await fs.resolveDownload(relPath);
+      yield* base64ChunkStream(createReadStream(resolved.absolute));
+      yield {
+        end: true,
+        mime: resolved.mime,
+        size: resolved.size,
+        filename: basename(resolved.relative),
+      };
+    } catch (error) {
+      throw mapBlobStreamError(error);
+    }
+  }
+
   private async loadWritableConfig(): Promise<IConfigService> {
     const config = this.scope.accessor.get(IConfigService);
     await config.ready;
@@ -1950,6 +2285,37 @@ function mapEngineError(error: unknown): RPCError {
 }
 
 /**
+ * Mirror kap-server's terminals `sendMappedError` (routes/terminals.ts):
+ * session/terminal not-found onto their wire codes, the uncoded
+ * `Path outside workspace` assertAllowed error onto FS_PATH_ESCAPES_SESSION,
+ * and zod request-validation issues onto VALIDATION_FAILED. Anything else is
+ * rethrown (the host reports it as an internal error, matching the route).
+ */
+function mapTerminalError(error: unknown): RPCError {
+  if (error instanceof RPCError) return error;
+  const zodIssue = firstZodIssue(error);
+  if (zodIssue !== undefined) {
+    const path = zodIssue.path.map((p) => String(p)).join('.');
+    const msg = path === '' ? zodIssue.message : `${path}: ${zodIssue.message}`;
+    return new RPCError(REQUEST_INVALID, msg);
+  }
+  if (isError2(error)) {
+    switch (error.code) {
+      case 'session.not_found':
+        return new RPCError(SESSION_NOT_FOUND, error.message);
+      case 'terminal.not_found':
+        return new RPCError(TERMINAL_NOT_FOUND, error.message);
+      default:
+        break;
+    }
+  }
+  if (error instanceof Error && error.message.startsWith('Path outside workspace')) {
+    return new RPCError(FS_PATH_ESCAPES_SESSION, error.message);
+  }
+  throw error;
+}
+
+/**
  * Mirror kap-server's fs `sendMappedError` (routes/fs.ts): translate the
  * `sessionFs` + `os.fs` domain Error2 codes onto the v1 wire codes. ENOTDIR
  * collapses into path-not-found, matching the route.
@@ -1999,6 +2365,37 @@ function mapFsError(error: unknown): RPCError {
     INTERNAL_ERROR,
     error instanceof Error ? error.message : String(error),
   );
+}
+
+/**
+ * Slice 5 blob-stream errors: the file store's `file.not_found` plus the
+ * session fs domain codes (via mapFsError) onto the v1 wire codes — kap-server
+ * files.ts / fs.ts parity (40407 / 40409 / 40906 / 41304 / 40401).
+ */
+function mapBlobStreamError(error: unknown): RPCError {
+  if (error instanceof RPCError) return error;
+  if (isError2(error) && error.code === 'file.not_found') {
+    return new RPCError(FILE_NOT_FOUND, error.message);
+  }
+  return mapFsError(error);
+}
+
+/** Re-block a byte stream into fixed-size base64 frames with a running seq. */
+async function* base64ChunkStream(source: Readable): AsyncGenerator<ProductStreamChunk> {
+  let seq = 0;
+  let pending: Buffer = Buffer.alloc(0);
+  for await (const part of source) {
+    const buf = typeof part === 'string' ? Buffer.from(part, 'utf8') : (part as Buffer);
+    pending = pending.byteLength === 0 ? buf : Buffer.concat([pending, buf]);
+    while (pending.byteLength >= PRODUCT_STREAM_CHUNK_BYTES) {
+      yield { chunk: pending.subarray(0, PRODUCT_STREAM_CHUNK_BYTES).toString('base64'), seq };
+      seq += 1;
+      pending = pending.subarray(PRODUCT_STREAM_CHUNK_BYTES);
+    }
+  }
+  if (pending.byteLength > 0) {
+    yield { chunk: pending.toString('base64'), seq };
+  }
 }
 
 /**

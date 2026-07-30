@@ -26,7 +26,7 @@ import {
 } from '@moonshot-ai/klient/transports/memory/dispatcher';
 import { encodeFrame, NdjsonDecoder, type IpcFrame } from '@moonshot-ai/klient/transports/ipc/codec';
 
-import { ProductFacade, PRODUCT_SERVICE } from './facade.js';
+import { ProductFacade, PRODUCT_SERVICE, type ProductStreamEnd } from './facade.js';
 import { ProductProjector } from './projector.js';
 import { ProductStreamHub, type ProductStreamCursor } from './stream.js';
 
@@ -35,6 +35,9 @@ const UNAUTHORIZED = 40100;
 
 /** Reserved `listen` event name that subscribes to the product WireEvent stream. */
 const PRODUCT_EVENT = 'product';
+
+/** Reserved `listen` event name that attaches to a session terminal's frame stream. */
+const TERMINAL_EVENT = 'terminal';
 
 export interface ServeProductIpcOptions {
   /** A bootstrapped engine app scope (same value `createKlient({ scope })` takes). */
@@ -101,6 +104,37 @@ function productCursorFromFrame(frame: IpcFrame): ProductStreamCursor | undefine
   if (typeof afterSeq === 'number' && Number.isFinite(afterSeq)) cursor.afterSeq = afterSeq;
   if (cursor.epoch === undefined && cursor.afterSeq === undefined) return undefined;
   return cursor;
+}
+
+/**
+ * Read a terminal attach request from a `listen` frame's `arg` (Slice 6). The
+ * Go shell puts `{ terminal_id, since_seq? }` (snake_case, matching the wire)
+ * as the first arg; `since_seq` is coerced from a finite number only and
+ * defaults to 0 (replay the terminal's whole buffered history).
+ */
+function terminalAttachFromFrame(
+  frame: IpcFrame,
+): { terminalId: string; sinceSeq: number } | undefined {
+  const arg = Array.isArray(frame.arg) ? frame.arg[0] : frame.arg;
+  if (arg === null || typeof arg !== 'object') return undefined;
+  const record = arg as Record<string, unknown>;
+  if (typeof record['terminal_id'] !== 'string' || record['terminal_id'].length === 0) {
+    return undefined;
+  }
+  const sinceSeq =
+    typeof record['since_seq'] === 'number' && Number.isFinite(record['since_seq'])
+      ? record['since_seq']
+      : 0;
+  return { terminalId: record['terminal_id'], sinceSeq };
+}
+
+/**
+ * Product stream sentinel check: the facade ends a binary stream by yielding
+ * `{ end: true, mime, size, filename }`, which the host converts into the
+ * `stream_end` payload instead of a `stream_data` frame.
+ */
+function isProductStreamEnd(item: unknown): item is ProductStreamEnd {
+  return typeof item === 'object' && item !== null && (item as { end?: unknown }).end === true;
 }
 
 export async function serveProductIpc(options: ServeProductIpcOptions): Promise<ProductIpcHost> {
@@ -231,6 +265,42 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
             }
             return;
           }
+          // Interception point 2b (Slice 6): terminal attach. The facade resumes
+          // the session, attaches a sink to the Session-scoped terminal service
+          // (replaying from since_seq), and forwards terminal_output /
+          // terminal_exit frames as `event` data on this listen id — a separate
+          // stream from the product WireEvents; `unlisten` detaches the sink.
+          if (frame.event === TERMINAL_EVENT) {
+            const scope = scopeRefFromFrame(frame);
+            if (scope.sessionId === undefined) {
+              sendError(id, new RPCError(REQUEST_INVALID, 'terminal listen requires sessionId'));
+              return;
+            }
+            const attach = terminalAttachFromFrame(frame);
+            if (attach === undefined) {
+              sendError(
+                id,
+                new RPCError(REQUEST_INVALID, 'terminal listen requires arg[0].terminal_id'),
+              );
+              return;
+            }
+            facade
+              .terminalListen(scope.sessionId, attach.terminalId, attach.sinceSeq, (data) => {
+                send({ type: 'event', id, data });
+              })
+              .then((sub) => {
+                if (socket.destroyed) {
+                  sub.dispose();
+                  return;
+                }
+                listens.set(id, sub);
+                send({ type: 'listen_result', id });
+              })
+              .catch((error: unknown) => {
+                sendError(id, error);
+              });
+            return;
+          }
           try {
             const source = eventSourceFromFrame(frame);
             const sub = dispatcher.listen(
@@ -263,6 +333,49 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
           const args = Array.isArray(frame.arg) ? frame.arg : frame.arg === undefined ? [] : [frame.arg];
           const ac = new AbortController();
           activeStreams.set(id, ac);
+          // Interception point 3: product binary streams (Slice 5). The facade
+          // yields { chunk, seq } data frames and a final { end, mime, size,
+          // filename } sentinel converted into the stream_end payload here.
+          if (frame.service === PRODUCT_SERVICE) {
+            let productIterable: AsyncIterable<unknown>;
+            try {
+              productIterable = facade.streamDispatch(
+                String(frame.method),
+                args,
+                scopeRefFromFrame(frame),
+              );
+            } catch (error) {
+              activeStreams.delete(id);
+              sendStreamError(id, error);
+              return;
+            }
+            void (async () => {
+              try {
+                for await (const item of productIterable) {
+                  if (ac.signal.aborted || socket.destroyed) break;
+                  if (isProductStreamEnd(item)) {
+                    send({
+                      type: 'stream_end',
+                      id,
+                      data: { mime: item.mime, size: item.size, filename: item.filename },
+                    });
+                    return;
+                  }
+                  send({ type: 'stream_data', id, data: item });
+                }
+                if (!ac.signal.aborted && !socket.destroyed) {
+                  send({ type: 'stream_end', id });
+                }
+              } catch (error) {
+                if (!ac.signal.aborted && !socket.destroyed) {
+                  sendStreamError(id, error);
+                }
+              } finally {
+                activeStreams.delete(id);
+              }
+            })();
+            return;
+          }
           const iterable = dispatcher.stream(
             scopeRefFromFrame(frame),
             String(frame.service),

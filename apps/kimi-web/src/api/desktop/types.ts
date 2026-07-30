@@ -21,6 +21,20 @@ import type { WireEvent } from '../daemon/wire';
 /** The Wails event channel the shell emits agent events on (contract C). */
 export const KIMI_EVENT_CHANNEL = 'kimi:event';
 
+/**
+ * The Wails event channel the shell emits binary download-stream frames on
+ * (Slice 5). Payloads are `DesktopStreamEvent`s scoped by `streamId`.
+ */
+export const KIMI_STREAM_CHANNEL = 'kimi:stream';
+
+/**
+ * The Wails event channel the shell emits terminal output/exit frames on
+ * (Slice 6). Payloads are `DesktopTerminalEvent`s scoped by `sessionId` +
+ * `terminalId` — kept separate from `kimi:event` so terminal bytes never mix
+ * into the chat `WireEvent` stream.
+ */
+export const KIMI_TERMINAL_CHANNEL = 'kimi:terminal';
+
 // ---------------------------------------------------------------------------
 // Wails globals — present only inside the desktop shell's webview.
 // ---------------------------------------------------------------------------
@@ -50,6 +64,14 @@ export interface WailsAppBindings {
    */
   ProductCall(method: string, argsJSON: string): Promise<string>;
   /**
+   * Start a `desktopProduct` download stream (Slice 5). `argsJSON` is the
+   * JSON-encoded positional-args array; resolves to the stream id whose base64
+   * frames arrive on the `kimi:stream` channel until an `end` / `error` frame.
+   */
+  ProductStreamStart(method: string, argsJSON: string): Promise<string>;
+  /** Cancel an in-flight product download stream (Slice 5). */
+  ProductStreamCancel(streamId: string): Promise<void>;
+  /**
    * Subscribe the session/agent product stream (frozen contract F). `cursorJSON`
    * is an optional resume-cursor object (`{epoch?, after_seq?}`) as JSON, or an
    * empty string for a fresh live subscription; the sidecar replays journaled
@@ -58,6 +80,15 @@ export interface WailsAppBindings {
   ProductSubscribe(sessionId: string, agentId: string, cursorJSON: string): Promise<void>;
   /** Detach the session/agent product stream (frozen contract F). */
   ProductUnsubscribe(sessionId: string, agentId: string): Promise<void>;
+  /**
+   * Attach a session terminal's output stream (Slice 6). `sinceSeqJSON` is the
+   * JSON-encoded replay cursor (the last seq the client saw, or `0` for a fresh
+   * attach); the shell opens the IPC `listen` and re-emits frames on
+   * `kimi:terminal`.
+   */
+  ProductTerminalAttach(sessionId: string, terminalId: string, sinceSeqJSON: string): Promise<void>;
+  /** Detach a session terminal's output stream (Slice 6). */
+  ProductTerminalDetach(sessionId: string, terminalId: string): Promise<void>;
 }
 
 /**
@@ -318,6 +349,38 @@ export interface ProductStreamCursor {
   afterSeq?: number;
 }
 
+/**
+ * One binary download-stream frame re-emitted on `kimi:stream` (Slice 5).
+ * `data` frames carry a base64 `chunk` with an ordinal `seq`; the terminal
+ * `end` frame carries the aggregate `meta`; `error` carries the wire
+ * `code` / `msg` (kap-server error codes, same as `ProductCall` envelopes).
+ */
+export interface DesktopStreamEvent {
+  streamId: string;
+  type: 'data' | 'end' | 'error';
+  chunk?: string;
+  seq?: number;
+  meta?: { mime: string; size: number; filename: string };
+  code?: number;
+  msg?: string;
+}
+
+/**
+ * One terminal frame re-emitted on `kimi:terminal` (Slice 6). `output` frames
+ * carry a `data` chunk with an ordinal `seq` (the replay/attach cursor); the
+ * terminal `exit` frame carries the process `exitCode` (null when unknown).
+ * Scoped by `sessionId` + `terminalId` so one channel serves every attached
+ * terminal.
+ */
+export interface DesktopTerminalEvent {
+  sessionId: string;
+  terminalId: string;
+  type: 'output' | 'exit';
+  data?: string;
+  seq?: number;
+  exitCode?: number | null;
+}
+
 // ---------------------------------------------------------------------------
 // Bridge surface — implemented identically by the Wails wrapper and the dev
 // mock, so the demo renders the same with and without the Go shell.
@@ -355,4 +418,38 @@ export interface DesktopBridge {
    * Returns an unsubscribe function; shares the native listener with `onEvent`.
    */
   onProductEvent(callback: (payload: ProductEventPayload) => void): () => void;
+  /**
+   * Start a `desktopProduct` download stream (Slice 5); resolves to the stream
+   * id whose frames arrive via `onStreamEvent` until `end` / `error`.
+   */
+  ProductStreamStart(method: string, argsJSON: string): Promise<string>;
+  /** Cancel an in-flight product download stream (Slice 5). */
+  ProductStreamCancel(streamId: string): Promise<void>;
+  /**
+   * Subscribe to `kimi:stream` binary-stream frames. Returns an unsubscribe
+   * function; the native Wails listener is released when the last subscriber
+   * leaves.
+   */
+  onStreamEvent(callback: (event: DesktopStreamEvent) => void): () => void;
+  /**
+   * Assemble a product download stream into a Blob (Slice 5): starts the
+   * stream, collects the base64 chunks, and resolves on `end` with `meta.mime`
+   * as the Blob type. Rejects on `error`; an aborted `signal` cancels the
+   * stream and rejects.
+   */
+  streamToBlob(method: string, args: unknown[], signal?: AbortSignal): Promise<Blob>;
+  /**
+   * Attach a session terminal's output stream (Slice 6), optionally replaying
+   * buffered output after `sinceSeq` (the last seq the caller saw; omitted for a
+   * fresh attach). Frames arrive via `onTerminalEvent` until detached.
+   */
+  ProductTerminalAttach(sessionId: string, terminalId: string, sinceSeq?: number): Promise<void>;
+  /** Detach a session terminal's output stream (Slice 6). */
+  ProductTerminalDetach(sessionId: string, terminalId: string): Promise<void>;
+  /**
+   * Subscribe to `kimi:terminal` output/exit frames. Returns an unsubscribe
+   * function; the native Wails listener is released when the last subscriber
+   * leaves.
+   */
+  onTerminalEvent(callback: (event: DesktopTerminalEvent) => void): () => void;
 }

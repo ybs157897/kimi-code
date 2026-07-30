@@ -100,6 +100,7 @@ function makeRecordingBridge(opts?: { failSubscribe?: boolean }): RecordingBridg
         listener = undefined;
       };
     },
+    onTerminalEvent: () => () => {},
   } as unknown as DesktopBridge;
   return {
     bridge,
@@ -283,8 +284,158 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
   it('methods outside the implemented slices throw a clear error', async () => {
     const bridge = new MockDesktopBridge();
     const api = createWailsKimiWebApi(bridge);
-    expect(() => api.listTerminals('s-1')).toThrow(/not yet supported/);
-    expect(() => api.uploadFile({ file: new Blob([]) })).toThrow(/not yet supported/);
+    expect(() => api.listSkillsForWorkspace('w-1')).toThrow(/not yet supported/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // Slice 6 — session terminals. CRUD rides ProductCall; attach/input/resize/
+  // detach/close ride the connectEvents connection, with output frames arriving
+  // on the dedicated `kimi:terminal` channel (never the chat event stream).
+  // ---------------------------------------------------------------------------
+
+  it('listTerminals maps the wire terminals to App shapes', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const session = await createSession(api);
+
+    const pending = api.listTerminals(session.id);
+    await vi.advanceTimersByTimeAsync(100);
+    const terminals = await pending;
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]).toMatchObject({
+      id: 'term_mock_1',
+      sessionId: session.id,
+      cwd: '/mock',
+      shell: '/bin/bash',
+      cols: 80,
+      rows: 24,
+      status: 'running',
+    });
+  });
+
+  it('createTerminal / getTerminal / closeTerminal round-trip the wire', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const session = await createSession(api);
+
+    const createPending = api.createTerminal(session.id, { cols: 120, rows: 40 });
+    await vi.advanceTimersByTimeAsync(100);
+    const created = await createPending;
+    expect(created.id).toBe('term_mock_1');
+    expect(created.sessionId).toBe(session.id);
+    expect(created.status).toBe('running');
+
+    const getPending = api.getTerminal(session.id, created.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(getPending).resolves.toMatchObject({ id: 'term_mock_1' });
+
+    const closePending = api.closeTerminal(session.id, created.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(closePending).resolves.toEqual({ closed: true });
+  });
+
+  it('terminalAttach emits output on the kimi:terminal channel; input/resize/close resolve', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const session = await createSession(api);
+
+    const outputs: Array<{ sessionId: string; terminalId: string; data: string; seq: number }> = [];
+    const exits: Array<{ sessionId: string; terminalId: string; exitCode: number | null }> = [];
+    const conn = api.connectEvents(
+      noopHandlers({
+        onTerminalOutput: (sessionId, terminalId, data, seq) =>
+          outputs.push({ sessionId, terminalId, data, seq }),
+        onTerminalExit: (sessionId, terminalId, exitCode) =>
+          exits.push({ sessionId, terminalId, exitCode }),
+      }),
+    );
+
+    conn.terminalAttach(session.id, 'term_mock_1');
+    await vi.advanceTimersByTimeAsync(50);
+    expect(outputs).toEqual([
+      { sessionId: session.id, terminalId: 'term_mock_1', data: 'mock terminal output\n', seq: 1 },
+    ]);
+
+    // Fire-and-forget ProductCalls — they must settle without surfacing an error.
+    conn.terminalInput(session.id, 'term_mock_1', 'ls\n');
+    conn.terminalResize(session.id, 'term_mock_1', 120, 40);
+    conn.terminalClose(session.id, 'term_mock_1');
+    await vi.advanceTimersByTimeAsync(150);
+
+    conn.terminalDetach(session.id, 'term_mock_1');
+    await vi.advanceTimersByTimeAsync(50);
+    conn.close();
+
+    expect(exits).toEqual([]);
+    expect(outputs).toHaveLength(1);
+  });
+
+  // Slice 5 — binary files: chunked upload through ProductCall, downloads
+  // assembled from `kimi:stream` base64 frames via bridge.streamToBlob.
+
+  it('uploadFile chunks the Blob through uploadStart/uploadChunk/uploadFinish', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const file = new Blob(['hello desktop binary'], { type: 'text/plain' });
+
+    const pending = api.uploadFile({ file, name: 'greeting.txt' });
+    // Three sequential ProductCalls (start / chunk / finish), each mock-delayed.
+    await vi.advanceTimersByTimeAsync(300);
+    const result = await pending;
+
+    expect(result).toEqual({
+      id: 'f_mock_1',
+      name: 'greeting.txt',
+      mediaType: 'text/plain',
+      size: file.size,
+    });
+  });
+
+  it('uploadFile splits payloads larger than the 512 KiB chunk size', async () => {
+    const bytes = new Uint8Array(512 * 1024 + 10).fill(7);
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+
+    const pending = api.uploadFile({ file: new Blob([bytes]), name: 'big.bin' });
+    // Four sequential ProductCalls (start / chunk / chunk / finish).
+    await vi.advanceTimersByTimeAsync(500);
+    const result = await pending;
+
+    expect(result.name).toBe('big.bin');
+    expect(result.mediaType).toBe('application/octet-stream');
+    expect(result.size).toBe(bytes.length);
+  });
+
+  it('getFileBlob assembles the kimi:stream frames into a Blob', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+
+    const pending = api.getFileBlob('f_mock_1');
+    await vi.advanceTimersByTimeAsync(100);
+    const blob = await pending;
+
+    expect(blob.type).toBe('application/octet-stream');
+    expect(await blob.text()).toBe('mock-binary');
+  });
+
+  it('getFileUrl / getFileDownloadUrl throw the HTTP-less desktop error', () => {
+    const api = createWailsKimiWebApi(new MockDesktopBridge());
+    expect(() => api.getFileUrl('f_mock_1')).toThrow(/use getFileBlob\(\) instead/);
+    expect(() => api.getFileDownloadUrl('s-1', 'README.md')).toThrow(
+      /use getWorkspaceFileBlob\(\) instead/,
+    );
+  });
+
+  it('getWorkspaceFileBlob streams a session file into a Blob', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const session = await createSession(api);
+
+    const pending = api.getWorkspaceFileBlob(session.id, 'README.md');
+    await vi.advanceTimersByTimeAsync(100);
+    const blob = await pending;
+
+    expect(await blob.text()).toBe('mock-workspace-file');
   });
 
   // Requirement: catch "the client calls a product method the real sidecar

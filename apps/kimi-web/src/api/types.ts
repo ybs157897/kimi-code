@@ -843,6 +843,8 @@ export interface KimiWebApi {
   getGitStatus(sessionId: string, paths?: string[]): Promise<{ branch: string; ahead: number; behind: number; entries: Record<string, string>; additions: number; deletions: number; pullRequest: { number: number; state: string; url: string } | null }>;
   getFileDiff(sessionId: string, path: string): Promise<{ path: string; diff: string }>;
   getFileDownloadUrl(sessionId: string, path: string): string;
+  /** Fetch a session workspace file's bytes — the Blob counterpart to getFileDownloadUrl, and the only option on transports without a fetchable HTTP URL (desktop IPC). */
+  getWorkspaceFileBlob(sessionId: string, path: string): Promise<Blob>;
   openFile(sessionId: string, input: { path: string; line?: number }): Promise<{ opened: true }>;
   revealFile(sessionId: string, input: { path: string }): Promise<{ revealed: true }>;
   /** Open the session working directory (or a session-relative path) in an external application. */

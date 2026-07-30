@@ -1,11 +1,12 @@
 // Package ipcclient is a Go client for the klient-ipc frame protocol: NDJSON
-// over a local socket, one connection multiplexing RPC calls and event
-// subscriptions. It mirrors packages/klient/src/transports/ipc (codec.ts for
-// the frame schema, channel.ts for the reference client): the host sends
-// `ready` on connect, the client answers `hello{token}`, then `call` /
-// `listen` / `unlisten` frames are correlated by client-chosen ids. There is
-// no reconnect — a broken socket fails in-flight calls and closes subscription
-// channels (the resumable-connection story lives elsewhere).
+// over a local socket, one connection multiplexing RPC calls, event
+// subscriptions, and streaming calls. It mirrors packages/klient/src/
+// transports/ipc (codec.ts for the frame schema, channel.ts for the reference
+// client): the host sends `ready` on connect, the client answers
+// `hello{token}`, then `call` / `listen` / `unlisten` / `stream` /
+// `stream_cancel` frames are correlated by client-chosen ids. There is no
+// reconnect — a broken socket fails in-flight calls and closes subscription
+// and stream channels (the resumable-connection story lives elsewhere).
 package ipcclient
 
 import (
@@ -72,6 +73,19 @@ type Event struct {
 	Data json.RawMessage // event payload (klient event object)
 }
 
+// StreamEvent is one delivered frame of a streaming procedure started with
+// Stream. Type discriminates: "data" carries a stream_data payload in Data,
+// "end" the stream_end payload (may be empty), and "error" the host's
+// stream_error Code/Msg. The channel closes right after an "end" or "error"
+// event, or on connection teardown.
+type StreamEvent struct {
+	ID   string          // stream id
+	Type string          // "data" | "end" | "error"
+	Data json.RawMessage // stream_data / stream_end payload
+	Code int             // stream_error code (Type == "error" only)
+	Msg  string          // stream_error message (Type == "error" only)
+}
+
 // frame is the NDJSON wire message. Type discriminates; the remaining fields
 // are sparse and omitted when empty, matching JSON.stringify dropping undefined
 // fields in the TS codec. Empty SessionID/AgentID are omitted on purpose so the
@@ -119,6 +133,7 @@ type Client struct {
 	mu      sync.Mutex
 	pending map[string]chan callResult
 	subs    map[string]*subscription
+	streams map[string]chan StreamEvent
 
 	closed    atomic.Bool
 	readyCh   chan struct{} // closed on the host's `ready` frame
@@ -141,6 +156,7 @@ func Dial(ctx context.Context, endpoint, token string) (*Client, error) {
 		idPrefix: fmt.Sprintf("g%x", time.Now().UnixNano()),
 		pending:  make(map[string]chan callResult),
 		subs:     make(map[string]*subscription),
+		streams:  make(map[string]chan StreamEvent),
 		readyCh:  make(chan struct{}),
 		dead:     make(chan struct{}),
 	}
@@ -307,6 +323,63 @@ func (c *Client) Unlisten(id string) error {
 	return nil
 }
 
+// Stream starts a streaming procedure and returns its event channel plus the
+// stream id (for StreamCancel). Unlike Call there is no setup ack on the wire:
+// a setup failure arrives as an ordinary "error" StreamEvent on the channel.
+// The channel is closed when the stream finishes (stream_end / stream_error)
+// or the connection is torn down.
+//
+// The host sends no confirmation for stream_cancel, so StreamCancel does NOT
+// close the channel: like Unlisten, it detaches the stream (late frames are
+// dropped) and the consumer must stop waiting on its own signal — e.g. select
+// on the context it passed here. ctx is validated up front; cancelling it does
+// not talk to the host, call StreamCancel for that.
+func (c *Client) Stream(ctx context.Context, s Scope, service, method string, arg []any) (<-chan StreamEvent, string, error) {
+	if c.closed.Load() {
+		return nil, "", ErrClosed
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	id := c.nextID()
+	ch := make(chan StreamEvent, eventBuffer)
+	c.mu.Lock()
+	c.streams[id] = ch
+	c.mu.Unlock()
+
+	c.send(frame{
+		Type:      "stream",
+		ID:        id,
+		Scope:     s.kind(),
+		Service:   service,
+		Method:    method,
+		Arg:       trimTrailingNil(arg),
+		SessionID: s.SessionID,
+		AgentID:   s.AgentID,
+	})
+	return ch, id, nil
+}
+
+// StreamCancel tells the host to abort the stream registered under id. The
+// stream is detached: later stream_data/stream_end/stream_error frames for it
+// are dropped and the channel is left unclosed for the GC (the consumer should
+// exit on its own signal, see Stream). Cancelling an unknown or already
+// finished stream is a no-op.
+func (c *Client) StreamCancel(id string) error {
+	if c.closed.Load() {
+		return ErrClosed
+	}
+	c.mu.Lock()
+	_, ok := c.streams[id]
+	delete(c.streams, id)
+	c.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	c.send(frame{Type: "stream_cancel", ID: id})
+	return nil
+}
+
 // Close tears down the connection: in-flight calls fail with ErrClosed and the
 // socket is closed. The reader goroutine closes every subscription channel as
 // it exits. Close is idempotent.
@@ -375,12 +448,14 @@ func (c *Client) readLoop() {
 		}
 		c.dispatch(f)
 	}
-	// EOF or read error: fail in-flight calls, then close subscription
-	// channels (this goroutine is their sole sender and closer).
+	// EOF or read error: fail in-flight calls, then close subscription and
+	// stream channels (this goroutine is their sole sender and closer).
 	c.teardown(ErrClosed)
 	c.mu.Lock()
 	subs := c.subs
 	c.subs = make(map[string]*subscription)
+	streams := c.streams
+	c.streams = make(map[string]chan StreamEvent)
 	c.mu.Unlock()
 	for _, sub := range subs {
 		if !sub.established {
@@ -390,6 +465,9 @@ func (c *Client) readLoop() {
 			}
 		}
 		close(sub.events)
+	}
+	for _, ch := range streams {
+		close(ch)
 	}
 }
 
@@ -471,9 +549,45 @@ func (c *Client) dispatch(f frame) {
 		case sub.events <- Event{ID: f.ID, Data: f.Data}:
 		case <-c.dead:
 		}
+	case "stream_data":
+		c.mu.Lock()
+		ch := c.streams[f.ID]
+		c.mu.Unlock()
+		if ch == nil {
+			return
+		}
+		select {
+		case ch <- StreamEvent{ID: f.ID, Type: "data", Data: f.Data}:
+		case <-c.dead:
+		}
+	case "stream_end", "stream_error":
+		c.mu.Lock()
+		ch := c.streams[f.ID]
+		delete(c.streams, f.ID)
+		c.mu.Unlock()
+		if ch == nil {
+			return
+		}
+		ev := StreamEvent{ID: f.ID, Type: "end", Data: f.Data}
+		if f.Type == "stream_error" {
+			ev.Type = "error"
+			ev.Data = nil
+			ev.Code = f.Code
+			ev.Msg = f.Msg
+			if ev.Code == 0 {
+				ev.Code = 50001
+			}
+			if ev.Msg == "" {
+				ev.Msg = "error"
+			}
+		}
+		select {
+		case ch <- ev:
+		case <-c.dead:
+		}
+		close(ch)
 	default:
-		// stream_data / stream_end / stream_error and anything unknown are
-		// ignored: the Phase 0 surface exposes no streaming calls.
+		// Unknown frame types are ignored, matching the TS decoder.
 	}
 }
 

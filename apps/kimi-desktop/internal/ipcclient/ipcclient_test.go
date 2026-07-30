@@ -14,18 +14,21 @@ import (
 
 // fakeServer is an in-process klient-ipc host speaking NDJSON over loopback
 // TCP. It mirrors the bits of serveKlientIpc the client relies on: `ready`
-// on connect, the hello token check, call/result/error correlation, and
-// listen/listen_result/event routing.
+// on connect, the hello token check, call/result/error correlation,
+// listen/listen_result/event routing, and stream_data/stream_end/
+// stream_error delivery with stream_cancel tracking.
 type fakeServer struct {
 	t     *testing.T
 	ln    net.Listener
 	token string
 
-	mu        sync.Mutex
-	gotHello  string
-	calls     []frame
-	listens   []frame
-	unlistens []string
+	mu            sync.Mutex
+	gotHello      string
+	calls         []frame
+	listens       []frame
+	unlistens     []string
+	streams       []frame
+	streamCancels []string
 }
 
 func startFakeServer(t *testing.T, token string) (*fakeServer, string) {
@@ -115,6 +118,28 @@ func (s *fakeServer) handle(conn net.Conn) {
 		case "unlisten":
 			s.mu.Lock()
 			s.unlistens = append(s.unlistens, f.ID)
+			s.mu.Unlock()
+		case "stream":
+			if !helloOK {
+				write(frame{Type: "stream_error", ID: f.ID, Code: 40001, Msg: "expected hello first"})
+				continue
+			}
+			s.mu.Lock()
+			s.streams = append(s.streams, f)
+			s.mu.Unlock()
+			switch f.Method {
+			case "chunks":
+				write(frame{Type: "stream_data", ID: f.ID, Data: json.RawMessage(`{"chunk":"YWJj","seq":0}`)})
+				write(frame{Type: "stream_data", ID: f.ID, Data: json.RawMessage(`{"chunk":"ZGVm","seq":1}`)})
+				write(frame{Type: "stream_end", ID: f.ID, Data: json.RawMessage(`{"mime":"application/octet-stream","size":6,"filename":"a.bin"}`)})
+			case "fail":
+				write(frame{Type: "stream_error", ID: f.ID, Code: 40407, Msg: "file.not_found"})
+			case "hang":
+				// Send nothing; the test drives stream_cancel or connection close.
+			}
+		case "stream_cancel":
+			s.mu.Lock()
+			s.streamCancels = append(s.streamCancels, f.ID)
 			s.mu.Unlock()
 		}
 	}
@@ -388,5 +413,173 @@ func TestCallContextCancel(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatalf("cancelled call did not return")
+	}
+}
+
+// nextStreamEvent pulls one event from a stream channel with a test deadline.
+func nextStreamEvent(t *testing.T, ch <-chan StreamEvent) (StreamEvent, bool) {
+	t.Helper()
+	select {
+	case ev, ok := <-ch:
+		return ev, ok
+	case <-time.After(2 * time.Second):
+		t.Fatalf("timed out waiting for stream event")
+		return StreamEvent{}, false
+	}
+}
+
+func TestStreamDeliversDataAndEnd(t *testing.T) {
+	s, sock := startFakeServer(t, "")
+	c := dial(t, sock, "")
+
+	ch, id, err := c.Stream(context.Background(), Scope{}, "desktopProduct", "chunks", []any{"f_1"})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	if id == "" {
+		t.Fatalf("Stream returned an empty stream id")
+	}
+
+	wantData := []string{`{"chunk":"YWJj","seq":0}`, `{"chunk":"ZGVm","seq":1}`}
+	for i, want := range wantData {
+		ev, ok := nextStreamEvent(t, ch)
+		if !ok {
+			t.Fatalf("channel closed before data event %d", i)
+		}
+		if ev.ID != id || ev.Type != "data" || string(ev.Data) != want {
+			t.Fatalf("data event %d = {%q %s %s}, want {%q data %s}", i, ev.ID, ev.Type, ev.Data, id, want)
+		}
+	}
+
+	ev, ok := nextStreamEvent(t, ch)
+	if !ok {
+		t.Fatalf("channel closed before the end event")
+	}
+	if ev.ID != id || ev.Type != "end" || string(ev.Data) != `{"mime":"application/octet-stream","size":6,"filename":"a.bin"}` {
+		t.Fatalf("end event = {%q %s %s}", ev.ID, ev.Type, ev.Data)
+	}
+
+	// stream_end closes the channel.
+	if ev, ok := nextStreamEvent(t, ch); ok {
+		t.Fatalf("unexpected event after stream_end: %+v", ev)
+	}
+
+	s.mu.Lock()
+	streams := append([]frame(nil), s.streams...)
+	s.mu.Unlock()
+	if len(streams) != 1 {
+		t.Fatalf("server saw %d stream frames, want 1", len(streams))
+	}
+	sf := streams[0]
+	if sf.ID != id || sf.Scope != "core" || sf.Service != "desktopProduct" || sf.Method != "chunks" {
+		t.Fatalf("stream frame = %+v, want core/desktopProduct/chunks with id %q", sf, id)
+	}
+	if len(sf.Arg) != 1 || sf.Arg[0] != "f_1" {
+		t.Fatalf("stream arg = %#v, want [\"f_1\"]", sf.Arg)
+	}
+}
+
+func TestStreamErrorClosesChannel(t *testing.T) {
+	_, sock := startFakeServer(t, "")
+	c := dial(t, sock, "")
+
+	ch, id, err := c.Stream(context.Background(), Scope{}, "desktopProduct", "fail", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	ev, ok := nextStreamEvent(t, ch)
+	if !ok {
+		t.Fatalf("channel closed before the error event")
+	}
+	if ev.ID != id || ev.Type != "error" || ev.Code != 40407 || ev.Msg != "file.not_found" {
+		t.Fatalf("error event = {%q %s %d %q}, want {%q error 40407 file.not_found}", ev.ID, ev.Type, ev.Code, ev.Msg, id)
+	}
+	if len(ev.Data) != 0 {
+		t.Fatalf("error event carries data: %s", ev.Data)
+	}
+
+	// stream_error closes the channel too.
+	if ev, ok := nextStreamEvent(t, ch); ok {
+		t.Fatalf("unexpected event after stream_error: %+v", ev)
+	}
+}
+
+func TestStreamCancelSendsFrameAndDetaches(t *testing.T) {
+	s, sock := startFakeServer(t, "")
+	c := dial(t, sock, "")
+
+	_, id, err := c.Stream(context.Background(), Scope{}, "svc", "hang", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	if err := c.StreamCancel(id); err != nil {
+		t.Fatalf("StreamCancel: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		s.mu.Lock()
+		got := append([]string(nil), s.streamCancels...)
+		s.mu.Unlock()
+		if len(got) == 1 && got[0] == id {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not receive stream_cancel for %q, got %v", id, got)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	// Cancelling an already-detached stream is a no-op, not an error.
+	if err := c.StreamCancel(id); err != nil {
+		t.Fatalf("second StreamCancel: %v", err)
+	}
+	s.mu.Lock()
+	got := append([]string(nil), s.streamCancels...)
+	s.mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("server saw %d stream_cancel frames, want 1", len(got))
+	}
+}
+
+func TestCloseEndsActiveStream(t *testing.T) {
+	_, sock := startFakeServer(t, "")
+	c, err := Dial(context.Background(), sock, "")
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+
+	ch, _, err := c.Stream(context.Background(), Scope{}, "svc", "hang", nil)
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for range ch {
+			// drain until the teardown closes the channel
+		}
+	}()
+
+	time.Sleep(50 * time.Millisecond) // let the stream register and reach the server
+	_ = c.Close()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("stream channel not closed after Close")
+	}
+}
+
+func TestStreamRejectsCancelledContext(t *testing.T) {
+	_, sock := startFakeServer(t, "")
+	c := dial(t, sock, "")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, err := c.Stream(ctx, Scope{}, "svc", "chunks", nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Stream with cancelled context = %v, want context.Canceled", err)
 	}
 }

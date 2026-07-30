@@ -80,3 +80,36 @@ func TestParseProductCursorRejectsNonObject(t *testing.T) {
 		}
 	}
 }
+
+func TestParseTerminalSinceSeq(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want int64
+	}{
+		{name: "empty means zero", in: "", want: 0},
+		{name: "blank means zero", in: "  \n\t", want: 0},
+		{name: "zero", in: "0", want: 0},
+		{name: "positive number", in: "42", want: 42},
+		{name: "leading whitespace tolerated", in: "  7", want: 7},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseTerminalSinceSeq(tt.in)
+			if err != nil {
+				t.Fatalf("parseTerminalSinceSeq(%q) unexpected error: %v", tt.in, err)
+			}
+			if got != tt.want {
+				t.Fatalf("parseTerminalSinceSeq(%q) = %d, want %d", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestParseTerminalSinceSeqRejectsInvalid(t *testing.T) {
+	for _, in := range []string{`-1`, `"42"`, `1.5`, `true`, `[1]`, `{`, `nul`} {
+		if got, err := parseTerminalSinceSeq(in); err == nil {
+			t.Fatalf("parseTerminalSinceSeq(%q) = %d, want error", in, got)
+		}
+	}
+}

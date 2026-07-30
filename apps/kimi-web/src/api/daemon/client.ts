@@ -1164,6 +1164,16 @@ export class DaemonKimiWebApi implements KimiWebApi {
     );
   }
 
+  /** Fetch a session workspace file's bytes with the Bearer credential
+   *  attached — the Blob counterpart to getFileDownloadUrl, whose URL alone
+   *  401s in a bare browser load. */
+  async getWorkspaceFileBlob(sessionId: string, path: string): Promise<Blob> {
+    const encodedPath = path.split('/').map((part) => encodeURIComponent(part)).join('/');
+    return this.http.getBlob(
+      `/sessions/${encodeURIComponent(sessionId)}/fs/${encodedPath}:download`,
+    );
+  }
+
   async openFile(
     sessionId: string,
     input: { path: string; line?: number },

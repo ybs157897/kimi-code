@@ -43,11 +43,65 @@ const SLICE_4_METHODS = [
   'openInApp',
 ] as const;
 
+/** Slice 5 — chunked upload methods (ProductCall → facade dispatch). */
+const SLICE_5_UPLOAD_METHODS = ['uploadStart', 'uploadChunk', 'uploadFinish'] as const;
+
+/**
+ * Slice 6 — session terminal methods (ProductCall → facade dispatch). CRUD +
+ * input/resize/close all route through `this.call`; attach/detach ride the
+ * bridge's `ProductTerminalAttach`/`Detach` binds instead, so they are NOT in
+ * this list.
+ */
+const SLICE_6_TERMINAL_METHODS = [
+  'listTerminals',
+  'createTerminal',
+  'getTerminal',
+  'closeTerminal',
+  'terminalInput',
+  'terminalResize',
+  'terminalClose',
+] as const;
+
+/**
+ * Slice 5 — download stream methods. These never hit `ProductFacade.dispatch`:
+ * `ProductStreamStart` routes them to the sidecar host's `stream` interception,
+ * which switches on them in `ProductFacade.streamDispatch`.
+ */
+const SLICE_5_STREAM_METHODS = ['getFileBlob', 'getWorkspaceFileBlob'] as const;
+
 function extractClientCallMethods(source: string): string[] {
   const methods = new Set<string>();
   // Match both `this.call('m', …)` and multiline `this.call<…>(\n  'm', …)`.
   const re = /this\.call(?:<[\s\S]*?>)?\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/g;
   for (const match of source.matchAll(re)) {
+    const name = match[1];
+    if (name !== undefined) methods.add(name);
+  }
+  return [...methods].sort();
+}
+
+function extractClientStreamMethods(source: string): string[] {
+  const methods = new Set<string>();
+  // Match `streamToBlob('m', …)` — the bridge call the client assembles
+  // `kimi:stream` base64 frames through (Slice 5 downloads).
+  const re = /streamToBlob\(\s*['"]([A-Za-z_][A-Za-z0-9_]*)['"]/g;
+  for (const match of source.matchAll(re)) {
+    const name = match[1];
+    if (name !== undefined) methods.add(name);
+  }
+  return [...methods].sort();
+}
+
+function extractFacadeStreamCases(source: string): string[] {
+  const dispatchStart = source.indexOf('streamDispatch(');
+  expect(dispatchStart).toBeGreaterThanOrEqual(0);
+  const after = source.slice(dispatchStart);
+  const defaultIdx = after.indexOf('default:');
+  expect(defaultIdx).toBeGreaterThan(0);
+  const switchBody = after.slice(0, defaultIdx);
+  const methods = new Set<string>();
+  const re = /case\s+['"]([A-Za-z_][A-Za-z0-9_]*)['"]\s*:/g;
+  for (const match of switchBody.matchAll(re)) {
     const name = match[1];
     if (name !== undefined) methods.add(name);
   }
@@ -75,6 +129,8 @@ describe('desktop product method coverage (client ↔ ProductFacade)', () => {
   const facadeSource = readFileSync(FACADE_PATH, 'utf8');
   const clientMethods = extractClientCallMethods(clientSource);
   const facadeMethods = extractFacadeDispatchCases(facadeSource);
+  const clientStreamMethods = extractClientStreamMethods(clientSource);
+  const facadeStreamMethods = extractFacadeStreamCases(facadeSource);
 
   it('extracts ProductCall method names from the desktop client', () => {
     expect(clientMethods.length).toBeGreaterThan(20);
@@ -96,6 +152,32 @@ describe('desktop product method coverage (client ↔ ProductFacade)', () => {
     for (const method of SLICE_4_METHODS) {
       expect(facadeMethods).toContain(method);
     }
+  });
+
+  it('extracts the Slice 5 upload + stream methods from the desktop client', () => {
+    expect(clientMethods).toEqual(expect.arrayContaining([...SLICE_5_UPLOAD_METHODS]));
+    expect(clientStreamMethods).toEqual(['getFileBlob', 'getWorkspaceFileBlob']);
+  });
+
+  it('registers all Slice 5 upload methods on ProductFacade.dispatch', () => {
+    for (const method of SLICE_5_UPLOAD_METHODS) {
+      expect(facadeMethods).toContain(method);
+    }
+  });
+
+  it('extracts the Slice 6 terminal methods from the desktop client', () => {
+    expect(clientMethods).toEqual(expect.arrayContaining([...SLICE_6_TERMINAL_METHODS]));
+  });
+
+  it('registers all Slice 6 terminal methods on ProductFacade.dispatch', () => {
+    for (const method of SLICE_6_TERMINAL_METHODS) {
+      expect(facadeMethods).toContain(method);
+    }
+  });
+
+  it('registers every client product stream method on ProductFacade.streamDispatch', () => {
+    const missing = clientStreamMethods.filter((m) => !facadeStreamMethods.includes(m));
+    expect(missing).toEqual([]);
   });
 
   it('keeps the facade case list at least as large as the client call set', () => {

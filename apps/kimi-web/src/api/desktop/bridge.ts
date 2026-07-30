@@ -3,17 +3,91 @@
 // and forwards to the frozen contract C bind methods, parsing the JSON-string
 // results; subscribes to the `kimi:event` channel via `window.runtime`.
 
+import { bytesFromBase64 } from './base64';
 import type {
   DesktopBridge,
   DesktopEventPayload,
   DesktopHelloInfo,
   DesktopSessionHandle,
   DesktopSessionListPage,
+  DesktopStreamEvent,
+  DesktopTerminalEvent,
   ProductEventPayload,
   ProductStreamCursor,
   WailsAppBindings,
 } from './types';
-import { KIMI_EVENT_CHANNEL } from './types';
+import { KIMI_EVENT_CHANNEL, KIMI_STREAM_CHANNEL, KIMI_TERMINAL_CHANNEL } from './types';
+
+/**
+ * The stream primitives `assembleStreamToBlob` needs — the subset of
+ * `DesktopBridge` both the Wails wrapper and the dev mock implement, so the
+ * mock exercises the exact same assembly path as the real shell.
+ */
+export interface DesktopStreamTransport {
+  ProductStreamStart(method: string, argsJSON: string): Promise<string>;
+  ProductStreamCancel(streamId: string): Promise<void>;
+  onStreamEvent(callback: (event: DesktopStreamEvent) => void): () => void;
+}
+
+/**
+ * Slice 5 download assembly: start a `desktopProduct` stream, collect its
+ * base64 chunks in arrival order (the IPC socket and the Wails event bus are
+ * both ordered, so `seq` only serves debugging), and resolve a Blob typed with
+ * the `end` frame's `meta.mime` (defaulting to `application/octet-stream`).
+ * Rejects on an `error` frame; an aborted signal cancels the stream upstream
+ * and rejects.
+ */
+export function assembleStreamToBlob(
+  transport: DesktopStreamTransport,
+  method: string,
+  args: unknown[],
+  signal?: AbortSignal,
+): Promise<Blob> {
+  const abortError = (): Error => new Error(`desktop transport: ${method} stream aborted`);
+  if (signal?.aborted) return Promise.reject(abortError());
+  return transport.ProductStreamStart(method, JSON.stringify(args)).then((streamId) => {
+    if (signal?.aborted) {
+      void transport.ProductStreamCancel(streamId).catch(() => undefined);
+      throw abortError();
+    }
+    return new Promise<Blob>((resolve, reject) => {
+      const chunks: Uint8Array<ArrayBuffer>[] = [];
+      let mime = 'application/octet-stream';
+      let settled = false;
+      const cleanup = (): void => {
+        off();
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const off = transport.onStreamEvent((event) => {
+        if (settled || event.streamId !== streamId) return;
+        if (event.type === 'data') {
+          if (event.chunk !== undefined) chunks.push(bytesFromBase64(event.chunk));
+          return;
+        }
+        settled = true;
+        cleanup();
+        if (event.type === 'end') {
+          if (event.meta?.mime !== undefined && event.meta.mime !== '') mime = event.meta.mime;
+          resolve(new Blob(chunks, { type: mime }));
+        } else {
+          reject(
+            new Error(
+              `desktop transport: ${method} stream failed (${event.code ?? 0}): ${event.msg ?? 'unknown error'}`,
+            ),
+          );
+        }
+      });
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        void transport.ProductStreamCancel(streamId).catch(() => undefined);
+        reject(abortError());
+      };
+      signal?.addEventListener('abort', onAbort);
+    });
+  });
+}
 
 /** Parse a bind-method's JSON-string result with a method-tagged error. */
 function parseResult<T>(method: string, raw: string): T {
@@ -44,6 +118,14 @@ export class WailsDesktopBridge implements DesktopBridge {
   private listeners = new Set<(payload: DesktopEventPayload) => void>();
   private productListeners = new Set<(payload: ProductEventPayload) => void>();
   private nativeAttached = false;
+  // Slice 5 binary streams ride a separate `kimi:stream` channel, so they keep
+  // their own listener set and native-attach refcount.
+  private streamListeners = new Set<(event: DesktopStreamEvent) => void>();
+  private streamNativeAttached = false;
+  // Slice 6 terminal output/exit ride their own `kimi:terminal` channel (never
+  // mixed into the chat `kimi:event` stream), with the same refcount pattern.
+  private terminalListeners = new Set<(event: DesktopTerminalEvent) => void>();
+  private terminalNativeAttached = false;
 
   /**
    * Resolve the bound `App` lazily on every call — Wails injects the bindings
@@ -84,6 +166,16 @@ export class WailsDesktopBridge implements DesktopBridge {
     return this.bindings().ProductCall(method, argsJSON);
   }
 
+  async ProductStreamStart(method: string, argsJSON: string): Promise<string> {
+    // Thin passthrough like ProductCall (Slice 5): the Go shell opens the IPC
+    // `stream` frame and returns the stream id; frames arrive on `kimi:stream`.
+    return this.bindings().ProductStreamStart(method, argsJSON);
+  }
+
+  async ProductStreamCancel(streamId: string): Promise<void> {
+    await this.bindings().ProductStreamCancel(streamId);
+  }
+
   async ProductSubscribe(
     sessionId: string,
     agentId: string,
@@ -97,6 +189,20 @@ export class WailsDesktopBridge implements DesktopBridge {
 
   async ProductUnsubscribe(sessionId: string, agentId: string): Promise<void> {
     await this.bindings().ProductUnsubscribe(sessionId, agentId);
+  }
+
+  async ProductTerminalAttach(
+    sessionId: string,
+    terminalId: string,
+    sinceSeq?: number,
+  ): Promise<void> {
+    // The Go bind takes the replay cursor as a JSON string; an absent cursor
+    // becomes `0` (attach live from the current head, no replay).
+    await this.bindings().ProductTerminalAttach(sessionId, terminalId, JSON.stringify(sinceSeq ?? 0));
+  }
+
+  async ProductTerminalDetach(sessionId: string, terminalId: string): Promise<void> {
+    await this.bindings().ProductTerminalDetach(sessionId, terminalId);
   }
 
   onEvent(callback: (payload: DesktopEventPayload) => void): () => void {
@@ -115,6 +221,28 @@ export class WailsDesktopBridge implements DesktopBridge {
       this.productListeners.delete(callback);
       this.maybeDetachNative();
     };
+  }
+
+  onStreamEvent(callback: (event: DesktopStreamEvent) => void): () => void {
+    this.streamListeners.add(callback);
+    this.attachStreamNative();
+    return () => {
+      this.streamListeners.delete(callback);
+      if (this.streamListeners.size === 0) this.detachStreamNative();
+    };
+  }
+
+  onTerminalEvent(callback: (event: DesktopTerminalEvent) => void): () => void {
+    this.terminalListeners.add(callback);
+    this.attachTerminalNative();
+    return () => {
+      this.terminalListeners.delete(callback);
+      if (this.terminalListeners.size === 0) this.detachTerminalNative();
+    };
+  }
+
+  streamToBlob(method: string, args: unknown[], signal?: AbortSignal): Promise<Blob> {
+    return assembleStreamToBlob(this, method, args, signal);
   }
 
   /**
@@ -140,6 +268,64 @@ export class WailsDesktopBridge implements DesktopBridge {
     window.runtime?.EventsOff(KIMI_EVENT_CHANNEL);
     this.nativeAttached = false;
   }
+
+  private attachStreamNative(): void {
+    if (this.streamNativeAttached) return;
+    const runtime = window.runtime;
+    if (!runtime) {
+      throw new Error('desktop bridge: window.runtime is unavailable');
+    }
+    runtime.EventsOn(KIMI_STREAM_CHANNEL, this.onNativeStreamPayload);
+    this.streamNativeAttached = true;
+  }
+
+  private detachStreamNative(): void {
+    if (!this.streamNativeAttached) return;
+    window.runtime?.EventsOff(KIMI_STREAM_CHANNEL);
+    this.streamNativeAttached = false;
+  }
+
+  private attachTerminalNative(): void {
+    if (this.terminalNativeAttached) return;
+    const runtime = window.runtime;
+    if (!runtime) {
+      throw new Error('desktop bridge: window.runtime is unavailable');
+    }
+    runtime.EventsOn(KIMI_TERMINAL_CHANNEL, this.onNativeTerminalPayload);
+    this.terminalNativeAttached = true;
+  }
+
+  private detachTerminalNative(): void {
+    if (!this.terminalNativeAttached) return;
+    window.runtime?.EventsOff(KIMI_TERMINAL_CHANNEL);
+    this.terminalNativeAttached = false;
+  }
+
+  /** Wails delivers each `kimi:terminal` `EventsEmit` argument positionally. */
+  private onNativeTerminalPayload = (...args: unknown[]): void => {
+    const raw = args[0];
+    let event: DesktopTerminalEvent;
+    try {
+      // The shell emits a JSON object; tolerate a JSON string too.
+      event = (typeof raw === 'string' ? JSON.parse(raw) : raw) as DesktopTerminalEvent;
+    } catch {
+      return; // malformed frame — drop, mirroring the IPC decoder's tolerance
+    }
+    for (const listener of Array.from(this.terminalListeners)) listener(event);
+  };
+
+  /** Wails delivers each `kimi:stream` `EventsEmit` argument positionally. */
+  private onNativeStreamPayload = (...args: unknown[]): void => {
+    const raw = args[0];
+    let event: DesktopStreamEvent;
+    try {
+      // The shell emits a JSON object; tolerate a JSON string too.
+      event = (typeof raw === 'string' ? JSON.parse(raw) : raw) as DesktopStreamEvent;
+    } catch {
+      return; // malformed frame — drop, mirroring the IPC decoder's tolerance
+    }
+    for (const listener of Array.from(this.streamListeners)) listener(event);
+  };
 
   /** Wails delivers each `EventsEmit` argument positionally. */
   private onNativePayload = (...args: unknown[]): void => {
