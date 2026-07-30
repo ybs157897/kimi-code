@@ -1,4 +1,9 @@
 # go:embed input — produced by `pnpm run build:frontend` from apps/kimi-web/dist.
 frontend/dist/
-# wails build output
-build/bin/
+# Wails-generated JavaScript bindings (the web UI uses the runtime globals directly).
+frontend/wailsjs/
+# Wails-generated packaging assets and application output
+build/
+# generated Node SEA intermediates and embedded engine helper
+sidecar/dist/
+internal/sidecar/runtime/

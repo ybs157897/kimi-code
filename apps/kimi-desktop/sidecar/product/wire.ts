@@ -281,6 +281,50 @@ export interface WireAuthResult {
   managed_provider: WireManagedProvider | null;
 }
 
+export type WireOAuthLoginStartResult =
+  | {
+      flow_id: string;
+      provider: string;
+      status: 'pending';
+      verification_uri: string;
+      verification_uri_complete: string;
+      user_code: string;
+      expires_in: number;
+      interval: number;
+      expires_at: string;
+    }
+  | {
+      flow_id: string;
+      provider: string;
+      status: 'authenticated';
+    };
+
+export interface WireOAuthLoginPollResult {
+  flow_id: string;
+  status: 'pending' | 'authenticated' | 'expired' | 'cancelled';
+  resolved_at?: string;
+}
+
+export interface WireOAuthCancelResult {
+  cancelled: boolean;
+  status: string;
+}
+
+export interface WireLogoutResult {
+  logged_out: boolean;
+}
+
+export interface WireProviderRefreshResult {
+  changed: Array<{
+    provider_id: string;
+    provider_name: string;
+    added: number;
+    removed: number;
+  }>;
+  unchanged: string[];
+  failed: Array<{ provider: string; reason: string }>;
+}
+
 // --- Server metadata (routes/meta.ts) ---
 
 export interface WireMetaCapabilities {

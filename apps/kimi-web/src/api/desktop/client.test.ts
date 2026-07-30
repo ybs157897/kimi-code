@@ -6,6 +6,7 @@ import { toAppEvent } from '../daemon/mappers';
 import type { WireEvent } from '../daemon/wire';
 import type { AppEvent, AppSession, KimiEventMeta } from '../types';
 import { createWailsKimiWebApi } from './client';
+import { isDesktopShellAvailable, isDesktopTransportEnabled } from './index';
 import { MockDesktopBridge } from './mock';
 
 interface Received {
@@ -42,6 +43,7 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
   });
   afterEach(() => {
     vi.useRealTimers();
+    vi.unstubAllGlobals();
   });
 
   async function createSession(api: ReturnType<typeof createWailsKimiWebApi>): Promise<AppSession> {
@@ -192,8 +194,47 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
     const bridge = new MockDesktopBridge();
     const api = createWailsKimiWebApi(bridge);
     expect(() => api.getSession('s-1')).toThrow(/not yet supported/);
-    expect(() => api.startOAuthLogin()).toThrow(/not yet supported/);
     expect(() => api.steerPrompts('s-1', ['p-1'])).toThrow(/not yet supported/);
+  });
+
+  it('uses the desktop-owned OAuth flow instead of the daemon login', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+
+    const startPending = api.startOAuthLogin();
+    const pollPending = api.pollOAuthLogin();
+    const refreshPending = api.refreshOAuthProviderModels();
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(startPending).resolves.toMatchObject({
+      flowId: 'mock-oauth-flow',
+      provider: 'kimi',
+      status: 'authenticated',
+    });
+    await expect(pollPending).resolves.toMatchObject({
+      flowId: 'mock-oauth-flow',
+      status: 'authenticated',
+    });
+    await expect(refreshPending).resolves.toEqual({
+      changed: [],
+      unchanged: ['kimi'],
+      failed: [],
+    });
+
+    const logoutPending = api.logout();
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(logoutPending).resolves.toEqual({ loggedOut: true });
+  });
+
+  it('selects the desktop transport automatically inside Wails', () => {
+    vi.stubGlobal('window', { go: { main: { App: {} } }, runtime: {} });
+    vi.stubGlobal('location', { search: '' });
+    expect(isDesktopShellAvailable()).toBe(true);
+    expect(isDesktopTransportEnabled()).toBe(true);
+
+    vi.stubGlobal('location', { search: '?desktop_transport=0' });
+    expect(isDesktopShellAvailable()).toBe(true);
+    expect(isDesktopTransportEnabled()).toBe(false);
   });
 
   // Slice 2 clean-boot methods (docs §12.3). Adding each as a real class method

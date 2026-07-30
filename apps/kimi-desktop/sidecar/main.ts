@@ -2,7 +2,7 @@
  * Desktop engine host ("sidecar").
  *
  * Boots the agent-core-v2 engine in-process and serves the full klient facade
- * over a unix domain socket using the klient-ipc protocol. The Go/Wails shell
+ * over an authenticated local IPC endpoint using the klient-ipc protocol. The Go/Wails shell
  * spawns this process (contract D), waits for the readiness line, then dials
  * the socket and speaks the klient-ipc frame protocol (contract A) — the same
  * facade an in-memory `createKlient({ scope })` exposes, only serialized.
@@ -18,6 +18,7 @@
  */
 
 import { mkdir } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
 import {
@@ -26,22 +27,29 @@ import {
   hostRequestHeadersSeed,
   IConfigService,
   logSeed,
-  resolveKimiHome,
   resolveLoggingConfig,
   skillCatalogRuntimeOptionsSeed,
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
 import { serveProductIpc, type ProductIpcHost } from './product/host.js';
 
-/** Env var carrying the unix socket path to listen on (contract D). */
-const SOCKET_ENV = 'KIMI_DESKTOP_IPC_SOCKET';
+/** Env var carrying the local IPC endpoint to listen on (contract D). */
+const ENDPOINT_ENV = 'KIMI_DESKTOP_IPC_ENDPOINT';
 /** Env var carrying the shared hello token (contract D). */
 const TOKEN_ENV = 'KIMI_DESKTOP_IPC_TOKEN';
+/** Desktop-only home override. KIMI_CODE_HOME is intentionally ignored. */
+const HOME_ENV = 'KIMI_DESKTOP_HOME';
 
-function resolveSocketPath(kimiHome: string): string {
-  const fromEnv = process.env[SOCKET_ENV];
+function resolveDesktopHome(): string {
+  const fromEnv = process.env[HOME_ENV];
   if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
-  return join(kimiHome, 'desktop', 'sidecar.sock');
+  return join(homedir(), '.kimi-desktop');
+}
+
+function resolveEndpoint(): string {
+  const fromEnv = process.env[ENDPOINT_ENV];
+  if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
+  return 'tcp://127.0.0.1:0';
 }
 
 function installShutdownHandlers(host: ProductIpcHost, app: Scope): void {
@@ -61,13 +69,17 @@ function installShutdownHandlers(host: ProductIpcHost, app: Scope): void {
 }
 
 async function main(): Promise<void> {
-  const kimiHome = resolveKimiHome();
-  const socketPath = resolveSocketPath(kimiHome);
+  const kimiHome = resolveDesktopHome();
+  const endpoint = resolveEndpoint();
   const token = process.env[TOKEN_ENV] || undefined;
 
-  // The host removes a stale socket file itself, but the parent directory must
-  // already exist for `listen` to succeed.
-  await mkdir(dirname(socketPath), { recursive: true });
+  // Force any legacy engine-level home resolution into the desktop namespace.
+  // This process-local assignment never changes the CLI's environment.
+  process.env['KIMI_CODE_HOME'] = kimiHome;
+  await mkdir(kimiHome, { recursive: true });
+  if (!endpoint.startsWith('tcp://')) {
+    await mkdir(dirname(endpoint), { recursive: true });
+  }
 
   const logging = resolveLoggingConfig({ homeDir: kimiHome, env: process.env });
   const { app } = bootstrap({ homeDir: kimiHome }, [
@@ -79,9 +91,9 @@ async function main(): Promise<void> {
 
   try {
     await app.accessor.get(IConfigService).ready;
-    const host = await serveProductIpc({ scope: app, socketPath, token });
+    const host = await serveProductIpc({ scope: app, endpoint, token });
     // Stable readiness line the shell greps for before dialing (contract D).
-    console.log(`desktop-sidecar ready ${socketPath}`);
+    console.log(`desktop-sidecar ready ${host.endpoint}`);
     installShutdownHandlers(host, app);
   } catch (error) {
     app.dispose();

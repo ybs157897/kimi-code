@@ -6,7 +6,8 @@
   "description": "Wails desktop shell around the Kimi Code web UI.",
   "scripts": {
     "build:frontend": "pnpm --filter @moonshot-ai/kimi-web build && node scripts/copy-dist.mjs",
-    "build": "pnpm run build:frontend && wails build",
+    "build:sidecar": "node scripts/build-sidecar.mjs",
+    "build": "pnpm run build:frontend && pnpm run build:sidecar && wails build -tags packaged -skipbindings",
     "dev": "pnpm run build:frontend && go run -tags desktop,production .",
     "typecheck": "go vet ./...",
     "sidecar": "tsx --tsconfig ./sidecar/tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./sidecar/main.ts",
@@ -17,6 +18,7 @@
     "@moonshot-ai/klient": "workspace:^"
   },
   "devDependencies": {
+    "postject": "1.0.0-alpha.6",
     "tsx": "^4.21.0"
   }
 }

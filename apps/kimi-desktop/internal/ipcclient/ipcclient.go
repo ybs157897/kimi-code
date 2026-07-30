@@ -1,5 +1,5 @@
 // Package ipcclient is a Go client for the klient-ipc frame protocol: NDJSON
-// over a unix domain socket, one socket multiplexing RPC calls and event
+// over a local socket, one connection multiplexing RPC calls and event
 // subscriptions. It mirrors packages/klient/src/transports/ipc (codec.ts for
 // the frame schema, channel.ts for the reference client): the host sends
 // `ready` on connect, the client answers `hello{token}`, then `call` /
@@ -15,6 +15,8 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -124,13 +126,13 @@ type Client struct {
 	closeOnce sync.Once
 }
 
-// Dial connects to the unix socket and completes the hello handshake. It waits
+// Dial connects to a tcp:// loopback endpoint or Unix socket path and completes
+// the hello handshake. It waits
 // for the host's `ready` frame, then sends `hello{token}` (token omitted when
 // empty). Waiting for ready — rather than hello-on-connect — matches the
 // documented order and lets Dial surface a socket that closes mid-handshake.
-func Dial(ctx context.Context, socketPath, token string) (*Client, error) {
-	var d net.Dialer
-	conn, err := d.DialContext(ctx, "unix", socketPath)
+func Dial(ctx context.Context, endpoint, token string) (*Client, error) {
+	conn, err := dialEndpoint(ctx, endpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -155,6 +157,26 @@ func Dial(ctx context.Context, socketPath, token string) (*Client, error) {
 
 	c.send(frame{Type: "hello", Token: token})
 	return c, nil
+}
+
+func dialEndpoint(ctx context.Context, endpoint string) (net.Conn, error) {
+	var dialer net.Dialer
+	if !strings.HasPrefix(endpoint, "tcp://") {
+		return dialer.DialContext(ctx, "unix", endpoint)
+	}
+
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("ipcclient: parse endpoint: %w", err)
+	}
+	host := parsed.Hostname()
+	if host != "127.0.0.1" && host != "localhost" && host != "::1" {
+		return nil, fmt.Errorf("ipcclient: endpoint must be loopback: %q", host)
+	}
+	if parsed.Port() == "" {
+		return nil, errors.New("ipcclient: tcp endpoint is missing a port")
+	}
+	return dialer.DialContext(ctx, "tcp", parsed.Host)
 }
 
 // Call invokes a klient procedure and returns its raw JSON result.

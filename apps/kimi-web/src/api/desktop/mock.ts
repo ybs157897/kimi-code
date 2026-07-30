@@ -11,6 +11,10 @@ import type {
   WireFsHomeResult,
   WireMessage,
   WireModel,
+  WireOAuthCancelResult,
+  WireOAuthLoginPollResult,
+  WireOAuthLoginStartResult,
+  WireProviderRefreshResult,
   WireSession,
   WireSessionSnapshot,
   WireSessionUsage,
@@ -233,6 +237,21 @@ export class MockDesktopBridge implements DesktopBridge {
       case 'getAuth':
         data = this.productGetAuth();
         break;
+      case 'startOAuthLogin':
+        data = this.productStartOAuthLogin();
+        break;
+      case 'pollOAuthLogin':
+        data = this.productPollOAuthLogin();
+        break;
+      case 'cancelOAuthLogin':
+        data = this.productCancelOAuthLogin();
+        break;
+      case 'logout':
+        data = this.productLogout();
+        break;
+      case 'refreshOAuthProviderModels':
+        data = this.productRefreshOAuthProviderModels();
+        break;
       case 'getHealth':
         data = this.productGetHealth();
         break;
@@ -281,7 +300,7 @@ export class MockDesktopBridge implements DesktopBridge {
 
   private emitProduct(sessionId: string, agentId: string, event: WireEvent): void {
     const payload: ProductEventPayload = { sessionId, agentId, event };
-    for (const listener of [...this.productListeners]) listener(payload);
+    for (const listener of this.productListeners) listener(payload);
   }
 
   /** Build one kimi-web `WireEvent` frame with a monotonic seq + timestamp. */
@@ -415,6 +434,34 @@ export class MockDesktopBridge implements DesktopBridge {
       default_model: 'mock-model',
       managed_provider: { status: 'connected' },
     };
+  }
+
+  private productStartOAuthLogin(): WireOAuthLoginStartResult {
+    return {
+      flow_id: 'mock-oauth-flow',
+      provider: 'kimi',
+      status: 'authenticated',
+    };
+  }
+
+  private productPollOAuthLogin(): WireOAuthLoginPollResult {
+    return {
+      flow_id: 'mock-oauth-flow',
+      status: 'authenticated',
+      resolved_at: new Date().toISOString(),
+    };
+  }
+
+  private productCancelOAuthLogin(): WireOAuthCancelResult {
+    return { cancelled: false, status: 'authenticated' };
+  }
+
+  private productLogout(): { logged_out: true } {
+    return { logged_out: true };
+  }
+
+  private productRefreshOAuthProviderModels(): WireProviderRefreshResult {
+    return { changed: [], unchanged: ['kimi'], failed: [] };
   }
 
   /** kap-server healthz returns the static `{ ok: true }` shape. */
@@ -605,7 +652,7 @@ export class MockDesktopBridge implements DesktopBridge {
 
   private emit(sessionId: string, agentId: string, event: DesktopAgentEvent): void {
     const payload: DesktopEventPayload = { sessionId, agentId, event };
-    for (const listener of [...this.listeners]) listener(payload);
+    for (const listener of this.listeners) listener(payload);
   }
 
   /** Keep ListSessions realistic: record the prompt on the touched session. */

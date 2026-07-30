@@ -1,6 +1,6 @@
 <!-- apps/kimi-web/src/App.vue -->
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue';
+import { computed, defineAsyncComponent, nextTick, onMounted, onUnmounted, provide, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import Sidebar from './components/Sidebar.vue';
 import ResizeHandle from './components/ResizeHandle.vue';
@@ -28,6 +28,7 @@ import Onboarding from './components/settings/Onboarding.vue';
 import GlobalLoading from './components/GlobalLoading.vue';
 import DebugPanel from './debug/DebugPanel.vue';
 import { isTraceEnabled } from './debug/trace';
+import { isDesktopDemoEnabled, isDesktopShellAvailable } from './api/desktop';
 import { useKimiWebClient } from './composables/useKimiWebClient';
 import { useConfirmDialog } from './composables/useConfirmDialog';
 import type { PromptAttachment } from './composables/useKimiWebClient';
@@ -83,6 +84,13 @@ const { confirm } = useConfirmDialog();
 // KAP/daemon debug panel — opt-in via ?debug=1 or localStorage kimi-web.debug=1.
 const debugEnabled = isTraceEnabled();
 
+// Desktop bridge demo (Phase 0 seam proof, docs/plan/desktop-product.md) —
+// opt-in via ?desktop_demo=1. Lazy-loaded: costs nothing unless enabled.
+const DesktopBridgeDemo = defineAsyncComponent(
+  () => import('./components/desktop/DesktopBridgeDemo.vue'),
+);
+const showDesktopDemo = ref(isDesktopDemoEnabled());
+
 // Narrow viewports (≤640px) render the single-column mobile shell; desktop is
 // unchanged. Falls back to desktop when matchMedia is unavailable.
 const isMobile = useIsMobile();
@@ -107,8 +115,15 @@ const running = computed(() => client.activity.value !== 'idle');
 
 // Auth readiness gates the main app. Once the first load finishes and auth is
 // still missing, show a full-page login entry instead of an in-app banner.
+// The native product shell starts provider-neutral: its settings UI remains
+// available before the user adds any third-party model credentials.
+const desktopShellAvailable = isDesktopShellAvailable();
 const authLogoRef = ref<SVGSVGElement | null>(null);
-const { showAuthGate, blinkAuthLogo } = useAuthGate({ client, authLogoRef });
+const { showAuthGate, blinkAuthLogo } = useAuthGate({
+  client,
+  authLogoRef,
+  bypass: desktopShellAvailable,
+});
 
 
 // Static page title (app name only). The session title and workspace name are
@@ -140,8 +155,9 @@ const statusPanelThinking = computed<ThinkingLevel>(() => {
 });
 
 // First-run onboarding (language + welcome greeting). Shown until the user
-// finishes it once; re-openable from the settings popover.
-const showOnboarding = ref(!client.onboarded.value);
+// finishes it once; re-openable from the settings popover. Native desktop
+// opens directly into the product shell and can still reopen onboarding later.
+const showOnboarding = ref(!desktopShellAvailable && !client.onboarded.value);
 function completeOnboarding(): void {
   client.setOnboarded(true);
   showOnboarding.value = false;
@@ -1177,6 +1193,9 @@ function openPr(url: string): void {
 
     <!-- KAP/daemon debug panel (opt-in, ?debug=1) -->
     <DebugPanel v-if="debugEnabled" />
+
+    <!-- Desktop bridge demo (Phase 0 seam proof) — opt-in, ?desktop_demo=1 -->
+    <DesktopBridgeDemo v-if="showDesktopDemo" @close="showDesktopDemo = false" />
 
     <!-- Global modal-confirmation host (driven by useConfirmDialog) -->
     <ConfirmDialogHost />

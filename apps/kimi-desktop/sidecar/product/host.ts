@@ -1,6 +1,6 @@
 /**
  * Product IPC host — replaces the bare `serveKlientIpc` call so the sidecar can
- * serve BOTH surfaces over the one unix socket (frozen contract E, §11.2):
+ * serve BOTH surfaces over one authenticated local endpoint (frozen contract E, §11.2):
  *
  *  - every existing klient service dispatches exactly as before, through
  *    `createMemoryDispatcher(scope)` (the same reflector `serveKlientIpc`
@@ -14,7 +14,7 @@
  * stream frames, token check); only the two interception points are added.
  */
 
-import { createServer, type Server, type Socket } from 'node:net';
+import { createServer, type AddressInfo, type Server, type Socket } from 'node:net';
 import { unlink } from 'node:fs/promises';
 
 import type { EventSourceRef, IDisposable, ScopeRef } from '@moonshot-ai/klient';
@@ -38,15 +38,33 @@ const PRODUCT_EVENT = 'product';
 export interface ServeProductIpcOptions {
   /** A bootstrapped engine app scope (same value `createKlient({ scope })` takes). */
   readonly scope: ScopeLike;
-  /** Unix socket path to listen on. A stale file at the path is removed first. */
-  readonly socketPath: string;
+  /** tcp:// loopback endpoint or Unix socket path to listen on. */
+  readonly endpoint: string;
   /** Optional token; when set, the client's `hello` must carry the same token. */
   readonly token?: string;
 }
 
 export interface ProductIpcHost {
-  readonly socketPath: string;
+  readonly endpoint: string;
   close(): Promise<void>;
+}
+
+interface TcpEndpoint {
+  readonly host: string;
+  readonly port: number;
+}
+
+function parseTcpEndpoint(endpoint: string): TcpEndpoint | undefined {
+  if (!endpoint.startsWith('tcp://')) return undefined;
+  const url = new URL(endpoint);
+  if (url.hostname !== '127.0.0.1' && url.hostname !== 'localhost' && url.hostname !== '::1') {
+    throw new Error(`desktop IPC must bind to loopback, got ${url.hostname}`);
+  }
+  const port = Number(url.port);
+  if (!Number.isInteger(port) || port < 0 || port > 65_535) {
+    throw new Error(`invalid desktop IPC port: ${url.port}`);
+  }
+  return { host: url.hostname, port };
 }
 
 function scopeRefFromFrame(frame: IpcFrame): ScopeRef {
@@ -74,11 +92,14 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
   const facade = new ProductFacade(klient, options.scope);
   const projector = new ProductProjector(klient);
 
-  // Best-effort cleanup of a stale socket file (ENOENT = nothing to remove).
-  try {
-    await unlink(options.socketPath);
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  const tcp = parseTcpEndpoint(options.endpoint);
+  if (tcp === undefined) {
+    // Best-effort cleanup of a stale Unix socket file.
+    try {
+      await unlink(options.endpoint);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
 
   const connections = new Set<Socket>();
@@ -271,11 +292,21 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
 
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
-    server.listen(options.socketPath, resolve);
+    if (tcp !== undefined) {
+      server.listen({ host: tcp.host, port: tcp.port }, resolve);
+    } else {
+      server.listen(options.endpoint, resolve);
+    }
   });
 
+  const address = server.address();
+  const endpoint =
+    tcp !== undefined && address !== null && typeof address !== 'string'
+      ? `tcp://${tcp.host}:${(address as AddressInfo).port}`
+      : options.endpoint;
+
   return {
-    socketPath: options.socketPath,
+    endpoint,
     close: () => {
       for (const socket of connections) {
         socket.destroy();
@@ -284,14 +315,11 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
       void klient.close();
       return new Promise<void>((resolve) => {
         server.close(() => {
-          void unlink(options.socketPath).then(
-            () => {
-              resolve();
-            },
-            () => {
-              resolve();
-            },
-          );
+          if (tcp !== undefined) {
+            resolve();
+            return;
+          }
+          void unlink(options.endpoint).then(resolve, resolve);
         });
       });
     },

@@ -17,7 +17,7 @@ export { WailsKimiWebApi, createWailsKimiWebApi } from './client';
 /** True when running inside the Wails shell (bindings + runtime injected). */
 export function isDesktopShellAvailable(): boolean {
   if (typeof window === 'undefined') return false;
-  return window.go?.main?.App != null && window.runtime != null;
+  return window.go?.main?.App !== undefined && window.runtime !== undefined;
 }
 
 let singleton: DesktopBridge | undefined;
@@ -47,17 +47,19 @@ export function isDesktopDemoEnabled(): boolean {
 }
 
 /**
- * Phase 1 transport opt-in (`?desktop_transport=1`), mirroring the
- * `?desktop_demo=1` / `?debug=1` convention. When set AND a desktop bridge is
- * available, `getKimiWebApi()` constructs the WailsKimiWebApi product transport
- * instead of the daemon HTTP client (see docs/plan/desktop-product.md §11.5).
+ * The native shell always selects the product transport. Query parameters are
+ * retained as explicit development overrides: `1` enables the browser mock,
+ * while `0` lets a Wails build diagnose the legacy daemon transport.
  */
 export function isDesktopTransportEnabled(): boolean {
   try {
-    if (typeof location === 'undefined') return false;
-    const v = new URLSearchParams(location.search).get('desktop_transport');
-    return v === '1' || v === 'true';
+    if (typeof location !== 'undefined') {
+      const value = new URLSearchParams(location.search).get('desktop_transport');
+      if (value === '1' || value === 'true') return true;
+      if (value === '0' || value === 'false') return false;
+    }
+    return isDesktopShellAvailable();
   } catch {
-    return false;
+    return isDesktopShellAvailable();
   }
 }

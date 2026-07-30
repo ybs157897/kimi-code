@@ -15,7 +15,6 @@ import { RPCError } from '@moonshot-ai/klient';
 import { ISessionLifecycleService } from '@moonshot-ai/agent-core-v2/app/sessionLifecycle/sessionLifecycle';
 import {
   ISessionLegacyService,
-  type SessionWireFields,
 } from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionLegacy';
 import { ISessionActivityView } from '@moonshot-ai/agent-core-v2/session/sessionActivity/sessionActivity';
 import type { QuestionAnswers } from '@moonshot-ai/agent-core-v2/session/question/question';
@@ -63,9 +62,14 @@ import type {
   WireMessage,
   WireMeta,
   WireModel,
+  WireOAuthCancelResult,
+  WireOAuthLoginPollResult,
+  WireOAuthLoginStartResult,
   WirePage,
   WirePromptSubmission,
+  WireProviderRefreshResult,
   WireQuestionResponse,
+  WireLogoutResult,
   WireSession,
   WireSessionSnapshot,
   WireSessionStatus,
@@ -143,6 +147,16 @@ export class ProductFacade {
       // Slice 2 — read-only clean-boot methods (no-arg calls take []).
       case 'getAuth':
         return this.getAuth();
+      case 'startOAuthLogin':
+        return this.startOAuthLogin();
+      case 'pollOAuthLogin':
+        return this.pollOAuthLogin();
+      case 'cancelOAuthLogin':
+        return this.cancelOAuthLogin();
+      case 'logout':
+        return this.logout();
+      case 'refreshOAuthProviderModels':
+        return this.refreshOAuthProviderModels();
       case 'getHealth':
         return this.getHealth();
       case 'getMeta':
@@ -420,6 +434,36 @@ export class ProductFacade {
   async getAuth(): Promise<WireEnvelope<WireAuthResult>> {
     const summary = await this.scope.accessor.get(IAuthLegacyService).get();
     return ok<WireAuthResult>(summary);
+  }
+
+  async startOAuthLogin(): Promise<WireEnvelope<WireOAuthLoginStartResult>> {
+    const result = await this.klient.global.auth.startLogin();
+    return ok<WireOAuthLoginStartResult>(result);
+  }
+
+  async pollOAuthLogin(): Promise<WireEnvelope<WireOAuthLoginPollResult | null>> {
+    const result = await this.klient.global.auth.flow();
+    if (result === undefined) return ok<WireOAuthLoginPollResult | null>(null);
+    return ok<WireOAuthLoginPollResult>({
+      flow_id: result.flow_id,
+      status: result.status === 'denied' ? 'expired' : result.status,
+      resolved_at: result.resolved_at,
+    });
+  }
+
+  async cancelOAuthLogin(): Promise<WireEnvelope<WireOAuthCancelResult>> {
+    const result = await this.klient.global.auth.cancelLogin();
+    return ok<WireOAuthCancelResult>(result);
+  }
+
+  async logout(): Promise<WireEnvelope<WireLogoutResult>> {
+    const result = await this.klient.global.auth.logout();
+    return ok<WireLogoutResult>(result);
+  }
+
+  async refreshOAuthProviderModels(): Promise<WireEnvelope<WireProviderRefreshResult>> {
+    const result = await this.klient.global.kosong.refreshProviders({ scope: 'oauth' });
+    return ok<WireProviderRefreshResult>(result);
   }
 
   // getHealth — GET /healthz → static { ok: true }.

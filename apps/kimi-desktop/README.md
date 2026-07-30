@@ -1,31 +1,26 @@
 # Kimi Code Desktop
 
-A [Wails v2](https://wails.io) desktop shell around the Kimi Code web UI
-(`apps/kimi-web`). The window renders the exact production web bundle, so
-features, styling, and behavior match `kimi web` one-to-one.
+A self-contained [Wails v2](https://wails.io) desktop application using the
+Kimi Code web UI (`apps/kimi-web`) and the TypeScript agent engine.
 
 ## How it works
 
 - **UI**: `frontend/dist/` (the built kimi-web bundle, embedded via
   `go:embed`) is served by the Wails asset server.
-- **API**: the shell starts a loopback reverse proxy and injects its origin
-  into the page as `window.__KIMI_DESKTOP_SERVER_ORIGIN__`. The proxy
-  forwards REST (`/api/v1`) and the `/api/v1/ws` WebSocket to a
-  local kap-server, answers CORS itself, and strips the browser `Origin`
-  header upstream (the server treats Origin-less requests as non-browser
-  clients — the same trick the Vite dev proxy uses).
-- **Server discovery**: `KIMI_SERVER_URL` env → live entries in
-  `<kimi home>/server/instances/` → the legacy `server/lock` → a reachable
-  default `127.0.0.1:58627`. When nothing is running and `kimi` is on PATH,
-  the shell spawns `kimi web --no-open` once and stops it again on quit.
-  Discovery re-runs per request, so starting a server later just works.
-- **Auth**: the persisted token at `<kimi home>/server.token` is injected as
-  `window.__KIMI_DESKTOP_SERVER_TOKEN__` (read once and scrubbed by the web
-  bundle). Without it the web UI's own token dialog takes over.
+- **Engine**: packaged builds embed a Node SEA helper in the application.
+  Wails extracts and starts it directly, with no dependency on `kimi`,
+  `pnpm`, or a separately running kap-server.
+- **API**: the webview calls the engine through Wails bindings and an
+  authenticated loopback NDJSON channel. It does not use an HTTP proxy.
+- **Process behavior**: the engine helper is launched without a console
+  window on Windows and is stopped with the application.
+- **Home and auth**: desktop config, sessions, logs, and OAuth credentials
+  live under `~/.kimi-desktop` (override with `KIMI_DESKTOP_HOME`). The
+  desktop application never reads `KIMI_CODE_HOME` or `~/.kimi-code`.
 
 ## Prerequisites
 
-- Go ≥ 1.24 and the Xcode Command Line Tools (macOS).
+- Node.js ≥ 24.15.0, Go ≥ 1.24, and the platform build toolchain.
 - The repo's pnpm workspace installed (`pnpm install` at the root).
 - Optional: the Wails CLI for packaged builds —
   `go install github.com/wailsapp/wails/v2/cmd/wails@latest`.
@@ -33,16 +28,13 @@ features, styling, and behavior match `kimi web` one-to-one.
 ## Build & run
 
 ```sh
-# 1. Build the web UI and copy it into frontend/dist
-pnpm --filter @moonshot-ai/kimi-desktop build:frontend
+# Development build (uses the repository sidecar command)
+pnpm --filter @moonshot-ai/kimi-desktop dev
 
-# 2a. Run directly
-go run -tags desktop,production .
-
-# 2b. Or produce a packaged app (requires the wails CLI)
-wails build
+# Packaged self-contained application
+pnpm --filter @moonshot-ai/kimi-desktop build
 ```
 
-`wails build` output lands in `build/bin/`. Both `frontend/dist/` and
-`build/bin/` are gitignored — step 1 is required after a fresh clone or any
-web UI change.
+The packaged build creates the Node SEA helper first and then invokes Wails
+with the `packaged` build tag. Generated JavaScript bindings are skipped
+because the web app owns a typed manual bridge. Output lands in `build/bin/`.

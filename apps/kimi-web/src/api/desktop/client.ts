@@ -44,8 +44,10 @@ import type {
   KimiEventConnection,
   KimiEventHandlers,
   KimiWebApi,
+  OAuthLoginStartResult,
   Page,
   PageRequest,
+  ProviderRefreshResult,
   PromptSubmission,
   PromptSubmitResult,
   QuestionResponse,
@@ -76,10 +78,15 @@ import type {
   WireFsHomeResult,
   WireGoalSnapshot,
   WireModel,
+  WireOAuthCancelResult,
+  WireOAuthLoginPollResult,
+  WireOAuthLoginStartResult,
   WirePage,
   WirePromptSubmitResult,
   WireProvider,
   WireProviderDetail,
+  WireProviderRefreshResult,
+  WireLogoutResult,
   WireSession,
   WireSessionRuntimeStatus,
   WireSessionSnapshot,
@@ -277,6 +284,52 @@ export class WailsKimiWebApi {
       defaultModel: data.default_model,
       managedProvider: data.managed_provider ? { status: data.managed_provider.status } : null,
     };
+  }
+
+  async startOAuthLogin(): Promise<OAuthLoginStartResult> {
+    const data = await this.call<WireOAuthLoginStartResult>('startOAuthLogin', []);
+    if (data.status === 'authenticated') {
+      return {
+        flowId: data.flow_id,
+        provider: data.provider,
+        status: 'authenticated',
+      };
+    }
+    return {
+      flowId: data.flow_id,
+      provider: data.provider,
+      status: 'pending',
+      verificationUri: data.verification_uri,
+      verificationUriComplete: data.verification_uri_complete,
+      userCode: data.user_code,
+      expiresIn: data.expires_in,
+      interval: data.interval,
+      expiresAt: data.expires_at,
+    };
+  }
+
+  async pollOAuthLogin(): Promise<{
+    flowId: string;
+    status: 'pending' | 'authenticated' | 'expired' | 'cancelled';
+    resolvedAt?: string;
+  } | null> {
+    const data = await this.call<WireOAuthLoginPollResult | null>('pollOAuthLogin', []);
+    if (data === null) return null;
+    return {
+      flowId: data.flow_id,
+      status: data.status,
+      resolvedAt: data.resolved_at,
+    };
+  }
+
+  async cancelOAuthLogin(): Promise<{ cancelled: boolean; status: string }> {
+    const data = await this.call<WireOAuthCancelResult>('cancelOAuthLogin', []);
+    return { cancelled: data.cancelled, status: data.status };
+  }
+
+  async logout(): Promise<{ loggedOut: boolean }> {
+    const data = await this.call<WireLogoutResult>('logout', []);
+    return { loggedOut: data.logged_out };
   }
 
   // -------------------------------------------------------------------------
@@ -561,6 +614,11 @@ export class WailsKimiWebApi {
     await this.call('setDefaultModel', [modelId]);
   }
 
+  async refreshOAuthProviderModels(): Promise<ProviderRefreshResult> {
+    const data = await this.call<WireProviderRefreshResult>('refreshOAuthProviderModels', []);
+    return toProviderRefreshResult(data);
+  }
+
   // -------------------------------------------------------------------------
   // Events — feed product WireEvents into the daemon's toAppEvent pipeline.
   // -------------------------------------------------------------------------
@@ -667,4 +725,17 @@ function providerRequestBody(input: AppProviderInput): Record<string, unknown> {
     body['default_model'] = input.defaultModel;
   }
   return body;
+}
+
+function toProviderRefreshResult(data: WireProviderRefreshResult): ProviderRefreshResult {
+  return {
+    changed: data.changed.map((item) => ({
+      providerId: item.provider_id,
+      providerName: item.provider_name,
+      added: item.added,
+      removed: item.removed,
+    })),
+    unchanged: data.unchanged,
+    failed: data.failed,
+  };
 }

@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -29,6 +30,9 @@ const (
 	// callTimeout bounds a single klient procedure so a wedged sidecar cannot
 	// hang a bound method indefinitely.
 	callTimeout = 30 * time.Second
+	// startupWaitTimeout lets the first product calls wait for the embedded
+	// engine to finish booting instead of racing the background startup.
+	startupWaitTimeout = 45 * time.Second
 )
 
 // App is registered via `Bind: []any{app}` in main.go and surfaced to the
@@ -40,6 +44,9 @@ type App struct {
 
 	mu     sync.Mutex
 	client *ipcclient.Client
+	ready  chan struct{}
+	// startErr is populated before ready closes when startup fails.
+	startErr error
 	// subs cancels the forwarding goroutine for each active subscription,
 	// keyed by "sessionId/agentId".
 	subs map[string]context.CancelFunc
@@ -49,29 +56,36 @@ type App struct {
 func NewApp() *App {
 	return &App{
 		sidecar: sidecar.New(),
+		ready:   make(chan struct{}),
 		subs:    map[string]context.CancelFunc{},
 	}
 }
 
 // startup is wired to wails OnStartup. It launches the sidecar and connects
-// the IPC client off the window's critical path so the app still boots when the
-// sidecar is unavailable (the loopback proxy in main.go remains the fallback).
-// It is unexported so Wails does not bind it to the webview.
+// the IPC client off the window's critical path. Bound product calls wait on
+// the ready channel, so the webview cannot race the engine's cold boot.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
 	go a.connect()
 }
 
 func (a *App) connect() {
-	if err := a.sidecar.Start(context.Background()); err != nil {
+	defer close(a.ready)
+	if err := a.sidecar.Start(a.ctx); err != nil {
 		log.Printf("kimi-desktop: sidecar start failed: %v", err)
+		a.mu.Lock()
+		a.startErr = err
+		a.mu.Unlock()
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	client, err := ipcclient.Dial(ctx, a.sidecar.Socket(), a.sidecar.Token())
+	client, err := ipcclient.Dial(ctx, a.sidecar.Endpoint(), a.sidecar.Token())
 	if err != nil {
 		log.Printf("kimi-desktop: ipc dial failed: %v", err)
+		a.mu.Lock()
+		a.startErr = err
+		a.mu.Unlock()
 		return
 	}
 	a.mu.Lock()
@@ -282,7 +296,28 @@ func (a *App) requireClient() (*ipcclient.Client, error) {
 	if c := a.currentClient(); c != nil {
 		return c, nil
 	}
-	return nil, errors.New("sidecar IPC not connected")
+
+	parent := a.ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(parent, startupWaitTimeout)
+	defer cancel()
+	select {
+	case <-a.ready:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("desktop engine startup: %w", ctx.Err())
+	}
+
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.client != nil {
+		return a.client, nil
+	}
+	if a.startErr != nil {
+		return nil, fmt.Errorf("desktop engine startup: %w", a.startErr)
+	}
+	return nil, errors.New("desktop engine IPC not connected")
 }
 
 func (a *App) callCtx() (context.Context, context.CancelFunc) {

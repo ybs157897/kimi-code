@@ -12,11 +12,16 @@ export interface UseAuthGateOptions {
   /** Template ref to the auth-page logo SVG; owned by the component so the
       template `ref=` binding links, passed here so the blink handler can drive it. */
   authLogoRef: Ref<SVGSVGElement | null>;
+  /** Native desktop owns provider configuration and must remain usable before
+      any provider account or API key has been configured. */
+  bypass?: boolean;
 }
 
-export function useAuthGate({ client, authLogoRef }: UseAuthGateOptions) {
+export function useAuthGate({ client, authLogoRef, bypass = false }: UseAuthGateOptions) {
   const authReady = computed(() => client.authReady.value);
-  const showAuthGate = computed(() => client.initialized.value && !authReady.value);
+  const showAuthGate = computed(
+    () => !bypass && client.initialized.value && !authReady.value,
+  );
   const LOGIN_PATH = '/login';
   const authReturnPath = ref<string | null>(null);
   let authLogoBlinkTimer: ReturnType<typeof setTimeout> | null = null;

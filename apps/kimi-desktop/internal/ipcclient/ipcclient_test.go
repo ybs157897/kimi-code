@@ -5,16 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 )
 
-// fakeServer is an in-process klient-ipc host speaking NDJSON over a temp unix
-// socket. It mirrors the bits of serveKlientIpc the client relies on: `ready`
+// fakeServer is an in-process klient-ipc host speaking NDJSON over loopback
+// TCP. It mirrors the bits of serveKlientIpc the client relies on: `ready`
 // on connect, the hello token check, call/result/error correlation, and
 // listen/listen_result/event routing.
 type fakeServer struct {
@@ -31,22 +30,14 @@ type fakeServer struct {
 
 func startFakeServer(t *testing.T, token string) (*fakeServer, string) {
 	t.Helper()
-	// macOS caps unix socket paths (~104 bytes); t.TempDir() under /var/folders
-	// is too long, so use a short /tmp directory.
-	dir, err := os.MkdirTemp("/tmp", "ipc")
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("mkdtemp: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	sock := filepath.Join(dir, "s.sock")
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatalf("listen unix: %v", err)
+		t.Fatalf("listen tcp: %v", err)
 	}
 	s := &fakeServer{t: t, ln: ln, token: token}
 	go s.serve()
 	t.Cleanup(func() { _ = ln.Close() })
-	return s, sock
+	return s, fmt.Sprintf("tcp://%s", ln.Addr().String())
 }
 
 func (s *fakeServer) serve() {
