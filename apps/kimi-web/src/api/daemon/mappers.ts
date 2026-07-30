@@ -717,6 +717,22 @@ export function toAppEvent(wire: WireEvent): AppEvent {
         failed: w.payload.failed,
       };
 
+    // ----- Product notice (desktop sidecar) -----
+    // The desktop product projector emits `event.product.notice` for notices/
+    // warnings/errors it surfaces without a dedicated event type. Fold to a
+    // `_agentWarning`-tagged unknown so the reducer renders it as a structured
+    // notice (not a spurious "unknown event" warning).
+    case 'event.product.notice':
+      return {
+        type: 'unknown',
+        raw: {
+          _agentWarning: true,
+          message: w.payload.msg,
+          code: w.payload.code,
+          name: w.payload.name,
+        },
+      };
+
     default: {
       // Truly unknown event — record warning
       return { type: 'unknown', raw: wire };

@@ -17,6 +17,10 @@
 //     (<kimi home>/server.token) into index.html before the bundle boots
 //     (see the window globals read by apps/kimi-web/src/api/config.ts and
 //     serverAuth.ts).
+//   - It spawns the Node engine sidecar and binds an App object (app.go) to
+//     the webview that drives the engine over unix-socket IPC (see
+//     docs/plan/desktop-product.md). The loopback proxy above stays intact as
+//     a fallback, so the window still boots when the sidecar is unavailable.
 package main
 
 import (
@@ -42,6 +46,8 @@ func main() {
 		log.Fatalf("kimi-desktop: failed to start the API proxy: %v", err)
 	}
 
+	app := NewApp()
+
 	err = wails.Run(&options.App{
 		Title:     "Kimi Code",
 		Width:     1440,
@@ -52,13 +58,17 @@ func main() {
 			Assets:     assets,
 			Middleware: backend.BootstrapMiddleware(assets, proxy.Origin(), resolver),
 		},
+		Bind: []any{app},
 		OnStartup: func(ctx context.Context) {
-			// Kick discovery (and the one-shot `kimi web` spawn) off the
-			// window's critical path; the first API call would trigger it
+			// Start the engine sidecar + IPC client (off the critical path),
+			// and warm discovery (and the one-shot `kimi web` spawn) for the
+			// loopback proxy fallback — the first API call would trigger it
 			// anyway, this just warms it up.
+			app.startup(ctx)
 			go func() { _, _ = resolver.Resolve(ctx) }()
 		},
 		OnShutdown: func(ctx context.Context) {
+			app.shutdown(ctx)
 			resolver.StopSpawned()
 			proxy.Close()
 		},

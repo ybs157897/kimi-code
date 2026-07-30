@@ -18,7 +18,7 @@ The browser web UI for Kimi Code — a peer to the TUI in `apps/kimi-code`. It t
 ## Layout (`src/`)
 
 - `main.ts` — bootstrap (creates the app, installs i18n, mounts `#app`). `App.vue` — root component, holds most app state.
-- `api/` — server client. `index.ts` exposes the `getKimiWebApi()` singleton; `config.ts` builds REST/WS URLs; `daemon/` holds the wire client (`http.ts`, `ws.ts`, `wire.ts`, `mappers.ts`, `agentEventProjector.ts`, `eventReducer.ts`).
+- `api/` — server client. `index.ts` exposes the `getKimiWebApi()` singleton; `config.ts` builds REST/WS URLs; `daemon/` holds the wire client (`http.ts`, `ws.ts`, `wire.ts`, `mappers.ts`, `agentEventProjector.ts`, `eventReducer.ts`). `desktop/` holds the Phase 0 Wails desktop bridge (`docs/plan/desktop-product.md` contract C): a typed wrapper over `window.go.main.App` + `runtime.EventsOn("kimi:event")` and a browser dev mock streaming the same `{sessionId,agentId,event}` contract; additive and isolated from `daemon/`, exercised by `components/desktop/DesktopBridgeDemo.vue` (opt-in `?desktop_demo=1`).
 - `components/` — SFCs grouped by area: `chat/` (conversation/chat UI), `settings/` (settings & configuration), `dialogs/` (modal dialogs & sheets), `mobile/` (mobile-specific shell), `ui/` (design-system primitives — see "Design system" above), plus shared layout components at the top level.
 - `composables/` — reusable state logic, `useX` naming (`useKimiWebClient`, `useIsDark`, `usePaneLayout`, …).
 - `lib/` — pure helpers (`parseDiff`, `slashCommands`, `sessionRoute`, `toolMeta`, …).

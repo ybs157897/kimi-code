@@ -2,11 +2,21 @@
   "name": "@moonshot-ai/kimi-desktop",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "description": "Wails desktop shell around the Kimi Code web UI.",
   "scripts": {
     "build:frontend": "pnpm --filter @moonshot-ai/kimi-web build && node scripts/copy-dist.mjs",
     "build": "pnpm run build:frontend && wails build",
     "dev": "pnpm run build:frontend && go run -tags desktop,production .",
-    "typecheck": "go vet ./..."
+    "typecheck": "go vet ./...",
+    "sidecar": "tsx --tsconfig ./sidecar/tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./sidecar/main.ts",
+    "typecheck:sidecar": "tsc -p ./sidecar/tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@moonshot-ai/agent-core-v2": "workspace:^",
+    "@moonshot-ai/klient": "workspace:^"
+  },
+  "devDependencies": {
+    "tsx": "^4.21.0"
   }
 }
