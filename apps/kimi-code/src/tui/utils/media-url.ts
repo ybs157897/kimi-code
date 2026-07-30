@@ -1,3 +1,5 @@
+import { escapeAttribute } from './html-escape';
+
 export type MediaUrlKind = 'audio' | 'image' | 'video';
 
 export function mediaUrlPartToText(kind: MediaUrlKind, url: string): string {
@@ -40,12 +42,4 @@ function formatByteSize(bytes: number): string {
 
 function formatOneDecimal(value: number): string {
   return value >= 10 ? value.toFixed(0) : value.toFixed(1);
-}
-
-function escapeAttribute(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
 }

@@ -43,6 +43,7 @@ import type {
   ImageAttachmentStore,
   VideoAttachment,
 } from './image-attachment-store';
+import { escapeAttribute } from './html-escape';
 
 const PLACEHOLDER_REGEX = /\[(image|video) #(\d+) (?:(\(\d+×\d+\))|([^\]]+))\]/g;
 
@@ -285,12 +286,4 @@ function formatMediaTag(tag: 'image' | 'video', path: string): string {
  */
 function formatMediaReference(kind: 'image' | 'video', path: string): string {
   return `Attached ${kind} file: ${path} (open it with ReadMediaFile)`;
-}
-
-function escapeAttribute(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('"', '&quot;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;');
 }
