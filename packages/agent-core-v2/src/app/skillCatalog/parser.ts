@@ -11,6 +11,7 @@ import path from 'pathe';
 
 import { load as loadYaml } from 'js-yaml';
 
+import { isRecord } from '#/_base/utils/types';
 import type { SkillDefinition, SkillMetadata, SkillSource } from './types';
 import { isSupportedSkillType } from './types';
 
@@ -196,8 +197,4 @@ function descriptionFromBody(body: string): string {
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

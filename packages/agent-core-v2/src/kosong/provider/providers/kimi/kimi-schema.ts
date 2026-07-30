@@ -10,6 +10,8 @@
  * remaining local `$ref` pointers stay resolvable to a JSON Schema validator.
  */
 
+import { isRecord } from '#/_base/utils/types';
+
 export function derefJsonSchema(schema: Record<string, unknown>): Record<string, unknown> {
   const visited = new Set<string>();
   const result = resolveNode(schema, schema, visited) as Record<string, unknown>;
@@ -423,10 +425,6 @@ function cloneJsonValue(value: unknown): unknown {
     return cloned;
   }
   return value;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function hasOwn(obj: Record<string, unknown>, key: string): boolean {

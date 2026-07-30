@@ -20,6 +20,7 @@
 
 import { join } from 'pathe';
 
+import { isRecord } from '#/_base/utils/types';
 import type { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import type { IFileSystemStorageService } from '#/persistence/interface/storage';
 
@@ -293,10 +294,6 @@ function isReadablePersistedTask(obj: unknown): obj is DiskPersistedTask {
 
 function isLegacyPersistedTask(task: DiskPersistedTask): task is LegacyPersistedTask {
   return 'task_id' in task;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
 }
 
 function optionalNonEmptyString(value: string | undefined): string | undefined {

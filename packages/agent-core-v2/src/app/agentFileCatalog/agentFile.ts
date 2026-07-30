@@ -13,6 +13,7 @@
  */
 
 import { FrontmatterError, parseFrontmatter } from '#/app/skillCatalog/parser';
+import { isRecord } from '#/_base/utils/types';
 
 import type { AgentFileDefinition, AgentFileSource } from './types';
 
@@ -182,8 +183,4 @@ function deriveNameFromPath(filePath: string): string | undefined {
 
 function nonEmptyString(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() !== '' ? value.trim() : undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

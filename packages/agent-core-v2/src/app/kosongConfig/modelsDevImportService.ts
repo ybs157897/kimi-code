@@ -38,6 +38,7 @@ import {
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
+import { isRecord } from '#/_base/utils/types';
 import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { type ModelsSection } from '#/kosong/model/model';
@@ -364,11 +365,6 @@ function registryKeyFromExisting(
     }
   }
   return undefined;
-}
-
-/** Local mirror of the core's `isRecord` (not exported by the oauth package). */
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 /** Cap an upstream error text before it lands in banners/logs. */
