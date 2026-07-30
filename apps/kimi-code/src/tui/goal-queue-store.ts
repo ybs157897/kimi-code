@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import { isRecord } from '#/utils/type-guards';
+import { isNonEmptyString, isRecord } from '#/utils/type-guards';
 import type {
   GoalQueueMoveDirection,
   GoalQueueSnapshot,
@@ -254,10 +254,6 @@ function isUpcomingGoal(value: unknown): value is UpcomingGoal {
     isNonEmptyString(value['createdAt']) &&
     isNonEmptyString(value['updatedAt'])
   );
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
 }
 
 function timestampAfter(previous: string): string {

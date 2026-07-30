@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { isRecord } from '#/_base/utils/types';
+import { isNonEmptyString, isRecord } from '#/_base/utils/types';
 import { Error2, ErrorCodes } from '#/errors';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { StorageError, StorageErrors } from '#/persistence/interface/storage';
@@ -192,10 +192,6 @@ function isUpcomingGoal(value: unknown): value is UpcomingGoal {
     isNonEmptyString(value['createdAt']) &&
     isNonEmptyString(value['updatedAt'])
   );
-}
-
-function isNonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0;
 }
 
 function timestampAfter(previous: string): string {

@@ -1,3 +1,5 @@
+import { isNonEmptyString } from '#/_base/utils/types';
+
 import type { HookResult } from './types';
 
 export function renderHookResult(event: string, message: string): string {
@@ -59,8 +61,4 @@ function userPromptHookMessage(result: HookResult): string | undefined {
   if (message !== undefined && message.length > 0) return message;
   const stdout = result.stdout?.trim();
   return stdout === undefined || stdout.length === 0 ? undefined : stdout;
-}
-
-function isNonEmptyString(value: string | undefined): value is string {
-  return value !== undefined && value.length > 0;
 }
