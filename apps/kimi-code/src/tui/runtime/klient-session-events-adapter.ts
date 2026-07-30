@@ -1,5 +1,6 @@
 import type { KimiV2Runtime } from '@moonshot-ai/kimi-code-sdk/v2';
 
+import { isRecord } from '#/utils/type-guards';
 import type {
   SessionScopedEventsPort,
   TUIApprovalDisplay,
@@ -217,10 +218,6 @@ function normalizeInteraction(
     return normalized;
   }
   return undefined;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function normalizeApprovalDisplay(

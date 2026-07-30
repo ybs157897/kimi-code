@@ -1,6 +1,7 @@
 import type { ApprovalPanelResponse } from '#/tui/components/dialogs/approval-panel';
 import { goalStartOptions } from '#/tui/components/dialogs/goal-start-permission-prompt';
 import type { ApprovalPanelChoice, ApprovalPanelData, DisplayBlock } from '#/tui/reverse-rpc/types';
+import { isRecord } from '#/utils/type-guards';
 import type {
   TUIApprovalDisplay,
   TUIApprovalRequest,
@@ -52,10 +53,6 @@ function resolveDisplay<GenericDetail>(
     blocks: adaptDisplay(display),
     description: describeApproval(display, action),
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function stringField(detail: Record<string, unknown>, key: string): string | undefined {
