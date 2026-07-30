@@ -9,6 +9,7 @@
 import { z } from 'zod';
 
 import { createDecorator } from '#/_base/di/instantiation';
+import { errorMessage } from '#/_base/errors/errorMessage';
 import { ILogService } from '#/_base/log/log';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
@@ -245,8 +246,4 @@ function assignmentPrompt(target: ExpertTeamSpawnTarget, prompt: string): string
     'When finished, call SendMessage with recipient "team-lead" and include your complete authoritative findings.',
     '</expert-team-assignment>',
   ].join('\n');
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

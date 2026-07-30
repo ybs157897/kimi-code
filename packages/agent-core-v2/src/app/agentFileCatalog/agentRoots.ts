@@ -7,6 +7,7 @@
 
 import { dirname, join, resolve } from 'pathe';
 
+import { errorMessage } from '#/_base/errors/errorMessage';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
 
@@ -117,8 +118,4 @@ async function pushExistingRoot(
 
 function isUnavailable(error: unknown): boolean {
   return error instanceof HostFsError && error.code === OsFsErrors.codes.OS_FS_UNAVAILABLE;
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

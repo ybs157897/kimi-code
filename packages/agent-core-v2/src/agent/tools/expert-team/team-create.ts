@@ -8,6 +8,7 @@
 import { z } from 'zod';
 
 import { createDecorator } from '#/_base/di/instantiation';
+import { errorMessage } from '#/_base/errors/errorMessage';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IFlagService } from '#/app/flag/flag';
@@ -84,7 +85,3 @@ registerAgentToolService(ITeamCreateTool, TeamCreateTool, {
   domain: 'expertTeam',
   when: (accessor) => accessor.get(IFlagService).enabled(EXPERT_TEAMS_FLAG_ID),
 });
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}

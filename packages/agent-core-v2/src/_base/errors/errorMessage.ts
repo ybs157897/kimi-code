@@ -4,6 +4,15 @@
 
 import { isCodedError } from './serialize';
 
+/**
+ * Minimal error-message extraction: `Error.message` for Error instances,
+ * `String(error)` for everything else. Use {@link toErrorMessage} when you
+ * need coded-error formatting, verbose cause chains, or JSON fallback.
+ */
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export function toErrorMessage(error: unknown, verbose = false): string {
   if (isCodedError(error)) {
     const base = `[${error.code}] ${error.message}`;
