@@ -6,6 +6,8 @@
 
 import { createHighlighter, type BundledLanguage, type Highlighter } from 'shiki';
 
+import { escapeHtml } from './searchHighlight';
+
 export type FilePreviewTheme = 'github-light' | 'github-dark';
 
 const HEAVY_CHARS = 200_000;
@@ -50,14 +52,6 @@ export function resolveShikiLang(languageId: string): string {
   const raw = languageId.trim().toLowerCase();
   if (!raw) return '';
   return LANG_ALIASES[raw] ?? raw;
-}
-
-function escapeHtml(text: string): string {
-  return text
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
 }
 
 async function ensureLanguage(hl: Highlighter, lang: string): Promise<string | null> {

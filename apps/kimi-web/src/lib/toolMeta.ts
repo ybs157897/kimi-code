@@ -3,6 +3,7 @@
 
 import { i18n } from '../i18n';
 import { iconSvg, type IconName } from './icons';
+import { parseToolArg } from './toolArg';
 
 const t = i18n.global.t;
 
@@ -158,18 +159,6 @@ function isEmptyArg(arg: string, d: Record<string, unknown> | null): boolean {
   return false;
 }
 
-/** Parse the JSON-stringified `arg` into a record, or null for plain strings. */
-function parseArg(arg: string): Record<string, unknown> | null {
-  const s = arg.trim();
-  if (!s.startsWith('{')) return null;
-  try {
-    const v = JSON.parse(s);
-    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
-
 function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.length > 0 ? v : undefined;
 }
@@ -240,7 +229,7 @@ export function toolSummary(name: string, arg: string, full = false): string {
   // Local clip that becomes a no-op (trim only) in `full` mode.
   const c = (s: string, max = SUMMARY_MAX): string => (full ? s.trim() : clip(s, max));
   try {
-    const d = parseArg(arg);
+    const d = parseToolArg(arg);
     // Empty argument (e.g. `{}`): keep it OUT of the collapsed header title, but
     // still show it in the expanded body (full mode) so the detail isn't lost.
     if (!full && isEmptyArg(arg, d)) return '';

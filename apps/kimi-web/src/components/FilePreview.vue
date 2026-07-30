@@ -7,6 +7,7 @@ import Markdown from './chat/Markdown.vue';
 import type { FileData, FilePreviewRequest } from '../types';
 import { copyTextToClipboard } from '../lib/clipboard';
 import { highlightSourceLines } from '../lib/filePreviewHighlight';
+import { escapeHtml } from '../lib/searchHighlight';
 import { useIsDark } from '../composables/useIsDark';
 import SegmentedControl from './ui/SegmentedControl.vue';
 import Button from './ui/Button.vue';
@@ -366,14 +367,6 @@ function parseCsvLine(line: string): string[] {
 }
 
 const csvRows = computed<string[][]>(() => lines.value.slice(0, 200).map(parseCsvLine));
-
-function escapeHtml(value: string): string {
-  return value
-    .replaceAll('&', '&amp;')
-    .replaceAll('<', '&lt;')
-    .replaceAll('>', '&gt;')
-    .replaceAll('"', '&quot;');
-}
 
 const languageKey = computed(() => {
   const f = props.file;

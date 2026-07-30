@@ -4,18 +4,8 @@
 
 import type { ChatTurn, DiffViewLine, ToolCall } from '../types';
 import { buildDiffLines } from './diffLines';
+import { parseToolArg } from './toolArg';
 import { normalizeToolName } from './toolMeta';
-
-function parseArg(arg: string): Record<string, unknown> | null {
-  const s = arg.trim();
-  if (!s.startsWith('{')) return null;
-  try {
-    const v = JSON.parse(s);
-    return v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Build a line diff for an Edit/Write tool call from its input. Returns null
@@ -25,7 +15,7 @@ function parseArg(arg: string): Record<string, unknown> | null {
 export function buildEditDiffLines(tool: { name: string; arg: string }): DiffViewLine[] | null {
   const kind = normalizeToolName(tool.name);
   if (kind !== 'edit' && kind !== 'write') return null;
-  const d = parseArg(tool.arg);
+  const d = parseToolArg(tool.arg);
   if (!d) return null;
   if (kind === 'edit') {
     if (d.replace_all === true) return null;
@@ -43,7 +33,7 @@ export function buildEditDiffLines(tool: { name: string; arg: string }): DiffVie
 
 /** Pull the file path out of an Edit/Write tool call's input, if present. */
 export function extractEditPath(arg: string): string | undefined {
-  const d = parseArg(arg);
+  const d = parseToolArg(arg);
   return d && typeof d.path === 'string' ? d.path : undefined;
 }
 
