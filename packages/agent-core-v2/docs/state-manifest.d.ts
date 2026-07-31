@@ -88,9 +88,9 @@
 //     llmRequester.mediaDegradedTurns                 src/agent/llmRequester/llmRequesterService.ts
 //     llmRequester.mediaStrippedTurns                 src/agent/llmRequester/llmRequesterService.ts
 //     llmRequester.turnConfigs                        src/agent/llmRequester/llmRequesterService.ts
-//     loop.disposing                                  src/agent/loop/loopService.ts
-//     loop.lastRequestTraceId                         src/agent/loop/loopService.ts
-//     loop.nextReservedTurnId                         src/agent/loop/loopService.ts
+//     loop.disposing                                  src/agent/loop/loopStateKeys.ts
+//     loop.lastRequestTraceId                         src/agent/loop/loopStateKeys.ts
+//     loop.nextReservedTurnId                         src/agent/loop/loopStateKeys.ts
 //     mcp.discoveryWritesReady                        src/agent/mcp/mcpService.ts
 //     mcp.mcpToolsByServer                            src/agent/mcp/mcpService.ts
 //     media.registeredKey                             src/agent/media/mediaToolsRegistrar.ts
@@ -1040,7 +1040,7 @@ export interface AgentStateSnapshot {
   'llmRequester.lastConfigLogSignature': string | undefined;
   'llmRequester.mediaDegradedTurns': Set<number>;
   'llmRequester.mediaStrippedTurns': Map<number, /* MediaStripSnapshot — packages/agent-core-v2/src/agent/contextProjector/contextProjector.ts */ {
-    readonly "__@mediaStripSnapshotBrand@2874": undefined;
+    readonly "__@mediaStripSnapshotBrand@2896": undefined;
   }>;
   'llmRequester.turnConfigs': Map<number, /* TurnRequestConfig — packages/agent-core-v2/src/agent/llmRequester/llmRequesterService.ts */ {
     readonly resolved: /* ProfileModelContext — packages/agent-core-v2/src/agent/profile/profile.ts */ {
@@ -1076,7 +1076,7 @@ export interface AgentStateSnapshot {
     };
     readonly systemPrompt: string;
   }>;
-  // src/agent/loop/loopService.ts
+  // src/agent/loop/loopStateKeys.ts
   'loop.disposing': boolean;
   'loop.lastRequestTraceId': string | undefined;
   'loop.nextReservedTurnId': number | undefined;

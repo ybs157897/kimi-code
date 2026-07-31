@@ -44,7 +44,6 @@ import { createControlledPromise } from '@antfu/utils';
 
 import { Disposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { defineState } from '#/_base/state/stateRegistry';
 import { abortError, isAbortError, isUserCancellation, userCancellationReason } from '#/_base/utils/abort';
 import { toErrorMessage } from '#/_base/errors/errorMessage';
 import { IAgentLLMRequesterService, type AgentLLMRequestFinish } from '#/agent/llmRequester/llmRequester';
@@ -88,24 +87,37 @@ import {
   type TurnResult,
 } from './loop';
 import {
+  loopDisposingKey,
+  loopLastRequestTraceIdKey,
+  loopNextReservedTurnIdKey,
+} from './loopStateKeys';
+import { interruptReasonFor, normalizeFinishReason } from './reasons';
+import {
   type StepRequest,
   type TurnSeed,
 } from './stepRequest';
 import { StepRequestQueue, type StepRequestBatch } from './stepRequestQueue';
 import { isDisplayablePromptOrigin, turnPromptText } from './turnEvents';
 import { cancelTurn, promptTurn, TurnModel } from './turnOps';
+import type {
+  BeginStepResult,
+  HeldAdmission,
+  LoopErrorDisposition,
+  LoopInterruptReason,
+  LoopRuntime,
+  MutableStep,
+  MutableTurn,
+  StepExecutionResult,
+  StepRuntime,
+  TurnJob,
+} from './types';
 
-export type LoopInterruptReason = 'aborted' | 'max_steps' | 'error';
-
-export const loopNextReservedTurnIdKey = defineState<number | undefined>(
-  'loop.nextReservedTurnId',
-  () => undefined as number | undefined,
-);
-export const loopLastRequestTraceIdKey = defineState<string | undefined>(
-  'loop.lastRequestTraceId',
-  () => undefined as string | undefined,
-);
-export const loopDisposingKey = defineState<boolean>('loop.disposing', () => false);
+export {
+  loopDisposingKey,
+  loopLastRequestTraceIdKey,
+  loopNextReservedTurnIdKey,
+} from './loopStateKeys';
+export type { LoopInterruptReason } from './types';
 
 export class AgentLoopService extends Disposable implements IAgentLoopService {
   declare readonly _serviceBrand: undefined;
@@ -1082,82 +1094,6 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     };
   }
 }
-
-function normalizeFinishReason(reason: FinishReason): string {
-  if (reason === 'tool_calls') return 'tool_use';
-  if (reason === 'completed') return 'end_turn';
-  if (reason === 'truncated') return 'max_tokens';
-  return reason;
-}
-
-type MutableTurn = {
-  -readonly [K in keyof Turn]: Turn[K];
-};
-
-type MutableStep = {
-  -readonly [K in keyof Step]: Step[K];
-} & {
-  controller?: AbortController;
-  resultControl?: ReturnType<typeof createControlledPromise<StepResult>>;
-};
-
-interface TurnJob {
-  readonly request: StepRequest;
-  readonly seed: TurnSeed;
-  readonly controller: AbortController;
-  readonly ready: ReturnType<typeof createControlledPromise<void>>;
-  readonly result: ReturnType<typeof createControlledPromise<TurnResult>>;
-  readonly queue: StepRequestQueue;
-  readonly steps: Map<string, MutableStep>;
-  readonly turn: MutableTurn;
-}
-
-interface HeldAdmission {
-  readonly request: StepRequest;
-  readonly options?: StepEnqueueOptions;
-}
-
-interface LoopRuntime {
-  readonly turnId: number;
-  readonly turnSignal: AbortSignal;
-  readonly job: TurnJob | undefined;
-  readonly queue: StepRequestQueue;
-  steps: number;
-  lastStopReason: FinishReason | undefined;
-  current: StepRuntime | undefined;
-}
-
-interface StepRuntime {
-  readonly number: number;
-  readonly uuid: string;
-  readonly batch: StepRequestBatch;
-  readonly mutableStep: MutableStep | undefined;
-  readonly signal: AbortSignal;
-}
-
-type BeginStepResult = { readonly step: StepRuntime } | { readonly result: LoopRunResult };
-
-function interruptReasonFor(
-  result: Extract<TurnResult, { readonly type: 'cancelled' | 'failed' }>,
-): TurnInterruptedEvent['interrupt_reason'] {
-  if (result.type === 'cancelled') {
-    return isUserCancellation(result.reason) ? 'user_cancelled' : 'aborted';
-  }
-  if (isMaxStepsExceededError(result.error)) return 'max_steps';
-  if (isError2(result.error) && result.error.code === ErrorCodes.PROVIDER_FILTERED) {
-    return 'filtered';
-  }
-  return 'error';
-}
-
-type StepExecutionResult = {
-  readonly stopReason: FinishReason;
-  readonly hookStopTurn: boolean;
-};
-
-type LoopErrorDisposition =
-  | { readonly type: 'continue' }
-  | { readonly type: 'return'; readonly result: LoopRunResult };
 
 registerScopedService(
   LifecycleScope.Agent,
