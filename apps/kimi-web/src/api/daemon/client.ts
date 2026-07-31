@@ -41,6 +41,36 @@ import type {
   QuestionResponse,
 } from '../types';
 import { createAgentProjector } from './agentEventProjector';
+import {
+  errorTraceMetadata,
+  isCompactionReason,
+  safeExportFileName,
+} from './clientHelpers';
+import {
+  providerRequestBody,
+  toAppTerminal,
+  toProviderRefreshResult,
+} from './clientMappers';
+import type {
+  WireAbortResult,
+  WireApprovalResolveResult,
+  WireArchiveResult,
+  WireCancelResult,
+  WireDiffResult,
+  WireDismissResult,
+  WireExtensionCommand,
+  WireExtensionReloadResult,
+  WireGitStatusResult,
+  WireGrepFilesResult,
+  WireHealth,
+  WireListDirectoryResult,
+  WireMeta,
+  WireQuestionResolveResult,
+  WireReadFileResult,
+  WireSearchFilesResult,
+  WireSkillDescriptor,
+  WireTerminal,
+} from './clientWire';
 import { DaemonHttpClient } from './http';
 import {
   toAppApprovalRequest,
@@ -73,7 +103,6 @@ import type {
   WireProviderDetail,
   WireFileMeta,
   WireFsBrowseResult,
-  WireFsEntry,
   WireFsHomeResult,
   WireGoalSnapshot,
   WireMessage,
@@ -96,220 +125,6 @@ import type {
   WireLogoutResult,
 } from './wire';
 import { DaemonEventSocket } from './ws';
-
-function safeExportFileName(contentDisposition: string | undefined, fallback: string): string {
-  if (contentDisposition === undefined) return fallback;
-  let candidate: string | undefined;
-  const encoded = /filename\*\s*=\s*UTF-8''([^;]+)/i.exec(contentDisposition)?.[1]?.trim();
-  if (encoded !== undefined) {
-    try {
-      candidate = decodeURIComponent(encoded.replaceAll(/^"|"$/g, ''));
-    } catch {
-      return fallback;
-    }
-  } else {
-    candidate =
-      /filename\s*=\s*"([^"]*)"/i.exec(contentDisposition)?.[1] ??
-      /filename\s*=\s*([^;]+)/i.exec(contentDisposition)?.[1]?.trim();
-  }
-  if (
-    candidate === undefined ||
-    candidate.length === 0 ||
-    candidate.length > 200 ||
-    candidate === '.' ||
-    candidate === '..' ||
-    /[\u0000-\u001F\u007F/\\]/.test(candidate) ||
-    !candidate.toLowerCase().endsWith('.zip')
-  ) {
-    return fallback;
-  }
-  return candidate;
-}
-
-function errorTraceMetadata(err: unknown): Record<string, string | number | undefined> {
-  if (typeof err !== 'object' || err === null) return { errorName: typeof err };
-  const value = err as {
-    name?: unknown;
-    code?: unknown;
-    requestId?: unknown;
-    phase?: unknown;
-    status?: unknown;
-  };
-  return {
-    errorName: typeof value.name === 'string' ? value.name : 'Error',
-    errorCode: typeof value.code === 'number' ? value.code : undefined,
-    requestId: typeof value.requestId === 'string' ? value.requestId : undefined,
-    phase: typeof value.phase === 'string' ? value.phase : undefined,
-    httpStatus: typeof value.status === 'number' ? value.status : undefined,
-  };
-}
-
-// ---------------------------------------------------------------------------
-// Wire response shapes for endpoints not in shared wire.ts
-// ---------------------------------------------------------------------------
-
-interface WireHealth {
-  status: 'ok';
-  uptime_sec: number;
-}
-
-interface WireMeta {
-  server_version: string;
-  server_id: string;
-  started_at: string;
-  capabilities: Record<string, boolean>;
-  open_in_apps?: string[];
-  dangerous_bypass_auth?: boolean;
-  /** Engine generation serving the API; older (v1) servers omit the field. */
-  backend?: 'v1' | 'v2';
-}
-
-interface WireAbortResult {
-  aborted: boolean;
-  at_seq?: number;
-}
-
-interface WireDismissResult {
-  dismissed: boolean;
-  dismissed_at: string;
-}
-
-interface WireApprovalResolveResult {
-  resolved: true;
-  resolved_at: string;
-}
-
-interface WireQuestionResolveResult {
-  resolved: true;
-  resolved_at: string;
-}
-
-interface WireCancelResult {
-  cancelled: true;
-}
-
-interface WireSkillDescriptor {
-  name: string;
-  description: string;
-  path: string;
-  source: string;
-  type?: string;
-  disable_model_invocation?: boolean;
-}
-
-interface WireExtensionCommand {
-  extension_id: string;
-  name: string;
-  description: string;
-}
-
-interface WireExtensionReloadResult {
-  active: string[];
-  errors: Array<{ path: string; error: string }>;
-}
-
-interface WireArchiveResult {
-  archived: true;
-}
-
-interface WireListDirectoryResult {
-  items: WireFsEntry[];
-  children_by_path?: Record<string, WireFsEntry[]>;
-  truncated: boolean;
-}
-
-interface WireReadFileResult {
-  path: string;
-  content: string;
-  encoding: 'utf-8' | 'base64';
-  size: number;
-  truncated: boolean;
-  etag: string;
-  mime: string;
-  language_id?: string;
-  line_count?: number;
-  is_binary: boolean;
-}
-
-interface WireSearchFilesResult {
-  items: Array<{
-    path: string;
-    name: string;
-    kind: 'file' | 'directory' | 'symlink';
-    score: number;
-    match_positions: number[];
-  }>;
-  truncated: boolean;
-}
-
-interface WireGrepFilesResult {
-  files: Array<{
-    path: string;
-    matches: Array<{
-      line: number;
-      col: number;
-      text: string;
-      before: string[];
-      after: string[];
-    }>;
-  }>;
-  files_scanned: number;
-  truncated: boolean;
-  elapsed_ms: number;
-}
-
-interface WireGitStatusResult {
-  branch: string;
-  ahead: number;
-  behind: number;
-  entries: Record<string, string>;
-  additions: number;
-  deletions: number;
-  pullRequest?: { number: number; state: string; url: string } | null;
-}
-
-interface WireDiffResult {
-  path: string;
-  diff: string;
-}
-
-interface WireTerminal {
-  id: string;
-  session_id: string;
-  cwd: string;
-  shell: string;
-  cols: number;
-  rows: number;
-  status: 'running' | 'exited';
-  created_at: string;
-  exited_at?: string;
-  exit_code?: number | null;
-}
-
-function toAppTerminal(data: WireTerminal): AppTerminal {
-  return {
-    id: data.id,
-    sessionId: data.session_id,
-    cwd: data.cwd,
-    shell: data.shell,
-    cols: data.cols,
-    rows: data.rows,
-    status: data.status,
-    createdAt: data.created_at,
-    exitedAt: data.exited_at,
-    exitCode: data.exit_code,
-  };
-}
-
-/**
- * historyCompacted reasons caused by compaction itself. These do NOT trigger a
- * snapshot reload: the client keeps the visible scrollback and renders a
- * divider marker instead. Every other reason (delta_gap, history_rewrite, …)
- * still means "cached messages are stale" and goes through onResync.
- */
-function isCompactionReason(reason: string): boolean {
-  return reason === 'auto_compact' || reason === 'manual_compact';
-}
 
 // ---------------------------------------------------------------------------
 // DaemonKimiWebApi
@@ -1665,38 +1480,4 @@ export class DaemonKimiWebApi implements KimiWebApi {
       },
     };
   }
-}
-
-/** camelCase form → the snake_case POST/PUT /providers body. */
-function providerRequestBody(input: AppProviderInput): Record<string, unknown> {
-  const models = input.models.map((row) => {
-    const model: Record<string, unknown> = {
-      model: row.model,
-      max_context_size: row.maxContextSize,
-    };
-    if (row.displayName !== undefined && row.displayName !== '') {
-      model['display_name'] = row.displayName;
-    }
-    return model;
-  });
-  const body: Record<string, unknown> = { id: input.id, type: input.type, models };
-  if (input.apiKey !== undefined) body['api_key'] = input.apiKey;
-  if (input.baseUrl !== undefined && input.baseUrl !== '') body['base_url'] = input.baseUrl;
-  if (input.defaultModel !== undefined && input.defaultModel !== '') {
-    body['default_model'] = input.defaultModel;
-  }
-  return body;
-}
-
-function toProviderRefreshResult(data: WireProviderRefreshResult): ProviderRefreshResult {
-  return {
-    changed: data.changed.map((item) => ({
-      providerId: item.provider_id,
-      providerName: item.provider_name,
-      added: item.added,
-      removed: item.removed,
-    })),
-    unchanged: data.unchanged,
-    failed: data.failed,
-  };
 }

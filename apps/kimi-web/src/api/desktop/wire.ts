@@ -88,7 +88,7 @@ export interface WireDiffResult {
 
 // ---------------------------------------------------------------------------
 // Slice 6 — session terminals. Mirrored field-for-field from the daemon
-// client's local DTO (daemon/client.ts `WireTerminal`); there is no shared
+// client's local DTO (daemon/clientWire.ts `WireTerminal`); there is no shared
 // wire.ts entry, so the desktop client keeps its own copy matching the
 // sidecar's kap-server-parity wire exactly.
 // ---------------------------------------------------------------------------
@@ -108,7 +108,7 @@ export interface WireTerminal {
 
 // ---------------------------------------------------------------------------
 // Slice 7 — skills, code extensions. Mirrored field-for-field from the daemon
-// client's local DTOs (daemon/client.ts `WireSkillDescriptor` /
+// client's local DTOs (daemon/clientWire.ts `WireSkillDescriptor` /
 // `WireExtensionCommand` / `WireExtensionReloadResult`), matching the sidecar's
 // kap-server-parity wire exactly.
 // ---------------------------------------------------------------------------

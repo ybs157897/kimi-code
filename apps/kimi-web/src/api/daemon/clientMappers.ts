@@ -1,12 +1,9 @@
-// apps/kimi-web/src/api/desktop/mappers.ts
-// The desktop client's local wire↔app mappers — conversions for the wire
-// shapes NOT covered by the shared daemon mappers (../daemon/mappers.ts),
-// mirrored field-for-field from the daemon client's local helpers
-// (daemon/clientMappers.ts).
+// apps/kimi-web/src/api/daemon/clientMappers.ts
+// Mapping functions between the daemon client's local wire shapes and app types.
 
 import type { AppProviderInput, AppTerminal, ProviderRefreshResult } from '../types';
-import type { WireProviderRefreshResult } from '../daemon/wire';
-import type { WireTerminal } from './wire';
+import type { WireTerminal } from './clientWire';
+import type { WireProviderRefreshResult } from './wire';
 
 export function toAppTerminal(data: WireTerminal): AppTerminal {
   return {
@@ -23,7 +20,7 @@ export function toAppTerminal(data: WireTerminal): AppTerminal {
   };
 }
 
-/** Mirrors the daemon client's `providerRequestBody` (client.ts). */
+/** camelCase form → the snake_case POST/PUT /providers body. */
 export function providerRequestBody(input: AppProviderInput): Record<string, unknown> {
   const models = input.models.map((row) => {
     const model: Record<string, unknown> = {
