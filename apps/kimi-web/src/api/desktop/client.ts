@@ -92,7 +92,6 @@ import type {
   WireExpertTeamSnapshot,
   WireFileMeta,
   WireFsBrowseResult,
-  WireFsEntry,
   WireFsHomeResult,
   WireGoalSnapshot,
   WireMessage,
@@ -116,268 +115,25 @@ import type {
   WireWorkspace,
 } from '../daemon/wire';
 import { base64FromBytes } from './base64';
+import { MAIN_AGENT_ID, UPLOAD_CHUNK_BYTES } from './constants';
+import { providerRequestBody, toAppTerminal, toProviderRefreshResult } from './mappers';
 import type { DesktopBridge, ProductEventPayload } from './types';
+import type {
+  DesktopResyncFrame,
+  WireDiffResult,
+  WireExtensionCommand,
+  WireExtensionReloadResult,
+  WireGrepFilesResult,
+  WireHealth,
+  WireListDirectoryResult,
+  WireMeta,
+  WireReadFileResult,
+  WireSearchFilesResult,
+  WireSkillDescriptor,
+  WireTerminal,
+} from './wire';
 
-/**
- * Every KimiWebApi member `WailsKimiWebApi` implements — the complete desktop
- * product transport surface (all 81 members, kept in sync by the
- * `implements KimiWebApi` clause; `deleteSession` / `setDefaultModel` are
- * class-only leftovers and intentionally absent). The coverage test
- * (`test/product-method-coverage.test.ts`) asserts this list against the
- * sidecar `ProductFacade` dispatch tables so a client method can never target
- * a product method the real shell does not register.
- */
-export const DESKTOP_SUPPORTED_METHODS: readonly string[] = [
-  'getHealth',
-  'getMeta',
-  'listSessions',
-  'createSession',
-  'getSession',
-  'updateSession',
-  'getSessionStatus',
-  'getSessionGoal',
-  'getSessionWarnings',
-  'archiveSession',
-  'restoreSession',
-  'listMessages',
-  'getSessionSnapshot',
-  'exportSession',
-  'submitPrompt',
-  'steerPrompts',
-  'abortPrompt',
-  'abortSession',
-  'compactSession',
-  'undoSession',
-  'forkSession',
-  'createChildSession',
-  'listChildSessions',
-  'startBtw',
-  'respondApproval',
-  'respondQuestion',
-  'dismissQuestion',
-  'listSkills',
-  'listSkillsForWorkspace',
-  'activateSkill',
-  'listExtensionCommands',
-  'reloadExtensions',
-  'activateExtensionCommand',
-  'listExpertTeams',
-  'getExpertTeam',
-  'activateExpertTeam',
-  'deactivateExpertTeam',
-  'listTasks',
-  'getTask',
-  'cancelTask',
-  'listTerminals',
-  'createTerminal',
-  'getTerminal',
-  'closeTerminal',
-  'listDirectory',
-  'readFile',
-  'searchFiles',
-  'grepFiles',
-  'getGitStatus',
-  'getFileDiff',
-  'getFileDownloadUrl',
-  'getWorkspaceFileBlob',
-  'openFile',
-  'revealFile',
-  'openInApp',
-  'connectEvents',
-  'listWorkspaces',
-  'addWorkspace',
-  'updateWorkspace',
-  'deleteWorkspace',
-  'browseFs',
-  'getFsHome',
-  'listModels',
-  'listProviders',
-  'createProvider',
-  'getProvider',
-  'replaceProvider',
-  'deleteProvider',
-  'refreshProvider',
-  'refreshAllProviders',
-  'refreshOAuthProviderModels',
-  'uploadFile',
-  'getFileUrl',
-  'getFileBlob',
-  'supportsSyncFileUrls',
-  'getConfig',
-  'setConfig',
-  'getAuth',
-  'startOAuthLogin',
-  'pollOAuthLogin',
-  'cancelOAuthLogin',
-  'logout',
-];
-
-// ---------------------------------------------------------------------------
-// Wire response shapes for boot endpoints not in shared wire.ts — mirrored
-// field-for-field from the daemon client's local DTOs (daemon/client.ts), which
-// in turn match the kap-server healthz / meta routes.
-// ---------------------------------------------------------------------------
-
-interface WireHealth {
-  status: 'ok';
-  uptime_sec: number;
-}
-
-interface WireMeta {
-  server_version: string;
-  server_id: string;
-  started_at: string;
-  capabilities: Record<string, boolean>;
-  open_in_apps?: string[];
-  dangerous_bypass_auth?: boolean;
-  /** Engine generation serving the API; older (v1) servers omit the field. */
-  backend?: 'v1' | 'v2';
-}
-
-// ---------------------------------------------------------------------------
-// Slice 4 — structured filesystem wire results. Mirrored field-for-field from
-// the daemon client's local DTOs (daemon/client.ts), which match the engine's
-// `sessionFs` response schemas the sidecar returns unchanged.
-// ---------------------------------------------------------------------------
-
-interface WireListDirectoryResult {
-  items: WireFsEntry[];
-  children_by_path?: Record<string, WireFsEntry[]>;
-  truncated: boolean;
-}
-
-interface WireReadFileResult {
-  path: string;
-  content: string;
-  encoding: 'utf-8' | 'base64';
-  size: number;
-  truncated: boolean;
-  etag: string;
-  mime: string;
-  language_id?: string;
-  line_count?: number;
-  is_binary: boolean;
-}
-
-interface WireSearchFilesResult {
-  items: Array<{
-    path: string;
-    name: string;
-    kind: FsKind;
-    score: number;
-    match_positions: number[];
-  }>;
-  truncated: boolean;
-}
-
-interface WireGrepFilesResult {
-  files: Array<{
-    path: string;
-    matches: Array<{
-      line: number;
-      col: number;
-      text: string;
-      before: string[];
-      after: string[];
-    }>;
-  }>;
-  files_scanned: number;
-  truncated: boolean;
-  elapsed_ms: number;
-}
-
-interface WireDiffResult {
-  path: string;
-  diff: string;
-}
-
-// ---------------------------------------------------------------------------
-// Slice 6 — session terminals. Mirrored field-for-field from the daemon
-// client's local DTO (daemon/client.ts `WireTerminal`); there is no shared
-// wire.ts entry, so the desktop client keeps its own copy matching the
-// sidecar's kap-server-parity wire exactly.
-// ---------------------------------------------------------------------------
-
-interface WireTerminal {
-  id: string;
-  session_id: string;
-  cwd: string;
-  shell: string;
-  cols: number;
-  rows: number;
-  status: 'running' | 'exited';
-  created_at: string;
-  exited_at?: string;
-  exit_code?: number | null;
-}
-
-// ---------------------------------------------------------------------------
-// Slice 7 — skills, code extensions. Mirrored field-for-field from the daemon
-// client's local DTOs (daemon/client.ts `WireSkillDescriptor` /
-// `WireExtensionCommand` / `WireExtensionReloadResult`), matching the sidecar's
-// kap-server-parity wire exactly.
-// ---------------------------------------------------------------------------
-
-interface WireSkillDescriptor {
-  name: string;
-  description: string;
-  path: string;
-  source: string;
-  type?: string;
-  disable_model_invocation?: boolean;
-}
-
-interface WireExtensionCommand {
-  extension_id: string;
-  name: string;
-  description: string;
-}
-
-interface WireExtensionReloadResult {
-  active: string[];
-  errors: Array<{ path: string; error: string }>;
-}
-
-function toAppTerminal(data: WireTerminal): AppTerminal {
-  return {
-    id: data.id,
-    sessionId: data.session_id,
-    cwd: data.cwd,
-    shell: data.shell,
-    cols: data.cols,
-    rows: data.rows,
-    status: data.status,
-    createdAt: data.created_at,
-    exitedAt: data.exited_at,
-    exitCode: data.exit_code,
-  };
-}
-
-/** Conventional main-agent id used to scope the product subscription. */
-const MAIN_AGENT_ID = 'main';
-
-/**
- * Slice 5 upload chunk size: 512 KiB raw per `uploadChunk`, ~684 KiB base64 —
- * comfortably inside one NDJSON IPC frame (frozen Slice 5 protocol).
- */
-const UPLOAD_CHUNK_BYTES = 512 * 1024;
-
-/**
- * The v2 sync control frame the product stream pushes (instead of a `WireEvent`)
- * when it cannot incrementally cover the resume cursor. Mirrors the sidecar's
- * `WireResyncRequired` and kimi-web's daemon `WireResyncRequired`; the desktop
- * client discriminates it on `type` before mapping normal events.
- */
-interface DesktopResyncFrame {
-  type: 'resync_required';
-  timestamp?: string;
-  payload: {
-    session_id: string;
-    reason: 'buffer_overflow' | 'session_recreated' | 'epoch_changed';
-    current_seq: number;
-    epoch?: string;
-  };
-}
+export { DESKTOP_SUPPORTED_METHODS } from './supportedMethods';
 
 /** historyCompacted reasons that are compaction itself (no snapshot reload). */
 function isCompactionReason(reason: string): boolean {
@@ -1764,38 +1520,4 @@ export class WailsKimiWebApi implements KimiWebApi {
  */
 export function createWailsKimiWebApi(bridge: DesktopBridge): KimiWebApi {
   return new WailsKimiWebApi(bridge);
-}
-
-/** Mirrors the daemon client's `providerRequestBody` (client.ts). */
-function providerRequestBody(input: AppProviderInput): Record<string, unknown> {
-  const models = input.models.map((row) => {
-    const model: Record<string, unknown> = {
-      model: row.model,
-      max_context_size: row.maxContextSize,
-    };
-    if (row.displayName !== undefined && row.displayName !== '') {
-      model['display_name'] = row.displayName;
-    }
-    return model;
-  });
-  const body: Record<string, unknown> = { id: input.id, type: input.type, models };
-  if (input.apiKey !== undefined) body['api_key'] = input.apiKey;
-  if (input.baseUrl !== undefined && input.baseUrl !== '') body['base_url'] = input.baseUrl;
-  if (input.defaultModel !== undefined && input.defaultModel !== '') {
-    body['default_model'] = input.defaultModel;
-  }
-  return body;
-}
-
-function toProviderRefreshResult(data: WireProviderRefreshResult): ProviderRefreshResult {
-  return {
-    changed: data.changed.map((item) => ({
-      providerId: item.provider_id,
-      providerName: item.provider_name,
-      added: item.added,
-      removed: item.removed,
-    })),
-    unchanged: data.unchanged,
-    failed: data.failed,
-  };
 }
