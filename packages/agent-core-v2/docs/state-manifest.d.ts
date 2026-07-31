@@ -71,18 +71,18 @@
 //     fullCompaction.consecutiveOverflowCompactions   src/agent/fullCompaction/fullCompactionService.ts
 //     fullCompaction.lastCompactedTokenCount          src/agent/fullCompaction/fullCompactionService.ts
 //     fullCompaction.observedMaxContextTokensByModel  src/agent/fullCompaction/fullCompactionService.ts
-//     goal.budgetGraceTurns                           src/agent/goal/goalService.ts
-//     goal.countedGoalTurns                           src/agent/goal/goalService.ts
-//     goal.exhaustedTurnBudgetGoals                   src/agent/goal/goalService.ts
-//     goal.goalDrivenTurns                            src/agent/goal/goalService.ts
-//     goal.goalOutcomeContinuationTurns               src/agent/goal/goalService.ts
-//     goal.goalOutcomeToolResultTurns                 src/agent/goal/goalService.ts
-//     goal.goalStarterTurns                           src/agent/goal/goalService.ts
-//     goal.goalTurnTargets                            src/agent/goal/goalService.ts
-//     goal.liveTurnId                                 src/agent/goal/goalService.ts
-//     goal.liveWallClockStartedAt                     src/agent/goal/goalService.ts
-//     goal.pendingContinuationGoals                   src/agent/goal/goalService.ts
-//     goal.resumeContinuation                         src/agent/goal/goalService.ts
+//     goal.budgetGraceTurns                           src/agent/goal/goalStateKeys.ts
+//     goal.countedGoalTurns                           src/agent/goal/goalStateKeys.ts
+//     goal.exhaustedTurnBudgetGoals                   src/agent/goal/goalStateKeys.ts
+//     goal.goalDrivenTurns                            src/agent/goal/goalStateKeys.ts
+//     goal.goalOutcomeContinuationTurns               src/agent/goal/goalStateKeys.ts
+//     goal.goalOutcomeToolResultTurns                 src/agent/goal/goalStateKeys.ts
+//     goal.goalStarterTurns                           src/agent/goal/goalStateKeys.ts
+//     goal.goalTurnTargets                            src/agent/goal/goalStateKeys.ts
+//     goal.liveTurnId                                 src/agent/goal/goalStateKeys.ts
+//     goal.liveWallClockStartedAt                     src/agent/goal/goalStateKeys.ts
+//     goal.pendingContinuationGoals                   src/agent/goal/goalStateKeys.ts
+//     goal.resumeContinuation                         src/agent/goal/goalStateKeys.ts
 //     llmRequester.emittedThinkingEffortWarnings      src/agent/llmRequester/llmRequesterService.ts
 //     llmRequester.lastConfigLogSignature             src/agent/llmRequester/llmRequesterService.ts
 //     llmRequester.mediaDegradedTurns                 src/agent/llmRequester/llmRequesterService.ts
@@ -1019,7 +1019,7 @@ export interface AgentStateSnapshot {
   'fullCompaction.consecutiveOverflowCompactions': number;
   'fullCompaction.lastCompactedTokenCount': number | null;
   'fullCompaction.observedMaxContextTokensByModel': Map<string, number>;
-  // src/agent/goal/goalService.ts
+  // src/agent/goal/goalStateKeys.ts
   'goal.budgetGraceTurns': Set<number>;
   'goal.countedGoalTurns': Set<number>;
   'goal.exhaustedTurnBudgetGoals': Map<number, string>;
@@ -1031,7 +1031,7 @@ export interface AgentStateSnapshot {
   'goal.liveTurnId': number | undefined;
   'goal.liveWallClockStartedAt': number | undefined;
   'goal.pendingContinuationGoals': Map<number, string>;
-  'goal.resumeContinuation': /* ResumeContinuation — packages/agent-core-v2/src/agent/goal/goalService.ts */ {
+  'goal.resumeContinuation': /* ResumeContinuation — packages/agent-core-v2/src/agent/goal/goalStateKeys.ts */ {
     readonly turnId: number;
     readonly goalId: string;
   } | undefined;
@@ -1040,7 +1040,7 @@ export interface AgentStateSnapshot {
   'llmRequester.lastConfigLogSignature': string | undefined;
   'llmRequester.mediaDegradedTurns': Set<number>;
   'llmRequester.mediaStrippedTurns': Map<number, /* MediaStripSnapshot — packages/agent-core-v2/src/agent/contextProjector/contextProjector.ts */ {
-    readonly "__@mediaStripSnapshotBrand@2821": undefined;
+    readonly "__@mediaStripSnapshotBrand@2874": undefined;
   }>;
   'llmRequester.turnConfigs': Map<number, /* TurnRequestConfig — packages/agent-core-v2/src/agent/llmRequester/llmRequesterService.ts */ {
     readonly resolved: /* ProfileModelContext — packages/agent-core-v2/src/agent/profile/profile.ts */ {
