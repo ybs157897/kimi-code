@@ -5,7 +5,6 @@ import { log } from '@moonshot-ai/kimi-code-sdk';
 import type {
   ApprovalRequest,
   ApprovalResponse,
-  PromptPart,
   QuestionRequest,
   QuestionResult,
 } from '@moonshot-ai/kimi-code-sdk';
@@ -19,7 +18,6 @@ import {
 } from '@moonshot-ai/pi-tui';
 import { resolve } from 'pathe';
 
-import type { CLIOptions } from '#/cli/options';
 import { MigrationScreenComponent, type MigrationScreenResult } from '#/migration/index';
 import { copyTextToClipboard } from '#/utils/clipboard/clipboard-text';
 import { appendInputHistory, loadInputHistory } from '#/utils/history/input-history';
@@ -87,9 +85,8 @@ import {
   ReplayTurnBoundaryComponent,
   UserMessageComponent,
 } from './components/messages/user-message';
-import { ActivityPaneComponent, type ActivityPaneMode } from './components/panes/activity-pane';
+import { ActivityPaneComponent } from './components/panes/activity-pane';
 import { QueuePaneComponent } from './components/panes/queue-pane';
-import type { TuiConfig } from './config';
 import {
   LLM_NOT_SET_MESSAGE,
   MAIN_AGENT_ID,
@@ -107,6 +104,15 @@ import { SessionReplayRenderer } from './controllers/session-replay';
 import { StreamingUIController } from './controllers/streaming-ui';
 import { TasksBrowserController } from './controllers/tasks-browser';
 import { installRainbowDance } from './easter-eggs/dance';
+import { DETACH_HINT_DISPLAY_MS } from './kimi-tui/constants';
+import { createInitialAppState, type KimiTUIStartupInput } from './kimi-tui/initial-state';
+import {
+  loadingTipKind,
+  type EffectiveActivityPaneMode,
+  type LoadingTipKind,
+} from './kimi-tui/loading-tip';
+import { combineSteerInput } from './kimi-tui/steer-input';
+import type { ActiveSessionBinding, SendMessageOptions } from './kimi-tui/types';
 import { adaptPanelResponse } from './reverse-rpc/approval/adapter';
 import { ApprovalController } from './reverse-rpc/approval/controller';
 import { createApprovalRequestHandler } from './reverse-rpc/approval/handler';
@@ -121,7 +127,6 @@ import type {
   RuntimeTelemetryProperties,
 } from './runtime/runtime-telemetry-port';
 import type {
-  AgentPermissionMode,
   AgentTask,
   SessionAgentControlPort,
   SessionControlPort,
@@ -185,132 +190,10 @@ export type {
   TUIStartupOptions,
   TUIStartupState,
 } from './types';
-
-export interface KimiTUIStartupInput {
-  readonly cliOptions: CLIOptions;
-  readonly additionalDirs?: readonly string[];
-  readonly tuiConfig: TuiConfig;
-  readonly version: string;
-  readonly workDir: string;
-  readonly startupNotice?: string;
-  readonly migrationPlan?: MigrationPlan | null;
-  /** When true, run only the migration screen, then exit (the `kimi migrate` command). */
-  readonly migrateOnly?: boolean;
-  readonly runtime: TUIRuntime;
-  readonly runtimeEnvironment?: RuntimeEnvironmentPort;
-  readonly runtimeTelemetry?: RuntimeTelemetryPort;
-  readonly sessionControl?: SessionControlPort;
-}
-
-type EffectiveActivityPaneMode = ActivityPaneMode | 'idle' | 'session';
-type LoadingTipKind = 'moon' | 'composing';
-
-function loadingTipKind(mode: EffectiveActivityPaneMode): LoadingTipKind | undefined {
-  if (mode === 'waiting' || mode === 'tool') return 'moon';
-  if (mode === 'composing') return 'composing';
-  return undefined;
-}
+export type { KimiTUIStartupInput } from './kimi-tui/initial-state';
 
 function sameStringArrays(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
-}
-
-function createInitialAppState(input: KimiTUIStartupInput): AppState {
-  const startupPermission: AgentPermissionMode = input.cliOptions.auto
-    ? 'auto'
-    : input.cliOptions.yolo
-      ? 'yolo'
-      : 'manual';
-  return {
-    model: '',
-    workDir: input.workDir,
-    additionalDirs: [...(input.additionalDirs ?? [])],
-    sessionId: '',
-    permissionMode: startupPermission,
-    planMode: input.cliOptions.plan,
-    inputMode: 'prompt',
-    swarmMode: false,
-    expertTeam: null,
-    expertTeamMembers: [],
-    thinkingEffort: 'off',
-    contextUsage: 0,
-    contextTokens: 0,
-    maxContextTokens: 0,
-    isCompacting: false,
-    isReplaying: false,
-    streamingPhase: 'idle',
-    streamingStartTime: 0,
-    theme: input.tuiConfig.theme,
-    version: input.version,
-    editorCommand: input.tuiConfig.editorCommand,
-    disablePasteBurst: input.tuiConfig.disablePasteBurst,
-    notifications: input.tuiConfig.notifications,
-    upgrade: input.tuiConfig.upgrade,
-    availableModels: {},
-    availableProviders: {},
-    sessionTitle: null,
-    goal: null,
-    mcpServersSummary: null,
-    banner: undefined,
-  };
-}
-
-interface SendMessageOptions {
-  readonly parts?: readonly PromptPart[];
-  readonly imageAttachmentIds?: readonly number[];
-  readonly hasMedia?: boolean;
-}
-
-/**
- * Flatten steer items into the payload `session.steer` expects: the
- * historical `'\n\n'`-joined string when nothing carries media, or a
- * merged part list when any item has extracted media parts (queued image
- * messages, or the editor draft after placeholder extraction).
- *
- * Items are separated by the historical `'\n\n'`, which merges into the
- * adjacent text part. The one exception is two touching media parts: a
- * standalone `{type:'text',text:'\n\n'}` between them would be rejected
- * by `normalizePromptInput` as an empty text part, so the separator is
- * dropped there (media parts are self-delimiting anyway).
- */
-function combineSteerInput(items: readonly SteerInputItem[]): string | PromptPart[] {
-  const hasMedia = items.some((item) => item.parts !== undefined && item.parts.length > 0);
-  if (!hasMedia) return items.map((item) => item.text).join('\n\n');
-  const parts: PromptPart[] = [];
-  for (const item of items) {
-    const startsWithMedia =
-      item.parts !== undefined && item.parts.length > 0 && item.parts[0]?.type !== 'text';
-    const lastIsMedia = parts.length > 0 && parts.at(-1)?.type !== 'text';
-    if (parts.length > 0 && !(lastIsMedia && startsWithMedia)) {
-      appendSteerText(parts, '\n\n');
-    }
-    if (item.parts !== undefined && item.parts.length > 0) {
-      for (const part of item.parts) {
-        if (part.type === 'text') appendSteerText(parts, part.text);
-        else parts.push(part);
-      }
-    } else {
-      appendSteerText(parts, item.text);
-    }
-  }
-  return parts;
-}
-
-function appendSteerText(parts: PromptPart[], text: string): void {
-  const last = parts.at(-1);
-  if (last?.type === 'text') {
-    parts[parts.length - 1] = { type: 'text', text: last.text + text };
-    return;
-  }
-  parts.push({ type: 'text', text });
-}
-
-/** How long the one-shot "moved to background" footer hint stays visible. */
-const DETACH_HINT_DISPLAY_MS = 4_000;
-
-interface ActiveSessionBinding {
-  readonly identity: SessionIdentity;
-  readonly runtime: TUISessionRuntime;
 }
 
 export class KimiTUI {
