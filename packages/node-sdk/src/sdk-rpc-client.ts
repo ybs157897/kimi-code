@@ -1,25 +1,16 @@
-import { join, resolve } from 'node:path';
-
 import type { Kaos } from '@moonshot-ai/kaos';
 import { assertKimiHostIdentity, createKimiDefaultHeaders } from '@moonshot-ai/kimi-code-oauth';
 import type {
   AgentEventPayloads,
   AgentHandle,
-  AgentTaskInfo,
   IDisposable,
   Interaction,
-  KlientEventPayloads,
   SessionHandle,
-  SessionEventPayloads,
   ShellCommandResult,
 } from '@moonshot-ai/klient';
 import { approvalRequestSchema } from '@moonshot-ai/klient/contract/session/approval';
 import { questionRequestSchema } from '@moonshot-ai/klient/contract/session/question';
-import {
-  eventSchema,
-  ToolInputDisplaySchema,
-  type MessageContent,
-} from '@moonshot-ai/protocol';
+import { eventSchema, ToolInputDisplaySchema } from '@moonshot-ai/protocol';
 
 import { KimiAuthFacade } from '#/auth';
 import type {
@@ -29,30 +20,7 @@ import type {
   QuestionRequest,
   QuestionResult,
 } from '#/events';
-import {
-  ensureConfigFile,
-  loadRuntimeConfigSafe,
-  mergeConfigPatch,
-  readConfigFileForUpdate,
-  writeConfigFile,
-} from '#/sdk-config';
-import {
-  ErrorCodes,
-  KimiError,
-  makeErrorPayload,
-  mapKlientError,
-  type KimiErrorCode,
-} from '#/sdk-errors';
-import type { ExperimentalFeatureState } from '#/sdk-flags';
-import { ImageLimits } from '#/sdk-image';
 import { KimiHarness } from '#/kimi-harness';
-import {
-  flushDiagnosticLogs,
-  registerDiagnosticLogBackend,
-  resolveActiveGlobalLogPath,
-  type DiagnosticLogRegistration,
-} from '#/sdk-logger';
-import { limitAgentReplayByTurns } from '#/sdk-model';
 import {
   SDKRpcClientBase,
   type ActivateExpertTeamRpcInput,
@@ -73,8 +41,70 @@ import {
   type SetSessionThinkingRpcInput,
   type UpdateSessionMetadataRpcInput,
 } from '#/rpc';
+import {
+  ensureConfigFile,
+  loadRuntimeConfigSafe,
+  mergeConfigPatch,
+  readConfigFileForUpdate,
+  writeConfigFile,
+} from '#/sdk-config';
+import { ErrorCodes, KimiError, makeErrorPayload } from '#/sdk-errors';
+import { mapV2BoundaryError } from '#/sdk-rpc-errors';
+import type { ExperimentalFeatureState } from '#/sdk-flags';
+import { ImageLimits } from '#/sdk-image';
+import {
+  flushDiagnosticLogs,
+  registerDiagnosticLogBackend,
+  resolveActiveGlobalLogPath,
+  type DiagnosticLogRegistration,
+} from '#/sdk-logger';
+import {
+  completeMcpAuthorization,
+  isAlreadyAuthorizedError,
+  listSdkMcpServers,
+  requireMcpServer,
+  requireRemoteMcpServer,
+  toSdkMcpServerConfig,
+  toV2McpCatalogInput,
+} from '#/sdk-rpc-mcp';
+import { limitAgentReplayByTurns } from '#/sdk-model';
+import {
+  assertNoKaosOverrides,
+  assertSupportedCreateSessionOptions,
+  imageConfig,
+  normalizeAgentId,
+  normalizeMcpServerName,
+  normalizeNamedResource,
+  normalizeOptionalSessionTitle,
+  normalizeSessionId,
+  normalizeSessionTitle,
+  normalizeWorkDir,
+  normalizeWorkspaceSkillsWorkDir,
+  parseExtensionCommandName,
+  sessionNotFound,
+  unsupportedV2Option,
+} from '#/sdk-rpc-normalize';
 import { resolveConfigPath, resolveKimiHome } from '#/sdk-paths';
+import {
+  projectAgentEventPayload,
+  projectBackgroundTask,
+  projectCronTasks,
+  projectExpertTeamChangedEvent,
+  projectExpertTeamStatus,
+  projectModelCatalogChangedEvent,
+} from '#/sdk-rpc-projections';
+import {
+  resolveWorkspaceIds,
+  sessionBelongsToWorkDir,
+  toSessionSummary,
+} from '#/sdk-rpc-sessions';
 import { noopTelemetryClient, type TelemetryClient } from '#/sdk-telemetry';
+import type {
+  BeginGlobalMcpServerAuthResult,
+  CoreOverrides,
+  ForwardedAgentEventName,
+  OAuthTokenProviderResolver,
+} from '#/sdk-rpc-types';
 import {
   handleKimiV2CompletedPrintTurn,
   createKimiV2Runtime,
@@ -102,7 +132,6 @@ import type {
   GoalSnapshot,
   GoalToolResult,
   JsonObject,
-  JsonValue,
   KimiConfig,
   KimiConfigPatch,
   KimiHarnessOptions,
@@ -129,45 +158,6 @@ import type {
   SessionUsage,
   SkillSummary,
 } from '#/types';
-import type { OAuthRef } from '#/sdk-config';
-
-interface BearerTokenProvider {
-  getAccessToken(options?: { readonly force?: boolean }): Promise<string>;
-}
-
-type OAuthTokenProviderResolver = (
-  providerName: string,
-  oauthRef?: OAuthRef,
-) => BearerTokenProvider | undefined;
-
-type Klient = KimiV2Runtime['klient'];
-type IndexedSession = NonNullable<
-  Awaited<ReturnType<Klient['global']['sessions']['get']>>
->;
-type V2McpCatalogEntry = Awaited<
-  ReturnType<Klient['global']['mcp']['catalog']['list']>
->[number];
-type V2McpServerConfig = V2McpCatalogEntry['config'];
-type V2ExpertTeamSnapshot = NonNullable<
-  SessionEventPayloads['expert-team.changed']
->;
-type V2ExpertTeamMemberStatus = NonNullable<
-  V2ExpertTeamSnapshot['team']
->['members'][number]['status'];
-type V2CronTask = Awaited<ReturnType<SessionHandle['cron']['list']>>[number];
-
-type BeginGlobalMcpServerAuthResult =
-  | { readonly status: 'already-authorized' }
-  | {
-      readonly status: 'authorization-required';
-      readonly flowId: string;
-      readonly authorizationUrl: string;
-    };
-
-interface CoreOverrides {
-  readonly kaos?: Kaos;
-  readonly persistenceKaos?: Kaos;
-}
 
 interface V2CoreCallbacks {
   emitEvent(event: Event): void;
@@ -193,11 +183,6 @@ interface V2SessionSubscription {
   readonly processingInteractions: Set<string>;
   active: boolean;
 }
-
-type ForwardedAgentEventName = Exclude<
-  keyof AgentEventPayloads,
-  'permission.approval.requested' | 'permission.approval.resolved'
->;
 
 const FORWARDED_AGENT_EVENT_NAMES = [
   'turn.started',
@@ -1790,91 +1775,6 @@ class V2CoreAdapter {
   }
 }
 
-export function projectExpertTeamStatus(
-  snapshot: V2ExpertTeamSnapshot | null,
-): ExpertTeamStatusSnapshot | null {
-  if (snapshot === null) return null;
-  return {
-    members: (snapshot.team?.members ?? []).map((member) => ({
-      agentId: member.agentId,
-      phase: {
-        phase: projectExpertTeamStatusPhase(member.status),
-        stepDescription: member.name,
-      },
-    })),
-  };
-}
-
-export async function projectCronTasks(
-  tasks: readonly V2CronTask[],
-  getNextFireForTask: (taskId: string) => Promise<number | null>,
-): Promise<GetCronTasksResult> {
-  return {
-    tasks: await Promise.all(
-      tasks.map(async (task) => {
-        const nextRunAt = await getNextFireForTask(task.id);
-        return {
-          id: task.id,
-          name: task.id,
-          expression: task.cron,
-          status: nextRunAt === null ? 'inactive' : 'scheduled',
-          nextRunAt: nextRunAt ?? undefined,
-        };
-      }),
-    ),
-  };
-}
-
-function projectExpertTeamStatusPhase(
-  status: V2ExpertTeamMemberStatus,
-): 'waiting' | 'active' | 'completed' {
-  switch (status) {
-    case 'spawning':
-      return 'waiting';
-    case 'running':
-      return 'active';
-    case 'completed':
-    case 'failed':
-    case 'shutdown':
-      return 'completed';
-  }
-}
-
-function parseExtensionCommandName(name: string): {
-  readonly extensionId: string;
-  readonly name: string;
-} {
-  const separator = name.indexOf(':');
-  const extensionId = separator < 0 ? '' : name.slice(0, separator).trim();
-  const commandName = separator < 0 ? '' : name.slice(separator + 1).trim();
-  if (extensionId.length === 0 || commandName.length === 0) {
-    throw new KimiError(
-      ErrorCodes.REQUEST_INVALID,
-      'Extension command name must use the "<extensionId>:<commandName>" form.',
-      { details: { name } },
-    );
-  }
-  return { extensionId, name: commandName };
-}
-
-function projectBackgroundTask(task: AgentTaskInfo): BackgroundTaskInfo {
-  return {
-    id: task.taskId,
-    taskId: task.taskId,
-    kind: task.kind,
-    status: task.status,
-    description: task.description,
-    command: task.kind === 'process' ? task.command : undefined,
-    subagentType: task.kind === 'agent' ? task.subagentType : undefined,
-    stopReason: task.stopReason,
-    agentId: task.kind === 'agent' ? task.agentId : undefined,
-    exitCode:
-      task.kind === 'process' && task.exitCode !== null
-        ? task.exitCode
-        : undefined,
-  };
-}
-
 export interface SDKRpcClientOptions {
   readonly homeDir?: string;
   readonly configPath?: string;
@@ -2571,431 +2471,6 @@ function asyncPrototypeMethodNames(prototype: object): string[] {
   });
 }
 
-export function projectAgentEventPayload(
-  payload: AgentEventPayloads[ForwardedAgentEventName],
-): object {
-  if (!isPromptSteeredEvent(payload)) return payload;
-  return {
-    ...payload,
-    content: payload.content.map(projectSteeredContentPart),
-  };
-}
-
-function isPromptSteeredEvent(
-  payload: AgentEventPayloads[ForwardedAgentEventName],
-): payload is AgentEventPayloads['prompt.steered'] {
-  return payload.type === 'prompt.steered';
-}
-
-function projectSteeredContentPart(
-  part: AgentEventPayloads['prompt.steered']['content'][number],
-): MessageContent {
-  switch (part.type) {
-    case 'text':
-      return { type: 'text', text: part.text };
-    case 'think':
-      return {
-        type: 'thinking',
-        thinking: part.think,
-        signature: part.encrypted,
-      };
-    case 'image_url':
-      return {
-        type: 'image',
-        source: projectMediaSource(part.imageUrl.url),
-      };
-    case 'video_url':
-      return {
-        type: 'video',
-        source: projectMediaSource(part.videoUrl.url),
-      };
-    case 'audio_url':
-      return {
-        type: 'text',
-        text: `[audio:${part.audioUrl.url}]`,
-      };
-  }
-}
-
-function projectMediaSource(
-  url: string,
-): Extract<MessageContent, { readonly type: 'image' | 'video' }>['source'] {
-  const dataUrl = /^data:([^;,]+);base64,(.+)$/s.exec(url);
-  if (dataUrl === null) return { kind: 'url', url };
-  return {
-    kind: 'base64',
-    media_type: dataUrl[1]!,
-    data: dataUrl[2]!,
-  };
-}
-
-export function projectExpertTeamChangedEvent(
-  sessionId: string,
-  snapshot: SessionEventPayloads['expert-team.changed'],
-): Event {
-  return {
-    type: 'expert_team.updated',
-    sessionId,
-    agentId: 'main',
-    status:
-      snapshot === null
-        ? null
-        : {
-            pluginId: snapshot.binding.pluginId,
-            pluginVersion: snapshot.binding.pluginVersion,
-            displayName: snapshot.binding.displayName,
-            leadAgentName: snapshot.binding.leadAgentName,
-            activatedAt: snapshot.binding.activatedAt,
-            members:
-              snapshot.team === undefined
-                ? snapshot.binding.memberAgentNames.map((name) => ({
-                    name,
-                    status: 'not_started' as const,
-                  }))
-                : snapshot.team.members.map((member) => ({
-                    name: member.name,
-                    agentId: member.agentId,
-                    status: projectExpertTeamMemberStatus(member.status),
-                  })),
-          },
-  };
-}
-
-export function projectModelCatalogChangedEvent(
-  payload: KlientEventPayloads['kosong.changed'],
-): Event {
-  return {
-    type: 'event.model_catalog.changed',
-    sessionId: '__global__',
-    agentId: 'main',
-    changed: payload.changed,
-    unchanged: payload.unchanged,
-    failed: payload.failed,
-  };
-}
-
-function projectExpertTeamMemberStatus(
-  status: V2ExpertTeamMemberStatus,
-): 'not_started' | 'idle' | 'running' {
-  switch (status) {
-    case 'spawning':
-      return 'not_started';
-    case 'running':
-      return 'running';
-    case 'completed':
-    case 'failed':
-    case 'shutdown':
-      return 'idle';
-  }
-}
-
-async function resolveWorkspaceIds(
-  klient: Klient,
-  workDir: string,
-): Promise<readonly string[]> {
-  const workspaces = await klient.global.workspaces.list();
-  return workspaces
-    .filter((workspace) => resolve(workspace.root) === workDir)
-    .map((workspace) => workspace.id);
-}
-
-async function sessionBelongsToWorkDir(
-  klient: Klient,
-  summary: IndexedSession,
-  workDir: string,
-): Promise<boolean> {
-  if (summary.cwd !== undefined) return resolve(summary.cwd) === workDir;
-  const workspace = await klient.global.workspaces.get(summary.workspaceId);
-  return workspace !== undefined && resolve(workspace.root) === workDir;
-}
-
-async function toSessionSummary(
-  klient: Klient,
-  summary: IndexedSession,
-  additionalDirs?: readonly string[],
-): Promise<SessionSummary> {
-  const [environment, workspace] = await Promise.all([
-    klient.global.env(),
-    summary.cwd === undefined
-      ? klient.global.workspaces.get(summary.workspaceId)
-      : Promise.resolve(undefined),
-  ]);
-  const workDir = summary.cwd ?? workspace?.root;
-  if (workDir === undefined) {
-    throw new KimiError(
-      ErrorCodes.SESSION_STATE_INVALID,
-      `Session "${summary.id}" has no workspace root.`,
-    );
-  }
-
-  return {
-    id: summary.id,
-    title: summary.title,
-    lastPrompt: summary.lastPrompt,
-    workDir,
-    sessionDir: join(environment.sessionsDir, summary.workspaceId, summary.id),
-    createdAt: summary.createdAt,
-    updatedAt: summary.updatedAt,
-    archived: summary.archived,
-    metadata: toJsonObject(summary.custom),
-    additionalDirs,
-  };
-}
-
-function normalizeWorkDir(workDir: string): string {
-  if (typeof workDir !== 'string' || workDir.trim().length === 0) {
-    throw new KimiError(
-      ErrorCodes.REQUEST_WORK_DIR_REQUIRED,
-      'Session workDir is required.',
-    );
-  }
-  return resolve(workDir.trim());
-}
-
-function normalizeWorkspaceSkillsWorkDir(workDir: string): string {
-  if (typeof workDir !== 'string' || workDir.trim().length === 0) {
-    throw new KimiError(
-      ErrorCodes.REQUEST_WORK_DIR_REQUIRED,
-      'listWorkspaceSkills requires workDir',
-    );
-  }
-  return resolve(workDir.trim());
-}
-
-function normalizeSessionId(sessionId: string): string {
-  if (typeof sessionId !== 'string') {
-    throw new KimiError(ErrorCodes.SESSION_ID_REQUIRED, 'Session id is required.');
-  }
-  const normalized = sessionId.trim();
-  if (normalized.length === 0) {
-    throw new KimiError(ErrorCodes.SESSION_ID_EMPTY, 'Session id cannot be empty.');
-  }
-  return normalized;
-}
-
-function normalizeSessionTitle(title: string): string {
-  if (typeof title !== 'string' || title.trim().length === 0) {
-    throw new KimiError(ErrorCodes.SESSION_TITLE_EMPTY, 'Session title cannot be empty.');
-  }
-  return title.trim();
-}
-
-function normalizeOptionalSessionTitle(title: string | undefined): string | undefined {
-  return title === undefined ? undefined : normalizeSessionTitle(title);
-}
-
-function normalizeAgentId(agentId: string): string {
-  if (typeof agentId !== 'string' || agentId.trim().length === 0) {
-    throw new KimiError(ErrorCodes.REQUEST_INVALID, 'Agent id cannot be empty.');
-  }
-  return agentId.trim();
-}
-
-function normalizeNamedResource(value: string, label: string): string {
-  if (typeof value !== 'string' || value.trim().length === 0) {
-    throw new KimiError(ErrorCodes.REQUEST_INVALID, `${label} cannot be empty.`);
-  }
-  return value.trim();
-}
-
-function normalizeMcpServerName(name: string): string {
-  return normalizeNamedResource(name, 'MCP server name');
-}
-
-function sessionNotFound(sessionId: string): KimiError {
-  return new KimiError(
-    ErrorCodes.SESSION_NOT_FOUND,
-    `Session "${sessionId}" does not exist.`,
-    { details: { sessionId } },
-  );
-}
-
-function toV2McpCatalogInput(
-  server: McpServerConfig,
-): { readonly name: string; readonly config: V2McpServerConfig } {
-  if (typeof server !== 'object' || server === null) {
-    throw new KimiError(ErrorCodes.REQUEST_INVALID, 'MCP server config is required.');
-  }
-  const { name: rawName, ...config } = server;
-  return {
-    name: normalizeMcpServerName(rawName),
-    config,
-  };
-}
-
-function toSdkMcpServerConfig(entry: V2McpCatalogEntry): McpServerConfig {
-  return {
-    ...entry.config,
-    name: entry.name,
-  };
-}
-
-async function listSdkMcpServers(
-  klient: Klient,
-): Promise<readonly McpServerConfig[]> {
-  return (await klient.global.mcp.catalog.list()).map(toSdkMcpServerConfig);
-}
-
-async function requireMcpServer(
-  klient: Klient,
-  name: string,
-): Promise<V2McpCatalogEntry> {
-  const normalized = normalizeMcpServerName(name);
-  const entry = await klient.global.mcp.catalog.get(normalized);
-  if (entry !== undefined) return entry;
-  throw new KimiError(
-    ErrorCodes.MCP_SERVER_NOT_FOUND,
-    `MCP server "${normalized}" was not found.`,
-    { details: { name: normalized } },
-  );
-}
-
-type V2RemoteMcpServerConfig = Extract<
-  V2McpServerConfig,
-  { readonly transport: 'http' | 'sse' }
->;
-
-interface V2RemoteMcpCatalogEntry {
-  readonly name: string;
-  readonly config: V2RemoteMcpServerConfig;
-}
-
-async function requireRemoteMcpServer(
-  klient: Klient,
-  name: string,
-): Promise<V2RemoteMcpCatalogEntry> {
-  const entry = await requireMcpServer(klient, name);
-  if (entry.config.transport === 'http' || entry.config.transport === 'sse') {
-    return { name: entry.name, config: entry.config };
-  }
-  throw new KimiError(
-    ErrorCodes.REQUEST_INVALID,
-    `MCP server "${entry.name}" does not use a remote transport.`,
-    { details: { name: entry.name, transport: entry.config.transport } },
-  );
-}
-
-async function completeMcpAuthorization(
-  klient: Klient,
-  input: { readonly flowId: string; readonly timeoutMs?: number },
-  signal?: AbortSignal,
-): Promise<void> {
-  const flowId = normalizeNamedResource(input.flowId, 'MCP OAuth flow id');
-  signal?.throwIfAborted();
-  const completion = klient.global.mcp.oauth.complete({
-    flowId,
-    timeoutMs: input.timeoutMs,
-  });
-  if (signal === undefined) return completion;
-
-  await new Promise<void>((resolveCompletion, rejectCompletion) => {
-    let settled = false;
-    const settle = (callback: () => void): void => {
-      if (settled) return;
-      settled = true;
-      signal.removeEventListener('abort', onAbort);
-      callback();
-    };
-    const onAbort = (): void => {
-      void klient.global.mcp.oauth.cancel(flowId).finally(() => {
-        settle(() => {
-          rejectCompletion(abortReason(signal));
-        });
-      });
-    };
-    signal.addEventListener('abort', onAbort, { once: true });
-    completion.then(
-      () => {
-        settle(resolveCompletion);
-      },
-      (error: unknown) => {
-        settle(() => {
-          rejectCompletion(error);
-        });
-      },
-    );
-  });
-}
-
-function abortReason(signal: AbortSignal): unknown {
-  return signal.reason ?? new DOMException('The operation was aborted.', 'AbortError');
-}
-
-function isAlreadyAuthorizedError(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    (error.name === 'AlreadyAuthorizedError' ||
-      error.message.includes('already authorized'))
-  );
-}
-
-function toJsonObject(value: Readonly<Record<string, unknown>> | undefined): JsonObject | undefined {
-  if (value === undefined) return undefined;
-  if (!isJsonValue(value) || Array.isArray(value)) {
-    throw new KimiError(
-      ErrorCodes.SESSION_STATE_INVALID,
-      'Session metadata is not JSON-serializable.',
-    );
-  }
-  return value;
-}
-
-function isJsonValue(value: unknown): value is JsonValue {
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'number' ||
-    typeof value === 'boolean'
-  ) {
-    return true;
-  }
-  if (Array.isArray(value)) return value.every(isJsonValue);
-  if (typeof value !== 'object') return false;
-  return Object.values(value).every(isJsonValue);
-}
-
-function imageConfig(
-  config: KimiConfig,
-): { readonly maxEdgePx?: number; readonly readByteBudget?: number } | undefined {
-  const image = config['image'];
-  if (typeof image !== 'object' || image === null || Array.isArray(image)) return undefined;
-  const values = image as Readonly<Record<string, unknown>>;
-  const maxEdgePx = positiveInteger(values['maxEdgePx']);
-  const readByteBudget = positiveInteger(values['readByteBudget']);
-  if (maxEdgePx === undefined && readByteBudget === undefined) return undefined;
-  return { maxEdgePx, readByteBudget };
-}
-
-function positiveInteger(value: unknown): number | undefined {
-  return typeof value === 'number' && Number.isInteger(value) && value > 0
-    ? value
-    : undefined;
-}
-
-function assertNoKaosOverrides(overrides: CoreOverrides): void {
-  if (overrides.kaos === undefined && overrides.persistenceKaos === undefined) return;
-  throw unsupportedV2Option(
-    'custom Kaos session overrides',
-    'The v2 Klient session lifecycle does not expose host Kaos injection.',
-  );
-}
-
-function assertSupportedCreateSessionOptions(input: CreateSessionOptions): void {
-  if (input.drainAgentTasksOnStop !== true) return;
-  throw unsupportedV2Option(
-    'drainAgentTasksOnStop',
-    'v2 does not expose the legacy pre-turn-completion subagent drain hook; use the print background policy after turn completion.',
-  );
-}
-
-function unsupportedV2Option(option: string, reason: string): KimiError {
-  return new KimiError(
-    ErrorCodes.NOT_IMPLEMENTED,
-    `The "${option}" compatibility option is not supported by the v2-backed root SDK. ${reason}`,
-    { details: { option } },
-  );
-}
-
 function unsupportedV2Method(method: string, reason: string): KimiError {
   const { mapped, unmapped } = getV2CompatibilityMethodReport();
   return new KimiError(
@@ -3005,59 +2480,10 @@ function unsupportedV2Method(method: string, reason: string): KimiError {
   );
 }
 
-const SDK_ERROR_CODES = new Set<string>(Object.values(ErrorCodes));
-
-function isKimiErrorCode(value: unknown): value is KimiErrorCode {
-  return typeof value === 'string' && SDK_ERROR_CODES.has(value);
-}
-
-function mapV2BoundaryError(error: unknown): unknown {
-  if (error instanceof KimiError) return error;
-  const mappedKlientError = mapKlientError(error);
-  if (mappedKlientError !== undefined) return mappedKlientError;
-
-  if (
-    error instanceof Error &&
-    'code' in error &&
-    typeof error.code === 'string'
-  ) {
-    const details =
-      'details' in error &&
-      error.details !== null &&
-      typeof error.details === 'object' &&
-      !Array.isArray(error.details)
-        ? { ...error.details }
-        : undefined;
-    if (isKimiErrorCode(error.code)) {
-      return new KimiError(error.code, error.message, { details, cause: error });
-    }
-    if (
-      error.code === 'mcp_catalog.invalid' ||
-      error.code === 'mcp_catalog.io_failed'
-    ) {
-      return new KimiError(ErrorCodes.CONFIG_INVALID, error.message, {
-        details,
-        cause: error,
-      });
-    }
-    if (error.code === 'mcp_catalog.not_found') {
-      return new KimiError(ErrorCodes.MCP_SERVER_NOT_FOUND, error.message, {
-        details,
-        cause: error,
-      });
-    }
-    if (error.code === 'mcp_catalog.duplicate') {
-      return new KimiError(ErrorCodes.REQUEST_INVALID, error.message, {
-        details,
-        cause: error,
-      });
-    }
-    if (error.code === 'session_store.invalid_turn_index') {
-      return new KimiError(ErrorCodes.REQUEST_INVALID, error.message, {
-        details,
-        cause: error,
-      });
-    }
-  }
-  return error;
-}
+export {
+  projectAgentEventPayload,
+  projectCronTasks,
+  projectExpertTeamChangedEvent,
+  projectExpertTeamStatus,
+  projectModelCatalogChangedEvent,
+};
