@@ -14,16 +14,12 @@ import {
   sessionMediaOriginalsDir,
   type ApprovalRequest,
   type ApprovalResponse,
-  type BackgroundTaskInfo,
   type ContextMessage,
   type Event,
   type KimiHarness,
-  type McpServerInfo,
   type PromptPart,
   type QuestionAnswers,
   type QuestionRequest,
-  type SessionStatus,
-  type SessionUsage,
 } from '@moonshot-ai/kimi-code-sdk';
 
 import {
@@ -32,10 +28,7 @@ import {
   buildPermissionToolCallUpdate,
   permissionResponseToApprovalResponse,
 } from './approval';
-import {
-  ACP_BUILTIN_SLASH_COMMANDS,
-  type AcpBuiltinSlashCommandName,
-} from './builtin-commands';
+import { type AcpBuiltinSlashCommandName } from './builtin-commands';
 import { buildSessionConfigOptionsFromModels } from './config-options';
 import type { IAcpSessionHost } from './iacp-session-host';
 import { listModelsFromHarness } from './model-catalog';
@@ -59,18 +52,24 @@ import {
 import { acpModeToToggles, DEFAULT_MODE_ID, isAcpModeId, type AcpModeId } from './modes';
 import { outcomeToQuestionAnswer, questionItemToPermissionOptions } from './question';
 import { detectSlashIntent } from './slash';
+import {
+  errorMessage,
+  formatCompactionCompleted,
+  formatHelpReport,
+  formatMcpReport,
+  formatStatusReport,
+  formatTasksReport,
+  formatUsageReport,
+} from './command-reports';
+import { authRequiredFromPayload, mapPromptError } from './prompt-errors';
+import { parseToolCallArguments, toolMessageContentToAcpToolCallContent } from './replay';
+import {
+  MAIN_AGENT_ID,
+  type CompactionOutcome,
+  type TelemetryTrackFn,
+} from './session-types';
 
-/**
- * Telemetry sink threaded into {@link AcpSession} so reverse-RPC bridges
- * (`handleApproval`, `handleQuestion`) can emit PII-free breadcrumbs
- * without reaching back through the harness. Optional — when absent,
- * the session is a silent passthrough (matches the Phase 11.2 stub-
- * tolerant pattern in `server.ts:trackSessionStarted`).
- */
-export type TelemetryTrackFn = (
-  event: string,
-  properties?: Record<string, unknown>,
-) => void;
+export type { TelemetryTrackFn };
 
 /**
  * Adapter-side wrapper around a {@link Session} from the Kimi node SDK.
@@ -1468,125 +1467,6 @@ export class AcpSession {
 }
 
 /**
- * Map a Kimi SDK error (raw `Error`, `KimiError`, or `KimiErrorPayload`)
- * into the ACP {@link RequestError} shape used by the JSON-RPC layer.
- *
- * Auth-coded inputs (`auth.login_required`, `provider.auth_error`)
- * become `RequestError.authRequired()` so the client can drive its own
- * re-auth UX. Everything else becomes `RequestError.internalError(...)`
- * with the raw error logged to the agent log file but NOT exposed in
- * the JSON-RPC response — the client only sees the canonical
- * "session prompt failed" message, preventing accidental leakage of
- * stack frames or PII through the wire.
- *
- * The kimi-cli Python reference performs the same mapping at
- * `kimi-cli/src/kimi_cli/acp/session.py:218-247`; this is the TS port.
- */
-type CompactionCompletedResult = Extract<Event, { type: 'compaction.completed' }>['result'];
-
-type CompactionOutcome =
-  | { readonly kind: 'completed'; readonly result: CompactionCompletedResult }
-  | { readonly kind: 'cancelled' };
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function formatHelpReport(commands: readonly AvailableCommand[]): string {
-  const visibleCommands: readonly AvailableCommand[] =
-    commands.length > 0 ? commands : ACP_BUILTIN_SLASH_COMMANDS;
-  return [
-    'Available ACP commands:',
-    ...visibleCommands.map((command) => {
-      const hint = command.input?.hint ? ` ${command.input.hint}` : '';
-      return `- /${command.name}${hint} — ${command.description}`;
-    }),
-  ].join('\n');
-}
-
-function formatStatusReport(status: SessionStatus): string {
-  const maxTokens = status.maxContextTokens > 0 ? status.maxContextTokens.toLocaleString('en-US') : 'unknown';
-  const usage = formatContextUsage(status.contextUsage);
-  return [
-    'Session status:',
-    `- Model: ${status.model ?? '(not set)'}`,
-    `- Thinking: ${status.thinkingEffort}`,
-    `- Permission: ${status.permission}`,
-    `- Plan mode: ${status.planMode ? 'on' : 'off'}`,
-    `- Context: ${status.contextTokens.toLocaleString('en-US')} / ${maxTokens}${usage}`,
-  ].join('\n');
-}
-
-function formatUsageReport(usage: SessionUsage, status: SessionStatus): string {
-  const lines = ['Session usage:'];
-  if (usage.total !== undefined) {
-    lines.push(`- Total: ${formatTokenUsage(usage.total)}`);
-  }
-  if (usage.currentTurn !== undefined) {
-    lines.push(`- Current turn: ${formatTokenUsage(usage.currentTurn)}`);
-  }
-  for (const [model, modelUsage] of Object.entries(usage.byModel ?? {})) {
-    lines.push(`- ${model}: ${formatTokenUsage(modelUsage)}`);
-  }
-  lines.push(
-    `- Context: ${status.contextTokens.toLocaleString('en-US')} / ${status.maxContextTokens.toLocaleString('en-US')}${formatContextUsage(status.contextUsage)}`,
-  );
-  return lines.join('\n');
-}
-
-function formatMcpReport(servers: readonly McpServerInfo[]): string {
-  if (servers.length === 0) return 'No MCP servers are configured for this session.';
-  return [
-    `MCP servers (${servers.length}):`,
-    ...servers.map((server) => {
-      const base = `- ${server.name}: ${server.status} (${server.transport}, ${server.toolCount} tools)`;
-      return server.error === undefined ? base : `${base}\n  Error: ${server.error}`;
-    }),
-  ].join('\n');
-}
-
-function formatTasksReport(tasks: readonly BackgroundTaskInfo[]): string {
-  if (tasks.length === 0) return 'No background tasks for this session.';
-  return [
-    `Background tasks (${tasks.length}):`,
-    ...tasks.map((task) => {
-      const parts = [`- ${task.taskId}: ${task.status}`, task.description];
-      if (task.kind === 'process') parts.push(`command=${task.command}`);
-      if (task.kind === 'agent' && task.subagentType !== undefined) parts.push(`subagent=${task.subagentType}`);
-      if (task.stopReason !== undefined) parts.push(`reason=${task.stopReason}`);
-      return parts.join(' · ');
-    }),
-  ].join('\n');
-}
-
-function formatCompactionCompleted(result: CompactionCompletedResult): string {
-  return [
-    'Compaction completed.',
-    `- Messages compacted: ${result.compactedCount.toLocaleString('en-US')}`,
-    `- Tokens before: ${result.tokensBefore.toLocaleString('en-US')}`,
-    `- Tokens after: ${result.tokensAfter.toLocaleString('en-US')}`,
-  ].join('\n');
-}
-
-function formatTokenUsage(usage: NonNullable<SessionUsage['total']>): string {
-  return [
-    `input ${usage.inputOther.toLocaleString('en-US')}`,
-    `output ${usage.output.toLocaleString('en-US')}`,
-    `cache read ${usage.inputCacheRead.toLocaleString('en-US')}`,
-    `cache creation ${usage.inputCacheCreation.toLocaleString('en-US')}`,
-  ].join(', ');
-}
-
-// agent-core emits `contextUsage` as a 0..1 fraction (`contextTokens /
-// maxContextTokens` — see agent-core/src/agent/index.ts:419-422). It can
-// briefly exceed 1.0 when a turn overflows the budget; we still surface
-// that as ">100%" rather than collapsing back into 0..1.
-function formatContextUsage(contextUsage: number): string {
-  if (!Number.isFinite(contextUsage) || contextUsage < 0) return '';
-  return ` (${(contextUsage * 100).toFixed(1)}%)`;
-}
-
-/**
  * Inspect the leading `ContentBlock` of an ACP prompt for a
  * `/skill:<name>` form. Only the first block is examined — when Zed
  * (or any other ACP client) sends a slash command, it always lives in
@@ -1607,126 +1487,4 @@ function detectLeadingSlashIntent(
   const first = blocks[0];
   if (!first || first.type !== 'text') return { kind: 'passthrough' };
   return detectSlashIntent(first.text, skillCommandMap);
-}
-
-function mapPromptError(err: unknown, sessionId: string): RequestError {
-  const authErr = authRequiredFromUnknown(err);
-  if (authErr) {
-    log.warn('acp: prompt rejected with auth error; mapping to authRequired', {
-      sessionId,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return authErr;
-  }
-  log.error('acp: prompt failed', {
-    sessionId,
-    error: err instanceof Error ? { message: err.message, stack: err.stack } : String(err),
-  });
-  return RequestError.internalError(undefined, 'session prompt failed');
-}
-
-/**
- * Inspect a {@link KimiErrorPayload} (as carried on `turn.ended`
- * failed events) and return a `RequestError.authRequired()` if its
- * `code` is one of the auth-required codes; otherwise `undefined`.
- *
- * Kept separate from {@link authRequiredFromUnknown} because the
- * `turn.ended` event hands us a serialized payload (no class identity
- * to branch on) — we only need the `code` discriminator here.
- */
-function authRequiredFromPayload(
-  payload: { readonly code: unknown } | undefined,
-): RequestError | undefined {
-  if (!payload) return undefined;
-  if (isAuthErrorCode(payload.code)) {
-    return RequestError.authRequired();
-  }
-  return undefined;
-}
-
-/**
- * Type-narrowing predicate for the codes the adapter treats as
- * "the client must re-authenticate before retrying". Currently:
- *  - `auth.login_required` — Kimi Platform / OAuth login flow needed.
- *  - `provider.auth_error` — the downstream provider rejected the
- *    request with a 401 (the node SDK lifts these into `KimiError`
- *    at `kimi-code-model-provider.ts:99-103`).
- */
-function isAuthErrorCode(code: unknown): boolean {
-  return code === ErrorCodes.AUTH_LOGIN_REQUIRED || code === ErrorCodes.PROVIDER_AUTH_ERROR;
-}
-
-/**
- * Best-effort detection of "auth required" for the `session.prompt(...)`
- * rejection path. The thrown value MAY be:
- *  - A `KimiError` instance with a recognized `code` field.
- *  - A plain object that happens to expose a `code` (covers RPC-layer
- *    deserialized payloads that lost class identity).
- *  - Anything else — returns `undefined`.
- */
-function authRequiredFromUnknown(err: unknown): RequestError | undefined {
-  if (err && typeof err === 'object' && 'code' in err) {
-    const code = (err as { code?: unknown }).code;
-    if (isAuthErrorCode(code)) {
-      return RequestError.authRequired();
-    }
-  }
-  return undefined;
-}
-
-/**
- * Identifier the agent-core session emits for the main (user-facing)
- * agent. Subagents are issued generated ids by `Session.spawnAgent`;
- * filtering on this constant keeps `turn.ended` / `error` events from a
- * child agent from settling the parent's `session/prompt` promise.
- */
-const MAIN_AGENT_ID = 'main';
-
-/**
- * Parse a tool call's `arguments` field (kosong wire format: a JSON
- * string or `null`) into the structured object expected by the live
- * {@link toolCallStartToSessionUpdate} mapper. Falls back to the raw
- * string when the payload is not valid JSON — the mapper itself uses
- * {@link stringifyArgs}, which gracefully `String(x)`s anything it
- * cannot serialize, so the worst case is a degraded preview rather
- * than a crash.
- */
-function parseToolCallArguments(rawArguments: string | null): unknown {
-  if (rawArguments === null || rawArguments === '') return {};
-  try {
-    return JSON.parse(rawArguments);
-  } catch {
-    return rawArguments;
-  }
-}
-
-/**
- * Project a `tool` role {@link ContextMessage}'s `content` array into
- * the ACP `tool_call_update.content` shape (an array of
- * `ToolCallContent` entries). The historical message's content is a
- * sequence of kosong content parts — for replay we surface text parts
- * directly and stringify anything else (image refs etc.) as a
- * `[type]` placeholder so the client still sees that something was
- * returned.
- */
-function toolMessageContentToAcpToolCallContent(
-  parts: ContextMessage['content'],
-): Array<{ type: 'content'; content: { type: 'text'; text: string } }> {
-  const result: Array<{ type: 'content'; content: { type: 'text'; text: string } }> = [];
-  for (const part of parts) {
-    if (part.type === 'text') {
-      if (part.text) {
-        result.push({ type: 'content', content: { type: 'text', text: part.text } });
-      }
-      continue;
-    }
-    // image_url / audio_url / video_url / think — surface a marker so
-    // the result card is not empty. Replay should not lose evidence
-    // that a non-text part was present.
-    result.push({
-      type: 'content',
-      content: { type: 'text', text: `[${part.type}]` },
-    });
-  }
-  return result;
 }
