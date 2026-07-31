@@ -49,6 +49,18 @@ import {
   SESSIONS_INITIAL_PAGE_SIZE,
   useWorkspaceState,
 } from './client/useWorkspaceState';
+import type { ExtendedState, PromptAttachment } from './client/kimiWebClientTypes';
+import { buildApprovalBlock, formatTime, shortenHome, toUiQuestion } from './client/viewMappers';
+import {
+  errorName,
+  errorMessage,
+  errorStack,
+  formatDetailValue,
+  formatDuration,
+  formatTimestamp,
+  isSessionNotFoundError,
+  warningDetail,
+} from './client/errorFormatting';
 
 const appearance = useAppearance();
 const notification = useNotification();
@@ -92,7 +104,6 @@ import type {
   ChatTurn,
   ConnectionState,
   ConversationStatus,
-  DiffLine,
   DiffViewLine,
   PermissionMode,
   QueuedPromptView,
@@ -115,13 +126,16 @@ const ACTIVE_WORKSPACE_KEY = STORAGE_KEYS.activeWorkspace;
 const PLAN_MODE_STORAGE_KEY = STORAGE_KEYS.planMode;
 const SWARM_MODE_STORAGE_KEY = STORAGE_KEYS.swarmMode;
 const GOAL_MODE_STORAGE_KEY = STORAGE_KEYS.goalMode;
-const SESSION_NOT_FOUND_CODE = 40401;
 const ONBOARDED_STORAGE_KEY = STORAGE_KEYS.onboarded;
 
 // Appearance types + logic live in ./client/useAppearance; re-exported here so
 // existing `import type { ColorScheme, Accent } from './useKimiWebClient'`
 // callers keep working.
 export type { Accent, ColorScheme } from './client/useAppearance';
+// ExtendedState + PromptAttachment live in ./client/kimiWebClientTypes;
+// re-exported here so existing `import type { ExtendedState, PromptAttachment }
+// from './useKimiWebClient'` callers keep working.
+export type { ExtendedState, PromptAttachment };
 
 // The code-font setting was removed with its UI (b8a9e83). Clear the old
 // persisted key so users who once picked a font aren't frozen on it forever.
@@ -238,153 +252,6 @@ function saveActiveWorkspaceToStorage(id: string): void {
   } catch {
     // ignore
   }
-}
-
-/** Shorten a $HOME-prefixed absolute path to `~/…` for dim display. */
-function shortenHome(path: string, home: string | null): string {
-  if (home && path.startsWith(home)) {
-    const rest = path.slice(home.length);
-    return rest ? `~${rest}` : '~';
-  }
-  // Heuristic when we don't know $HOME: collapse /Users/<x> or /home/<x>.
-  const m = path.match(/^\/(?:Users|home)\/[^/]+(\/.*)?$/);
-  if (m) return `~${m[1] ?? ''}`;
-  return path;
-}
-
-interface GitStatusEntry {
-  branch: string;
-  ahead: number;
-  behind: number;
-  entries: Record<string, string>;
-  additions: number;
-  deletions: number;
-  pullRequest: { number: number; state: string; url: string } | null;
-}
-
-/** An uploaded attachment to send with a prompt. `kind` drives the content-block
-    type: images/videos become media parts; any other kind becomes a file part
-    the server materializes and hands to the model as a path reference.
-    name/mediaType/size feed the wire file shape (the server's file-store meta
-    stays authoritative, so a chip reloaded from history may omit them). */
-export type PromptAttachment = {
-  fileId: string;
-  kind: 'image' | 'video' | 'file';
-  name?: string;
-  mediaType?: string;
-  size?: number;
-};
-
-/** A prompt waiting for the session to go idle. Keeps the uploaded
-    fileIds so attachments survive queueing (not just the text). The id keys
-    the per-entry flush failure budget locally (assigned at enqueue). */
-interface QueuedPrompt {
-  text: string;
-  attachments?: PromptAttachment[];
-  id?: string;
-}
-
-export interface ExtendedState extends KimiClientState {
-  connected: boolean;
-  serverVersion: string;
-  /**
-   * True when the connected server reports `dangerous_bypass_auth` in `/meta`,
-   * meaning its bearer-token gate is disabled. The UI skips the server-token
-   * prompt and connects without a credential.
-   */
-  dangerousBypassAuth: boolean;
-  /**
-   * Engine generation of the connected server: `'v2'` = kap-server /
-   * agent-core-v2, `'v1'` = an older (legacy) server binary. Read from `/meta`
-   * (`backend` field; older servers omit it ⇒ v1). Drives the dev-mode
-   * backend badge in the Sidebar.
-   */
-  backend: 'v1' | 'v2';
-  workspaceName: string;
-  connection: ConnectionState;
-  permission: PermissionMode;
-  /** The thinking level shown and submitted for the ACTIVE session. Resolved by
-   *  useModelProviderState: the session's own daemon-reported level
-   *  (`thinkingBySession`) when the model still declares it, else the model's
-   *  stored per-model pick, else its catalog default — undefined only
-   *  transiently before that, so display and submission always agree. */
-  thinking: ThinkingLevel | undefined;
-  /** The session's own thinking level as reported by the daemon (GET
-   *  /sessions/{id}/status `thinking_level` and WS `agent.status.updated`),
-   *  keyed by session id. Per-session state wins over the per-model
-   *  localStorage pick: a session keeps the level it actually ran with, so
-   *  switching sessions never leaks one session's pick into another. */
-  thinkingBySession: Record<string, ThinkingLevel>;
-  /** Plan-mode toggle per session. Bound to a session (not global) so toggling
-   *  it in one session does not affect another. */
-  planModeBySession: Record<string, boolean>;
-  /** Swarm-mode toggle per session. */
-  swarmModeBySession: Record<string, boolean>;
-  /** Goal-mode (one-shot "next send creates a goal") toggle per session. */
-  goalModeBySession: Record<string, boolean>;
-  loading: boolean;
-  sessionLoading: boolean;
-  queuedBySession: Record<string, QueuedPrompt[]>;
-  gitStatusBySession: Record<string, GitStatusEntry>;
-  /** Expert teams available to a session (v2 backends only; server-owned). */
-  expertTeamsBySession: Record<string, AppExpertTeam[]>;
-  /** The active expert-team mode per session; null = standard agent. */
-  expertTeamStatusBySession: Record<string, AppExpertTeamStatus | null>;
-  // Real daemon prompt_id of the last submitted prompt, per session. This is the
-  // AUTHORITATIVE id for :abort — the event projector synthesizes a `pr_…` id
-  // when turn.started races ahead of binding, which the daemon rejects.
-  promptIdBySession: Record<string, string>;
-  // A prompt this client submitted (or skill-activated) has not reached its
-  // terminal state yet — the OPTIMISTIC half of the working moon, covering the
-  // window before the turn.started round-trips (and the queue-drain re-arm).
-  // Set at every local turn entry point; cleared by finishPromptLocal, the
-  // entry points' own error paths, the authoritative-quiet fallback, or session
-  // forget. `turnActiveBySession` owns everything from turn.started on.
-  inFlightBySession: Record<string, boolean>;
-  // True when a BACKGROUND session finished a turn the user hasn't opened since
-  // (drives the unread blue dot in the sidebar). Set on idle for a non-active
-  // session, cleared when the session is selected.
-  unreadBySession: Record<string, boolean>;
-  // Auth state (real daemon)
-  authReady: boolean;
-  defaultModel: string | null;
-  managedProviderStatus: string | null;
-  // Workspace state
-  workspaces: AppWorkspace[];
-  activeWorkspaceId: string | null;
-  fsHome: string | null;
-  recentRoots: string[];
-  // Root paths the user removed from the sidebar (see HIDDEN_WORKSPACES_KEY).
-  hiddenWorkspaceRoots: string[];
-  /** Installed external apps that can be used with "Open in app". */
-  availableOpenInApps: string[];
-  /** Global daemon configuration (secrets redacted). */
-  config: AppConfig | null;
-  /** Transient BTW side-panel transcript, keyed by forked agent id. */
-  sideChatMessagesByAgent: Record<string, AppMessage[]>;
-  /** Local sending flag for BTW agents; agent ids are not session ids. */
-  sideChatSendingByAgent: Record<string, boolean>;
-  /** User message ids sent through BTW so they can be hidden from the main transcript. */
-  sideChatUserMessageIdsBySession: Record<string, string[]>;
-  /** True when older messages are being fetched for a session (scroll-up lazy load). */
-  messagesLoadingMoreBySession: Record<string, boolean>;
-  /** Whether the server has more older messages than currently loaded per session. */
-  messagesHasMoreBySession: Record<string, boolean>;
-  /** True when the last older-message fetch failed for a session. */
-  messagesLoadMoreErrorBySession: Record<string, boolean>;
-  /** Whether the server has more sessions than currently loaded, per workspace. */
-  sessionsHasMoreByWorkspace: Record<string, boolean>;
-  /** True while the next page of sessions is being fetched for a workspace. */
-  sessionsLoadingMoreByWorkspace: Record<string, boolean>;
-  /** Paging cursor (`before_id`) for the next session page, per workspace. Tracks
-   *  the end of the last fetched page so a deep-linked older session appended
-   *  out of band does not shift the cursor and skip intervening sessions. */
-  sessionsCursorByWorkspace: Record<string, string | undefined>;
-  /** First-page capacity per workspace (sessions loaded on first paint, floored
-   *  at one full page). Drives the sidebar's in-group show-less collapse target. */
-  sessionsInitialCountByWorkspace: Record<string, number>;
-  /** True once every session has been loaded (after a search-triggered full drain). */
-  sessionsFullyLoaded: boolean;
 }
 
 const rawState: ExtendedState = reactive({
@@ -1139,68 +1006,6 @@ const sessionsKnownEmpty = new Set<string>();
  */
 type SyncSessionResult = 'ok' | 'not-found' | 'failed';
 
-function isSessionNotFoundError(err: unknown): boolean {
-  if (isDaemonApiError(err) && err.code === SESSION_NOT_FOUND_CODE) return true;
-  return (
-    typeof err === 'object' &&
-    err !== null &&
-    (err as { code?: unknown }).code === SESSION_NOT_FOUND_CODE
-  );
-}
-
-function warningDetail(labelKey: string, value: unknown): AppNoticeDetail | undefined {
-  if (value === undefined || value === null || value === '') return undefined;
-  return { label: i18n.global.t(`warnings.details.${labelKey}`), value: formatDetailValue(value) };
-}
-
-function formatDetailValue(value: unknown): string {
-  if (value instanceof Error) {
-    // A stack already starts with "Name: message" and carries the frames the
-    // plain name/message would throw away, so prefer it when present.
-    if (typeof value.stack === 'string' && value.stack) return value.stack;
-    return value.message ? `${value.name}: ${value.message}` : value.name;
-  }
-  if (typeof value === 'string') return value;
-  if (typeof value === 'number' || typeof value === 'boolean' || typeof value === 'bigint') {
-    return String(value);
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-function errorName(err: unknown): string | undefined {
-  return err instanceof Error
-    ? err.name
-    : typeof err === 'object' && err !== null && typeof (err as { name?: unknown }).name === 'string'
-      ? (err as { name: string }).name
-      : undefined;
-}
-
-function errorMessage(err: unknown): string | undefined {
-  return err instanceof Error
-    ? err.message
-    : typeof err === 'object' && err !== null && typeof (err as { message?: unknown }).message === 'string'
-      ? (err as { message: string }).message
-      : undefined;
-}
-
-function errorStack(err: unknown): string | undefined {
-  return err instanceof Error && typeof err.stack === 'string' && err.stack ? err.stack : undefined;
-}
-
-function formatTimestamp(ms: number | undefined): string | undefined {
-  if (typeof ms !== 'number' || !Number.isFinite(ms)) return undefined;
-  return new Date(ms).toISOString();
-}
-
-function formatDuration(ms: number | undefined): string | undefined {
-  if (typeof ms !== 'number' || !Number.isFinite(ms)) return undefined;
-  return `${Math.round(ms)}ms`;
-}
-
 function errorDetails(operation: string, err: unknown, sessionId?: string): AppNoticeDetail[] {
   const network = isDaemonNetworkError(err);
   const api = isDaemonApiError(err);
@@ -1625,26 +1430,6 @@ function isMainTurnActive(sessionId: string, listed?: boolean): boolean {
   );
 }
 
-/** Format createdAt/updatedAt into a short display string */
-function formatTime(iso: string): string {
-  try {
-    const d = new Date(iso);
-    const now = Date.now();
-    const diffMs = now - d.getTime();
-    const diffH = diffMs / 3600000;
-    if (diffMs < 60000) return i18n.global.t('sessions.justNow');
-    if (diffH < 1) return `${Math.round(diffMs / 60000)}m`;
-    if (diffH < 24) return `${Math.round(diffH)}h`;
-    const diffD = diffMs / 86400000;
-    if (diffD < 7) return `${Math.round(diffD)}d`;
-    if (diffD < 30) return `${Math.round(diffD / 7)}w`;
-    if (diffD < 365) return `${Math.round(diffD / 30)}mo`;
-    return `${Math.round(diffD / 365)}y`;
-  } catch {
-    return iso;
-  }
-}
-
 const SESSION_TIME_CLOCK_INTERVAL_MS = 30_000;
 const sessionTimeClock = ref(0);
 let sessionTimeClockTimer: ReturnType<typeof setInterval> | null = null;
@@ -1668,141 +1453,6 @@ if (import.meta.hot) {
     stopSessionTimeClock();
     enqueueEvent.dispose();
   });
-}
-
-/** Build DiffLine[] from old_text/new_text strings */
-function buildDiffLines(oldText: string, newText: string): DiffLine[] {
-  const removed = oldText.split('\n');
-  const added = newText.split('\n');
-  const lines: DiffLine[] = [];
-  removed.forEach((text, i) => {
-    lines.push({ kind: 'rem', gutter: String(i + 1), text: `- ${text}` });
-  });
-  added.forEach((text, i) => {
-    lines.push({ kind: 'add', gutter: String(i + 1), text: `+ ${text}` });
-  });
-  return lines;
-}
-
-/** Build ApprovalBlock from AppApprovalRequest (discriminated union) */
-function buildApprovalBlock(a: AppApprovalRequest): ApprovalBlock {
-  // Cast display to a loose dict for defensive reading
-  const d = (a.display ?? {}) as Record<string, unknown>;
-  const kind = typeof d.kind === 'string' ? d.kind : '';
-
-  // diff
-  if (kind === 'diff') {
-    const path = typeof d.path === 'string' ? d.path : '';
-    if (Array.isArray(d.diff)) {
-      return { kind: 'diff', path, diff: d.diff as DiffLine[] };
-    }
-    if (typeof d.old_text === 'string' && typeof d.new_text === 'string') {
-      return { kind: 'diff', path, diff: buildDiffLines(d.old_text, d.new_text) };
-    }
-    return { kind: 'diff', path, diff: [] };
-  }
-
-  // shell / command
-  if (kind === 'shell' || kind === 'command') {
-    const command = typeof d.command === 'string' ? d.command : a.action;
-    const cwd = typeof d.cwd === 'string' ? d.cwd : undefined;
-    const danger = typeof d.danger === 'string' ? d.danger : undefined;
-    return { kind: 'shell', command, cwd, danger };
-  }
-
-  // file_content / file
-  if (kind === 'file_content' || kind === 'file') {
-    const path = typeof d.path === 'string' ? d.path : '';
-    const content = typeof d.content === 'string' ? d.content : '';
-    const language = typeof d.language === 'string' ? d.language : undefined;
-    return { kind: 'file', path, content, language };
-  }
-
-  // file_op / fileop
-  if (kind === 'file_op' || kind === 'fileop') {
-    const op = typeof d.operation === 'string' ? d.operation : (typeof d.op === 'string' ? d.op : kind);
-    const path = typeof d.path === 'string' ? d.path : '';
-    const detail = typeof d.detail === 'string' ? d.detail : undefined;
-    return { kind: 'fileop', op, path, detail };
-  }
-
-  // url_fetch / url
-  if (kind === 'url_fetch' || kind === 'url') {
-    const url = typeof d.url === 'string' ? d.url : a.action;
-    const method = typeof d.method === 'string' ? d.method : undefined;
-    return { kind: 'url', method, url };
-  }
-
-  // search
-  if (kind === 'search') {
-    const query = typeof d.query === 'string' ? d.query : a.action;
-    const scope = typeof d.scope === 'string' ? d.scope : undefined;
-    return { kind: 'search', query, scope };
-  }
-
-  // invocation / agent_call / skill_call
-  if (kind === 'invocation' || kind === 'agent_call' || kind === 'skill_call') {
-    const kind2 = typeof d.kind === 'string' ? d.kind : kind;
-    const name = typeof d.name === 'string' ? d.name : a.toolName;
-    const description = typeof d.description === 'string' ? d.description : undefined;
-    return { kind: 'invocation', kind2, name, description };
-  }
-
-  // todo / todo_list
-  if (kind === 'todo' || kind === 'todo_list') {
-    const rawItems = Array.isArray(d.items) ? d.items : [];
-    const items = rawItems.map((item: unknown) => {
-      const it = (item ?? {}) as Record<string, unknown>;
-      return {
-        title: typeof it.title === 'string' ? it.title : '',
-        status: typeof it.status === 'string' ? it.status : 'pending',
-      };
-    });
-    return { kind: 'todo', items };
-  }
-
-  // plan_review — finalised plan presented at plan-mode exit
-  if (kind === 'plan_review') {
-    const plan = typeof d.plan === 'string' ? d.plan : '';
-    const path = typeof d.path === 'string' ? d.path : undefined;
-    const rawOptions = Array.isArray(d.options) ? d.options : [];
-    const options = rawOptions
-      .map((item: unknown): { label: string; description?: string } | null => {
-        const it = (item ?? {}) as Record<string, unknown>;
-        const label = typeof it.label === 'string' ? it.label : '';
-        if (!label) return null;
-        const description = typeof it.description === 'string' ? it.description : undefined;
-        return { label, description };
-      })
-      .filter((o): o is { label: string; description?: string } => o !== null);
-    return { kind: 'plan_review', plan, path, options: options.length > 0 ? options : undefined };
-  }
-
-  // Unknown daemon display.kind → 'generic' with summary = action
-  return { kind: 'generic', summary: a.action };
-}
-
-/** Map AppQuestionRequest to UIQuestion */
-function toUiQuestion(q: AppQuestionRequest): UIQuestion {
-  return {
-    questionId: q.questionId,
-    sessionId: q.sessionId,
-    questions: q.questions.map((qi) => ({
-      id: qi.id,
-      question: qi.question,
-      header: qi.header,
-      body: qi.body,
-      options: qi.options.map((o) => ({
-        id: o.id,
-        label: o.label,
-        description: o.description,
-        recommended: o.recommended,
-      })),
-      multiSelect: qi.multiSelect,
-      allowOther: qi.allowOther,
-      otherLabel: qi.otherLabel,
-    })),
-  };
 }
 
 // messagesToTurns is imported from ./messagesToTurns (extracted module that
