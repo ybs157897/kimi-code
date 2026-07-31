@@ -7,267 +7,70 @@
 // the view-model computeds stay in the facade; cross-dependencies are injected
 // here as params.
 
-import { reactive, type ComputedRef, type Ref } from 'vue';
 import { getKimiWebApi } from '../../api';
-import { i18n } from '../../i18n';
-import { useConfirmDialog } from '../useConfirmDialog';
 import { isDaemonApiError } from '../../api/errors';
-import { SERVER_AUTH_UNAUTHORIZED_CODE } from '../../api/daemon/http';
-import { isPlaceholderSessionUsage } from '../../api/daemon/mappers';
 import type {
-  AppConfig,
   AppInFlightTurn,
   AppMessage,
-  AppSession,
   AppWorkspace,
   ApprovalDecision,
   ApprovalResponse,
-  KimiEventConnection,
   QuestionResponse,
 } from '../../api/types';
+import { sessionExportTraceToJsonl, traceKeyEvent } from '../../debug/trace';
+import { i18n } from '../../i18n';
+import { workspaceRootKey } from '../../lib/rootKey';
+import { readSessionIdFromLocation, sessionUrl } from '../../lib/sessionRoute';
+import type { SessionUrlMode } from '../../lib/sessionRoute';
 import {
   loadWorkspaceNameOverrides,
   safeRemove,
   saveWorkspaceNameOverrides,
   STORAGE_KEYS,
 } from '../../lib/storage';
-import { workspaceRootKey } from '../../lib/rootKey';
-import { sessionExportTraceToJsonl, traceKeyEvent } from '../../debug/trace';
-import { readSessionIdFromLocation, sessionUrl } from '../../lib/sessionRoute';
-import type { SessionUrlMode } from '../../lib/sessionRoute';
-import type {
-  ActivityState,
-  ConversationStatus,
-  DiffViewLine,
-  PermissionMode,
-  WorkspaceView,
-} from '../../types';
+import type { PermissionMode } from '../../types';
+import { useConfirmDialog } from '../useConfirmDialog';
 import type { ExtendedState, PromptAttachment } from '../useKimiWebClient';
-import type { UseExtensionState } from './useExtensionState';
-import type { UseModelProviderState } from './useModelProviderState';
-import type { UseSideChat } from './useSideChat';
-import type { UseTaskPoller } from './useTaskPoller';
+import {
+  afterLocalTurnStartsSettle,
+  beginLocalTurn,
+  isLocalTurnSnapshotCurrent,
+  localTurnStartState,
+  MAX_QUEUE_FLUSH_FAILURES,
+  nextQueueEntryId,
+  queueFlushFailures,
+  settleLocalTurn,
+} from './localTurnLifecycle';
+import {
+  pendingApprovalActions,
+  pendingQuestionActions,
+  pendingTaskCancellations,
+  startingFirstPromptWorkspaces,
+} from './pendingActions';
+import { useAuthConfig } from './useAuthConfig';
+import { useExpertTeams } from './useExpertTeams';
+import { useSessionPagination } from './useSessionPagination';
 import { useWorkspaceFiles } from './useWorkspaceFiles';
+import type { UseWorkspaceStateDeps } from './useWorkspaceStateTypes';
+import { MESSAGES_PAGE_SIZE } from './workspaceStateConstants';
+import {
+  isAlreadyResolvedError,
+  isTaskAlreadyFinishedError,
+  PROMPT_NOT_FOUND_CODE,
+  WORKSPACE_NOT_FOUND_CODE,
+} from './workspaceErrors';
 
-const MESSAGES_PAGE_SIZE = 50;
-// Sessions fetched per workspace on first load — keeps the initial request
-// count at (number of workspaces) and each response small. Exported so the
-// sidebar can fall back to it when a workspace's first-page size is unknown.
-export const SESSIONS_INITIAL_PAGE_SIZE = 5;
-const PROMPT_NOT_FOUND_CODE = 40402;
-const WORKSPACE_NOT_FOUND_CODE = 40410;
-// Shared "already resolved" conflict (40902). The daemon reuses it for both
-// approvals and questions when a second client races the resolve, so a
-// duplicate submit is reported as a conflict even though the desired end
-// state (resolved) is already reached. We treat it as a benign no-op.
-const ALREADY_RESOLVED_CODE = 40902;
-// First load polls /auth until it gives a definitive answer (see load()).
-const FIRST_LOAD_AUTH_RETRY_MS = 2000;
-
-type AuthCheckResult = 'proceed' | 'retry' | 'server-auth-required';
-
-function isAlreadyResolvedError(err: unknown): boolean {
-  return isDaemonApiError(err) && err.code === ALREADY_RESOLVED_CODE;
-}
-
-// 40904 — cancel raced the task reaching a terminal state. Like 40902 this is
-// an idempotent "already in the desired end state" conflict, not a real error.
-const TASK_ALREADY_FINISHED_CODE = 40904;
-
-function isTaskAlreadyFinishedError(err: unknown): boolean {
-  return isDaemonApiError(err) && err.code === TASK_ALREADY_FINISHED_CODE;
-}
-
-/**
- * Question ids with an in-flight respond/dismiss, keyed by questionId with the
- * action kind. Drives the card's loading state and guards against a duplicate
- * submit while the first request is still in flight (the server would reject
- * the second resolve with 40902). Module-level singleton — matches
- * `inFlightBySession` on rawState.
- */
-const pendingQuestionActions = reactive<Record<string, 'answer' | 'dismiss'>>({});
-/** Approval ids with an in-flight respond, keyed by approvalId. */
-const pendingApprovalActions = reactive<Record<string, true>>({});
-/** Task ids with an in-flight cancel, keyed by taskId. */
-const pendingTaskCancellations = reactive<Record<string, true>>({});
-/**
- * Workspace ids whose empty-session first prompt is currently being created +
- * submitted. The empty-composer path (`startSessionAndSendPrompt`) awaits
- * `createDraftSession` (addWorkspace + createSession + selectSession) before
- * the session id exists, so the per-session prompt-in-flight guard cannot
- * cover that window — a second Enter / send-button click during it
- * would otherwise fire a second concurrent POST and trip the daemon's
- * `turn.agent_busy` race. Module-level singleton — matches the other
- * `pending*Actions` guards above.
- */
-const startingFirstPromptWorkspaces = reactive(new Set<string>());
-
-/**
- * Per-session local-turn-start lifecycle, shared by EVERY entry point that
- * starts a turn locally (prompt submit/steer in this module, skill activation
- * in useModelProviderState). Two pieces of state:
- *  - generation: bumped synchronously at every local turn start, so a
- *    snapshot requested BEFORE the start can tell it predates the turn;
- *  - pending: set while the start request (POST /prompts or skill
- *    activation) has not been acknowledged by the daemon — a snapshot
- *    requested in that window cannot reflect the turn server-side either.
- * Module-level singleton — matches `inFlightBySession` on rawState.
- */
-const promptGenerationBySession = new Map<string, number>();
-const pendingLocalTurnStarts = new Map<string, Set<number>>();
-const afterLocalTurnsSettled = new Map<string, () => void>();
-let nextLocalTurnToken = 0;
-
-/**
- * Consecutive flushQueueHead failures per queue ENTRY (not per session) —
- * keyed by entry id, falling back to its text for entries without one.
- * Keying by entry keeps a removed or reordered head from handing its
- * failure budget down to the next entry. Module-level singleton — the queue
- * itself is per-session on rawState, so a page reload resets both.
- */
-const queueFlushFailures = new Map<string, { key: string; count: number }>();
-const MAX_QUEUE_FLUSH_FAILURES = 3;
-
-let queueEntryCounter = 0;
-function nextQueueEntryId(): string {
-  queueEntryCounter += 1;
-  return `${Date.now().toString(36)}-${queueEntryCounter}`;
-}
-
-export interface LocalTurnStartState {
-  generation: number;
-  pending: boolean;
-}
-
-/** Snapshot of the local-turn-start state, captured BEFORE an async snapshot
- *  fetch so the caller can reject a snapshot that predates a local turn. */
-export function localTurnStartState(sid: string): LocalTurnStartState {
-  return {
-    generation: promptGenerationBySession.get(sid) ?? 0,
-    pending: (pendingLocalTurnStarts.get(sid)?.size ?? 0) > 0,
-  };
-}
-
-/** Shared "a local turn just started" lifecycle: bumps the generation and
- *  marks the start request pending. Call synchronously before the first
- *  await of every local turn entry point. */
-export function beginLocalTurn(sid: string): number {
-  const token = ++nextLocalTurnToken;
-  promptGenerationBySession.set(sid, token);
-  const pending = pendingLocalTurnStarts.get(sid) ?? new Set<number>();
-  pending.add(token);
-  pendingLocalTurnStarts.set(sid, pending);
-  return token;
-}
-
-/** The daemon acknowledged (or rejected) the turn-start request. */
-export function settleLocalTurn(sid: string, token: number): void {
-  const pending = pendingLocalTurnStarts.get(sid);
-  if (pending === undefined) return;
-  pending.delete(token);
-  if (pending.size > 0) return;
-  pendingLocalTurnStarts.delete(sid);
-  const callback = afterLocalTurnsSettled.get(sid);
-  afterLocalTurnsSettled.delete(sid);
-  callback?.();
-}
-
-/** Drop lifecycle state with the rest of a forgotten session. */
-export function forgetLocalTurnState(sid: string): void {
-  promptGenerationBySession.delete(sid);
-  pendingLocalTurnStarts.delete(sid);
-  afterLocalTurnsSettled.delete(sid);
-  queueFlushFailures.delete(sid);
-}
-
-/** Whether a snapshot request can still be applied without overwriting a
- *  local turn that started before or during the request. */
-export function isLocalTurnSnapshotCurrent(sid: string, atRequest: LocalTurnStartState): boolean {
-  return !atRequest.pending && atRequest.generation === (promptGenerationBySession.get(sid) ?? 0);
-}
-
-/** Coalesce a skipped snapshot into one retry after local turn-start requests settle. */
-export function afterLocalTurnStartsSettle(sid: string, callback: () => void): void {
-  if ((pendingLocalTurnStarts.get(sid)?.size ?? 0) === 0) {
-    callback();
-    return;
-  }
-  afterLocalTurnsSettled.set(sid, callback);
-}
-
-type SyncSessionResult = 'ok' | 'not-found' | 'failed';
-
-export interface PersistSessionProfilePatch {
-  model?: string;
-  permissionMode?: string;
-  planMode?: boolean;
-  swarmMode?: boolean;
-  goalObjective?: string;
-  goalControl?: 'pause' | 'resume' | 'cancel';
-  thinking?: string;
-}
-
-export interface UseWorkspaceStateDeps {
-  taskPoller: UseTaskPoller;
-  sideChat: UseSideChat;
-  modelProvider: UseModelProviderState;
-  extensionState: UseExtensionState;
-  pushOperationFailure: (
-    operation: string,
-    err: unknown,
-    opts?: { title?: string; message?: string; sessionId?: string },
-  ) => void;
-  activity: ComputedRef<ActivityState>;
-  sessionsKnownEmpty: Set<string>;
-  // rawState.sessions mutation funnel, owned by the facade. This module never
-  // assigns rawState.sessions directly — it goes through these.
-  setSessions: (next: AppSession[]) => void;
-  updateSession: (id: string, update: (session: AppSession) => AppSession) => void;
-  upsertSessionFront: (session: AppSession) => void;
-  appendSession: (session: AppSession) => void;
-  forgetSession: (id: string) => void;
-  setActiveSessionId: (id: string | undefined) => void;
-  /** Update one session's message list via a function of the current list. */
-  updateSessionMessages: (
-    sessionId: string,
-    update: (messages: AppMessage[]) => AppMessage[],
-  ) => void;
-  nextOptimisticMsgId: () => string;
-  getEventConn: () => KimiEventConnection | null;
-  syncSessionFromSnapshot: (sessionId: string) => Promise<SyncSessionResult>;
-  reopenSession: (sessionId: string) => Promise<SyncSessionResult>;
-  hasLoadedMessages: (sessionId: string) => boolean;
-  refreshSessionStatus: (sessionId: string) => Promise<void>;
-  refreshSessionGoal: (sessionId: string) => Promise<void>;
-  /** Persist profile fields to the daemon. Resolves false (after surfacing the
-   *  failure itself) when the daemon rejected the patch — awaited callers that
-   *  order strictly after the profile must NOT proceed on false. */
-  persistSessionProfile: (patch: PersistSessionProfilePatch, sessionId?: string) => Promise<boolean>;
-  mergedWorkspaces: ComputedRef<AppWorkspace[]>;
-  /** Sidebar-facing workspaces in the user's (dragged) display order. */
-  workspacesView: ComputedRef<WorkspaceView[]>;
-  status: ComputedRef<ConversationStatus>;
-  workspaceIdForSession: (s: { workspaceId?: string; cwd: string }) => string;
-  savePermissionToStorage: (mode: PermissionMode) => void;
-  /** Persist the current per-session mode maps (read off rawState). */
-  savePlanModeToStorage: () => void;
-  saveSwarmModeToStorage: () => void;
-  saveGoalModeToStorage: () => void;
-  /** Staged mode toggles for the not-yet-created draft session. */
-  draftModes: { planMode: boolean; swarmMode: boolean; goalMode: boolean };
-  saveUnread: (changes: Record<string, boolean>) => void;
-  saveActiveWorkspaceToStorage: (id: string) => void;
-  saveHiddenWorkspacesToStorage: (roots: string[]) => void;
-  goalErrorMessage: (err: unknown) => string | undefined;
-  resetFastMoon: () => void;
-  initialized: Ref<boolean>;
-  /** Diagnostic for the connecting splash, set by checkAuth on transient
-   *  failures and cleared once a check gets through. */
-  connectIssue: Ref<string | null>;
-  selectedDiffPath: Ref<string | null>;
-  fileDiffLines: Ref<DiffViewLine[]>;
-  fileDiffLoading: Ref<boolean>;
-}
+export { SESSIONS_INITIAL_PAGE_SIZE } from './workspaceStateConstants';
+export {
+  type LocalTurnStartState,
+  localTurnStartState,
+  beginLocalTurn,
+  settleLocalTurn,
+  forgetLocalTurnState,
+  isLocalTurnSnapshotCurrent,
+  afterLocalTurnStartsSettle,
+} from './localTurnLifecycle';
+export { type PersistSessionProfilePatch, type UseWorkspaceStateDeps } from './useWorkspaceStateTypes';
 
 export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceStateDeps) {
   const { t } = i18n.global;
@@ -338,6 +141,30 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     fileDiffLoading,
   });
 
+  const { checkAuth, waitForFirstAuth, loadConfig, updateConfig } = useAuthConfig(rawState, {
+    pushOperationFailure,
+    connectIssue,
+  });
+
+  const {
+    loadExpertTeamsForSession,
+    activateExpertTeam,
+    deactivateExpertTeam,
+    refreshExpertTeams,
+  } = useExpertTeams(rawState, { pushOperationFailure });
+
+  const {
+    listAllSessionsGlobal,
+    setSessionsPreservingLiveUsage,
+    loadInitialSessionsByWorkspace,
+    loadMoreSessions,
+    loadAllSessions,
+  } = useSessionPagination(rawState, {
+    pushOperationFailure,
+    setSessions,
+    workspaceIdForSession,
+  });
+
   async function loadOlderMessages(sessionId: string): Promise<void> {
     if (rawState.messagesLoadingMoreBySession[sessionId]) return;
     const current = rawState.messagesBySession[sessionId];
@@ -394,471 +221,6 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       void extensionState.loadCommandsForSession(sessionId);
     }
     void loadExpertTeamsForSession(sessionId);
-  }
-
-  /** Load the expert-team catalog + active mode for a session. Defensive —
-   *  the surface only exists on v2 backends, so failures just leave the maps
-   *  empty and the picker hidden. Re-scanned on every sidecar refresh because
-   *  drop-in team packages can appear on disk while the session is open. */
-  async function loadExpertTeamsForSession(sessionId: string): Promise<void> {
-    if (rawState.backend !== 'v2') return;
-    try {
-      const api = getKimiWebApi();
-      const [teams, status] = await Promise.all([
-        api.listExpertTeams(sessionId),
-        api.getExpertTeam(sessionId),
-      ]);
-      rawState.expertTeamsBySession = { ...rawState.expertTeamsBySession, [sessionId]: teams };
-      rawState.expertTeamStatusBySession = {
-        ...rawState.expertTeamStatusBySession,
-        [sessionId]: status,
-      };
-    } catch {
-      // Old/incompatible server — hide the feature rather than toast.
-    }
-  }
-
-  async function activateExpertTeam(pluginId: string): Promise<void> {
-    const sid = rawState.activeSessionId;
-    if (!sid) return;
-    try {
-      const status = await getKimiWebApi().activateExpertTeam(sid, pluginId);
-      rawState.expertTeamStatusBySession = {
-        ...rawState.expertTeamStatusBySession,
-        [sid]: status,
-      };
-      // Expert-team mode owns the main agent; the daemon force-exits swarm.
-      rawState.swarmModeBySession = { ...rawState.swarmModeBySession, [sid]: false };
-    } catch (err) {
-      pushOperationFailure('activateExpertTeam', err, { sessionId: sid });
-    }
-  }
-
-  async function deactivateExpertTeam(): Promise<void> {
-    const sid = rawState.activeSessionId;
-    if (!sid) return;
-    try {
-      await getKimiWebApi().deactivateExpertTeam(sid);
-      rawState.expertTeamStatusBySession = {
-        ...rawState.expertTeamStatusBySession,
-        [sid]: null,
-      };
-    } catch (err) {
-      pushOperationFailure('deactivateExpertTeam', err, { sessionId: sid });
-    }
-  }
-
-  /** Re-scan the active session's expert-team catalog (Modes menu open). */
-  function refreshExpertTeams(): void {
-    const sid = rawState.activeSessionId;
-    if (!sid) return;
-    void loadExpertTeamsForSession(sid);
-  }
-
-  /** Fetch auth readiness from GET /api/v1/auth. Defensive — never throws.
-   *  The web bundle always ships paired with its daemon, so this endpoint is
-   *  guaranteed to exist — every failure is either a credential rejection or
-   *  a transient error worth retrying:
-   *  - 'proceed'              — response received; rawState reflects it (ready
-   *                             or not)
-   *  - 'server-auth-required' — the daemon rejected our server credential
-   *                             (401/40101); the ServerAuthDialog owns recovery
-   *                             (it reloads once the token is entered)
-   *  - 'retry'                — transient failure (network, timeout, 5xx); the
-   *                             caller should retry instead of treating it as
-   *                             "not signed in" */
-  async function checkAuth(): Promise<AuthCheckResult> {
-    try {
-      const api = getKimiWebApi();
-      const result = await api.getAuth();
-      rawState.authReady = result.ready;
-      rawState.defaultModel = result.defaultModel;
-      rawState.managedProviderStatus = result.managedProvider?.status ?? null;
-      connectIssue.value = null;
-      return 'proceed';
-    } catch (err) {
-      if (
-        isDaemonApiError(err) &&
-        (err.code === 401 || err.code === SERVER_AUTH_UNAUTHORIZED_CODE)
-      ) {
-        // The ServerAuthDialog explains this one — nothing to surface.
-        connectIssue.value = null;
-        return 'server-auth-required';
-      }
-      // Surface the reason on the splash so "cannot connect" is diagnosable
-      // instead of an unexplained spinner.
-      connectIssue.value = (err instanceof Error ? err.message : String(err)).slice(0, 140);
-      return 'retry';
-    }
-  }
-
-  /** Poll /auth until the daemon gives a definitive outcome, waiting
-   *  FIRST_LOAD_AUTH_RETRY_MS between transient failures. Never resolves with
-   *  'retry'. Used only by the first load. */
-  async function waitForFirstAuth(): Promise<AuthCheckResult> {
-    let firstRetry = true;
-    for (;;) {
-      const result = await checkAuth();
-      if (result !== 'retry') return result;
-      // Keep the first quick failure silent — a single blip right after page
-      // load shouldn't flash an error. Surface it from the 2nd failed attempt
-      // (~2s in) onward, so a genuinely stuck connection stays diagnosable.
-      if (firstRetry) {
-        connectIssue.value = null;
-        firstRetry = false;
-      }
-      await new Promise((resolve) => {
-        setTimeout(resolve, FIRST_LOAD_AUTH_RETRY_MS);
-      });
-    }
-  }
-
-  /** Fetch global config from GET /api/v1/config. Defensive — never throws. */
-  async function loadConfig(): Promise<void> {
-    try {
-      const api = getKimiWebApi();
-      rawState.config = await api.getConfig();
-    } catch {
-      // Daemon may not have this endpoint yet; leave null
-    }
-  }
-
-  /** Update global config via POST /api/v1/config. */
-  async function updateConfig(patch: Partial<AppConfig>): Promise<boolean> {
-    try {
-      const api = getKimiWebApi();
-      const next = await api.setConfig(patch);
-      rawState.config = next;
-      rawState.defaultModel = next.defaultModel ?? null;
-      return true;
-    } catch (err) {
-      pushOperationFailure('setConfig', err);
-      return false;
-    }
-  }
-
-  // Backend max page size for GET /sessions. Bigger pages mean fewer round-trips
-  // when draining the full session list.
-  const SESSION_PAGE_SIZE = 100;
-  // Sessions fetched per "load more" click within a workspace.
-  const SESSIONS_LOAD_MORE_SIZE = 30;
-  // On initial load, if the oldest session of the first page is still within
-  // this window, keep fetching older pages until the oldest loaded session falls
-  // outside it. Avoids clipping an active workspace's history at an arbitrary
-  // 5-session boundary when it has a run of recently-updated sessions.
-  const SESSIONS_RECENT_WINDOW_MS = 12 * 60 * 60 * 1000;
-
-  /** Drain every page of sessions, newest first. A single global walk (instead of
-   *  per-workspace) so sessions whose cwd is not a registered workspace root are
-   *  still reachable after a refresh. A later-page failure returns the pages
-   *  already fetched plus the error; only a first-page failure rejects. */
-  async function listAllSessionsGlobal(): Promise<{
-    sessions: AppSession[];
-    error?: unknown;
-  }> {
-    const api = getKimiWebApi();
-    const items: AppSession[] = [];
-    let beforeId: string | undefined;
-    let continuationError: unknown;
-    for (;;) {
-      let page: { items: AppSession[]; hasMore: boolean };
-      try {
-        page = await api.listSessions({
-          pageSize: SESSION_PAGE_SIZE,
-          beforeId,
-          excludeEmpty: true,
-        });
-      } catch (error) {
-        if (items.length === 0) throw error;
-        continuationError = error;
-        break;
-      }
-      items.push(...page.items);
-      if (!page.hasMore || page.items.length === 0) break;
-      beforeId = page.items[page.items.length - 1]!.id;
-    }
-    return { sessions: items, error: continuationError };
-  }
-
-  /**
-   * Replace the sessions list wholesale, preserving the live usage accumulated
-   * from /status and the WS status stream: the list endpoint returns all-zero
-   * placeholder usage for every session, and a blind replace would zero the
-   * context ring until the next refresh.
-   */
-  function setSessionsPreservingLiveUsage(sessions: AppSession[]): void {
-    const liveUsageById = new Map(rawState.sessions.map((s) => [s.id, s.usage] as const));
-    setSessions(
-      sessions.map((s) => {
-        const live = liveUsageById.get(s.id);
-        return live !== undefined &&
-          isPlaceholderSessionUsage(s.usage) &&
-          !isPlaceholderSessionUsage(live)
-          ? { ...s, usage: live }
-          : s;
-      }),
-    );
-  }
-
-  /** Keep fresh rows authoritative while retaining cached rows a partial list
-   *  request never reached. */
-  function mergePartialSessionsWithCached(sessions: AppSession[]): AppSession[] {
-    const merged = [...sessions];
-    const loadedIds = new Set(merged.map((session) => session.id));
-    for (const session of rawState.sessions) {
-      if (loadedIds.has(session.id)) continue;
-      merged.push(session);
-      loadedIds.add(session.id);
-    }
-    merged.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    return merged;
-  }
-
-  /** Load the initial page of sessions for one workspace, then keep fetching
-   *  older pages while the oldest loaded session is still within
-   *  SESSIONS_RECENT_WINDOW_MS. Every page (including continuations) uses the
-   *  small initial page size so a sparse page cannot pull in days of history at
-   *  once. Continuation pages are also trimmed at the recent-window boundary,
-   *  keeping only up to the first session that falls outside the window. */
-  async function loadInitialSessionsForWorkspace(
-    workspaceId: string,
-  ): Promise<{
-    workspaceId: string;
-    page: { items: AppSession[]; hasMore: boolean };
-    error?: unknown;
-  }> {
-    const api = getKimiWebApi();
-    const items: AppSession[] = [];
-    const now = Date.now();
-    const ageOf = (s: AppSession): number => now - new Date(s.updatedAt).getTime();
-    let beforeId: string | undefined;
-    let hasMore = false;
-    let isFirstPage = true;
-    let continuationError: unknown;
-    for (;;) {
-      let page: { items: AppSession[]; hasMore: boolean };
-      try {
-        page = await api.listSessions({
-          workspaceId,
-          pageSize: SESSIONS_INITIAL_PAGE_SIZE,
-          beforeId,
-          excludeEmpty: true,
-        });
-      } catch (error) {
-        // A failed continuation page must not discard sessions already loaded
-        // from earlier pages; only a page-1 failure rejects the workspace load.
-        if (isFirstPage) throw error;
-        continuationError = error;
-        hasMore = true;
-        break;
-      }
-      hasMore = page.hasMore;
-      if (page.items.length === 0) break;
-      const oldest = page.items[page.items.length - 1]!;
-      const oldestBeyondWindow = ageOf(oldest) >= SESSIONS_RECENT_WINDOW_MS;
-
-      if (!isFirstPage && oldestBeyondWindow) {
-        // This continuation page crosses the recent-window boundary. Keep only
-        // up to and including the first session that falls outside the window
-        // (so the oldest loaded is the first one older than the window) and
-        // drop the older tail instead of loading the whole page.
-        const boundaryIndex = page.items.findIndex(
-          (s) => ageOf(s) >= SESSIONS_RECENT_WINDOW_MS,
-        );
-        const keep = boundaryIndex >= 0 ? boundaryIndex + 1 : page.items.length;
-        items.push(...page.items.slice(0, keep));
-        hasMore = page.hasMore || keep < page.items.length;
-        break;
-      }
-
-      items.push(...page.items);
-      isFirstPage = false;
-      if (!page.hasMore || oldestBeyondWindow) break;
-      beforeId = oldest.id;
-    }
-    return { workspaceId, page: { items, hasMore }, error: continuationError };
-  }
-
-  /** Fetch the first page of sessions for every known workspace concurrently.
-   *  Returns the merged, recency-sorted list and seeds per-workspace hasMore.
-   *  When every workspace request fails, returns undefined so the caller keeps
-   *  the previously loaded sessions instead of committing a false empty list. */
-  async function loadInitialSessionsByWorkspace(): Promise<AppSession[] | undefined> {
-    const workspaces = rawState.workspaces;
-    if (workspaces.length === 0) {
-      // /workspaces may be unavailable or empty on older / partially-failing
-      // daemons while /sessions still works. Fall back to the legacy global
-      // walk so history still shows and mergedWorkspaces can derive workspaces
-      // from session cwds, instead of rendering a blank sidebar.
-      const fallback = await listAllSessionsGlobal();
-      const sessions =
-        fallback.error === undefined
-          ? fallback.sessions
-          : mergePartialSessionsWithCached(fallback.sessions);
-      rawState.sessionsHasMoreByWorkspace = {};
-      rawState.sessionsCursorByWorkspace = {};
-      rawState.sessionsInitialCountByWorkspace = {};
-      rawState.sessionsFullyLoaded = fallback.error === undefined;
-      if (fallback.error !== undefined) pushOperationFailure('load', fallback.error);
-      return sessions;
-    }
-    const results = await Promise.allSettled(
-      workspaces.map((w) => loadInitialSessionsForWorkspace(w.id)),
-    );
-    const loaded: AppSession[] = [];
-    const loadedIds = new Set<string>();
-    const successfulPages = new Map<string, { items: AppSession[]; hasMore: boolean }>();
-    const failedWorkspaceIds = new Set<string>();
-    let firstError: unknown;
-    for (let index = 0; index < results.length; index++) {
-      const result = results[index]!;
-      if (result.status === 'fulfilled') {
-        successfulPages.set(result.value.workspaceId, result.value.page);
-        if (result.value.error !== undefined) {
-          if (failedWorkspaceIds.size === 0) firstError = result.value.error;
-          failedWorkspaceIds.add(result.value.workspaceId);
-        }
-        for (const session of result.value.page.items) {
-          if (loadedIds.has(session.id)) continue;
-          loaded.push(session);
-          loadedIds.add(session.id);
-        }
-        continue;
-      }
-      if (failedWorkspaceIds.size === 0) firstError = result.reason;
-      failedWorkspaceIds.add(workspaces[index]!.id);
-    }
-
-    // One failed workspace must not erase another workspace's successful page,
-    // nor the failed workspace's last usable rows. If every request failed,
-    // leave both sessions and pagination state untouched for a natural retry.
-    if (successfulPages.size === 0) {
-      pushOperationFailure('load', firstError);
-      return undefined;
-    }
-    const failedWorkspaceRoots = new Set(
-      workspaces
-        .filter((workspace) => failedWorkspaceIds.has(workspace.id))
-        .map((workspace) => workspace.root),
-    );
-    const registeredWorkspaceIds = new Set(workspaces.map((workspace) => workspace.id));
-    for (const session of rawState.sessions) {
-      const belongsToFailedWorkspace =
-        session.workspaceId !== undefined && registeredWorkspaceIds.has(session.workspaceId)
-          ? failedWorkspaceIds.has(session.workspaceId)
-          : failedWorkspaceRoots.has(session.cwd) ||
-            failedWorkspaceIds.has(workspaceIdForSession(session));
-      if (!belongsToFailedWorkspace || loadedIds.has(session.id)) continue;
-      loaded.push(session);
-      loadedIds.add(session.id);
-    }
-
-    const hasMore: Record<string, boolean> = {};
-    const cursors: Record<string, string | undefined> = {};
-    const counts: Record<string, number> = {};
-    for (const { id: workspaceId } of workspaces) {
-      const page = successfulPages.get(workspaceId);
-      if (page === undefined) {
-        const previousHasMore = rawState.sessionsHasMoreByWorkspace[workspaceId];
-        const previousCursor = rawState.sessionsCursorByWorkspace[workspaceId];
-        const previousCount = rawState.sessionsInitialCountByWorkspace[workspaceId];
-        if (previousHasMore !== undefined) hasMore[workspaceId] = previousHasMore;
-        if (previousCursor !== undefined) cursors[workspaceId] = previousCursor;
-        if (previousCount !== undefined) counts[workspaceId] = previousCount;
-        continue;
-      }
-      // Trust the server's hasMore — the per-workspace session_count is only a
-      // (possibly stale) label total, not an authority on whether more pages exist.
-      hasMore[workspaceId] = page.hasMore;
-      // Cursor = oldest session of this page (pages are newest-first). Tracked
-      // separately from the loaded set so a deep-linked older session appended
-      // out of band cannot shift the cursor and skip intervening sessions.
-      cursors[workspaceId] =
-        page.items.length > 0 ? page.items[page.items.length - 1]!.id : undefined;
-      // Collapse target for the sidebar's in-group "show less" control: the
-      // first-page capacity, floored at a full page so a workspace that was
-      // empty or sparse on first paint does not hide sessions created later.
-      // If the initial load pulled more than a page (recent-window
-      // continuations), keep the larger count so collapse returns to what was
-      // first visible.
-      counts[workspaceId] = Math.max(page.items.length, SESSIONS_INITIAL_PAGE_SIZE);
-    }
-    rawState.sessionsHasMoreByWorkspace = hasMore;
-    rawState.sessionsCursorByWorkspace = cursors;
-    rawState.sessionsInitialCountByWorkspace = counts;
-    rawState.sessionsFullyLoaded = false;
-    // Keep rawState.sessions newest-first for readers that pick sessions[0]
-    // (e.g. auto-selecting the most recent session on first load).
-    loaded.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
-    if (failedWorkspaceIds.size > 0) pushOperationFailure('load', firstError);
-    return loaded;
-  }
-
-  /** Fetch the next page of sessions for a workspace (the "load more" button). */
-  async function loadMoreSessions(workspaceId: string): Promise<void> {
-    if (rawState.sessionsLoadingMoreByWorkspace[workspaceId]) return;
-    if (rawState.sessionsHasMoreByWorkspace[workspaceId] === false) return;
-    const beforeId = rawState.sessionsCursorByWorkspace[workspaceId];
-    if (beforeId === undefined) return;
-    rawState.sessionsLoadingMoreByWorkspace = {
-      ...rawState.sessionsLoadingMoreByWorkspace,
-      [workspaceId]: true,
-    };
-    try {
-      const page = await getKimiWebApi().listSessions({
-        workspaceId,
-        pageSize: SESSIONS_LOAD_MORE_SIZE,
-        beforeId,
-        excludeEmpty: true,
-      });
-      // Append de-duped against the latest list so a concurrently added/removed
-      // session is respected.
-      const existing = new Set(rawState.sessions.map((s) => s.id));
-      const fresh = page.items.filter((s) => !existing.has(s.id));
-      if (fresh.length > 0) setSessions([...rawState.sessions, ...fresh]);
-      // Advance the cursor to the end of the page we just fetched.
-      rawState.sessionsCursorByWorkspace = {
-        ...rawState.sessionsCursorByWorkspace,
-        [workspaceId]:
-          page.items.length > 0 ? page.items[page.items.length - 1]!.id : beforeId,
-      };
-      // Trust the server's hasMore. Deriving it from the workspace session_count
-      // is unsafe: archive/delete only removes the local session and leaves the
-      // count stale, which would keep hasMore true and re-fetch empty pages.
-      rawState.sessionsHasMoreByWorkspace = {
-        ...rawState.sessionsHasMoreByWorkspace,
-        [workspaceId]: page.hasMore,
-      };
-    } catch (err) {
-      pushOperationFailure('loadMoreSessions', err);
-    } finally {
-      rawState.sessionsLoadingMoreByWorkspace = {
-        ...rawState.sessionsLoadingMoreByWorkspace,
-        [workspaceId]: false,
-      };
-    }
-  }
-
-  /** Drain every session via a single global walk so client-side search covers
-   *  all sessions, not just the first page per workspace. Triggered lazily on
-   *  first search; a no-op once the full list is loaded. */
-  async function loadAllSessions(): Promise<void> {
-    if (rawState.sessionsFullyLoaded) return;
-    const result = await listAllSessionsGlobal().catch((err) => {
-      console.warn('[kimi-web] loadAllSessions failed; search covers only loaded sessions', err);
-      return null;
-    });
-    if (result === null) return;
-    const sessions =
-      result.error === undefined
-        ? result.sessions
-        : mergePartialSessionsWithCached(result.sessions);
-    setSessionsPreservingLiveUsage(sessions);
-    rawState.sessionsFullyLoaded = result.error === undefined;
-    if (result.error !== undefined) return;
-    const cleared: Record<string, boolean> = {};
-    for (const w of rawState.workspaces) cleared[w.id] = false;
-    rawState.sessionsHasMoreByWorkspace = cleared;
   }
 
   /**
