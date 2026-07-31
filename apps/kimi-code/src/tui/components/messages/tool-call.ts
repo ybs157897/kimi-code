@@ -1,11 +1,13 @@
 /**
  * Renders a tool call entry in the transcript.
  * Supports expand/collapse via Ctrl+O.
+ *
+ * The component itself lives below; its module-level helpers, types, and
+ * constants are split into the `./tool-call/` submodules. This file stays the
+ * public barrel: it re-exports the snapshot types and defines the component.
  */
 
-import { isAbsolute, relative, sep } from 'node:path';
-
-import { Container, Spacer, Text, truncateToWidth, visibleWidth } from '@moonshot-ai/pi-tui';
+import { Container, Spacer, Text } from '@moonshot-ai/pi-tui';
 import type { Component, TUI } from '@moonshot-ai/pi-tui';
 import { highlightLines, langFromPath } from '#/tui/components/media/code-highlight';
 import { renderDiffLinesClustered } from '#/tui/components/media/diff-preview';
@@ -16,10 +18,7 @@ import {
   RESULT_PREVIEW_LINES,
   THINKING_PREVIEW_LINES,
 } from '#/tui/constant/rendering';
-import {
-  STREAMING_ARGS_FIELD_RE,
-  STREAMING_ARGS_PREVIEW_MAX_CHARS,
-} from '#/tui/constant/streaming';
+import { STREAMING_ARGS_PREVIEW_MAX_CHARS } from '#/tui/constant/streaming';
 import { FAILURE_MARK, STATUS_BULLET, SUCCESS_MARK } from '#/tui/constant/symbols';
 import type { AgentTokenUsage } from '#/tui/runtime/session-control-port';
 import { currentTheme } from '#/tui/theme';
@@ -28,510 +27,54 @@ import type { ToolCallBlockData, ToolResultBlockData } from '#/tui/types';
 import { appendStreamingArgsPreview } from '#/tui/utils/event-payload';
 import { decodeMcpToolName } from '#/tui/utils/mcp-tool-name';
 import { isRenderCacheEnabled } from '#/tui/utils/render-cache';
-import { formatTokenCount } from '#/utils/usage/usage-format';
 
 import { agentSwarmResultSummaryFromOutput } from './agent-swarm-progress';
 import { PlanBoxComponent } from './plan-box';
 import { ShellExecutionComponent } from './shell-execution';
+import { computeLatestActivity, extractKeyArgument, makeWorkspaceRelativePath } from './tool-call/args';
+import {
+  ABORTED_MARK,
+  DETACH_HINT_DELAY_MS,
+  DETACH_HINT_TEXT,
+  MAX_LIVE_OUTPUT_CHARS,
+  MAX_SUB_TOOL_CALLS_SHOWN,
+  MAX_SUBAGENT_DESCRIPTION_LENGTH,
+  PROGRESS_URL_RE,
+  STREAMING_PROGRESS_INTERVAL_MS,
+} from './tool-call/constants';
+import {
+  backgroundFailureMessage,
+  formatByteSize,
+  formatElapsed,
+  formatSubagentContextTokens,
+  formatSubagentLabel,
+  formatSubagentTokens,
+  formatTokens,
+  str,
+  tailNonEmptyLines,
+  usageTotal,
+} from './tool-call/format';
+import {
+  extractApprovedPlan,
+  interpretExitPlanModeOutcome,
+  isExitPlanModeOutcomeOutput,
+} from './tool-call/plan';
+import { PrefixedWrappedLine } from './tool-call/prefixed-wrapped-line';
+import { extractPartialStringField, parseArgsPreview } from './tool-call/streaming-args';
+import type {
+  FinishedSubCall,
+  OngoingSubCall,
+  SubagentPhase,
+  SubagentTextKind,
+  SubToolActivity,
+  ToolCallReadSnapshot,
+  ToolCallSubagentSnapshot,
+} from './tool-call/types';
 import { countNonEmptyLines, pickChip } from './tool-renderers/chip';
 import { buildGoalToolHeader } from './tool-renderers/goal';
 import { isGenericToolResult, pickResultRenderer } from './tool-renderers/registry';
 
-const MAX_ARG_LENGTH = 60;
-const MAX_SUB_TOOL_CALLS_SHOWN = 4;
-// Cap the Agent `description` in the single-subagent header so a long prompt
-// cannot wrap the header onto a second row and break the card's stable height.
-const MAX_SUBAGENT_DESCRIPTION_LENGTH = 60;
-const APPROVED_PLAN_MARKER = '## Approved Plan:';
-const AUTO_APPROVED_PLAN_MARKER = '## Plan (auto-approved, not user-reviewed):';
-const STREAMING_PROGRESS_INTERVAL_MS = 1000;
-const PROGRESS_URL_RE = /https?:\/\/\S+/g;
-const ABORTED_MARK = '⊘';
-const MAX_LIVE_OUTPUT_CHARS = 50_000;
-
-/** Delay before a long-running foreground Bash/Agent card advertises Ctrl+B. */
-const DETACH_HINT_DELAY_MS = 10_000;
-const DETACH_HINT_TEXT = 'Press Ctrl+B to run in background';
-
-type SubagentTextKind = 'thinking' | 'text';
-type SubagentPhase = 'queued' | 'spawning' | 'running' | 'done' | 'failed' | 'backgrounded';
-
-interface FinishedSubCall {
-  readonly name: string;
-  readonly args: Record<string, unknown>;
-  readonly output: string;
-  readonly isError: boolean;
-}
-
-interface OngoingSubCall {
-  readonly name: string;
-  readonly args: Record<string, unknown>;
-  readonly streamingArguments?: string | undefined;
-}
-
-interface SubToolActivity {
-  readonly id: string;
-  name: string;
-  args: Record<string, unknown>;
-  phase: 'ongoing' | 'done' | 'failed';
-  output?: string;
-  readonly orderSeq: number;
-}
-
-/**
- * Immutable subagent state snapshot. `AgentGroupComponent` reads one-time
- * views via `ToolCallComponent.getSubagentSnapshot()` and renders its own
- * branch lines; `onSnapshotChange` notifies it when state changes.
- *
- * `latestActivity` priority, used only while running:
- *   1. latest ongoing sub-tool (`Using {name} ({keyArg})`)
- *   2. latest finished sub-tool (`Used {name} ({keyArg})`)
- *   3. last non-empty line from accumulated subagent text
- */
-export interface ToolCallSubagentSnapshot {
-  readonly toolCallId: string;
-  readonly toolName: string;
-  readonly toolCallDescription: string;
-  readonly agentName: string | undefined;
-  readonly phase: SubagentPhase | undefined;
-  readonly toolCount: number;
-  readonly elapsedSeconds: number | undefined;
-  readonly tokens: number;
-  readonly isError: boolean;
-  readonly errorText: string | undefined;
-  readonly latestActivity: string | undefined;
-}
-
-/**
- * Immutable Read tool state snapshot. `ReadGroupComponent` reads one-time
- * views via `ToolCallComponent.getReadSnapshot()` and sums lines for the group
- * header. `lines` is 0 while pending or failed, and the non-empty result line
- * count when done, matching the single-card chip.
- */
-export interface ToolCallReadSnapshot {
-  readonly toolCallId: string;
-  readonly filePath: string | undefined;
-  readonly phase: 'pending' | 'done' | 'failed';
-  readonly lines: number;
-}
-
-function backgroundFailureMessage(
-  status: 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost' | undefined,
-): string | undefined {
-  switch (status) {
-    case 'lost':
-      return 'Background agent lost (session restarted before completion)';
-    case 'killed':
-      return 'Background agent killed';
-    case 'timed_out':
-      return 'Background agent timed out';
-    case 'failed':
-      return 'Background agent failed';
-    case 'completed':
-    case undefined:
-      return undefined;
-  }
-}
-
-function str(v: unknown): string {
-  return typeof v === 'string' ? v : '';
-}
-
-function formatSubagentContextTokens(contextTokens: number | undefined): string | undefined {
-  if (contextTokens === undefined || contextTokens <= 0) return undefined;
-  return `${formatTokenCount(contextTokens)} tok`;
-}
-
-function usageInputTotal(usage: Partial<AgentTokenUsage>): number {
-  return (usage.inputOther ?? 0) + (usage.inputCacheRead ?? 0) + (usage.inputCacheCreation ?? 0);
-}
-
-function usageTotal(usage: Partial<AgentTokenUsage> | undefined): number {
-  if (usage === undefined) return 0;
-  return usageInputTotal(usage) + (usage.output ?? 0);
-}
-
-function formatSubagentTokens(
-  usage: Partial<AgentTokenUsage> | undefined,
-): string | undefined {
-  const total = usageTotal(usage);
-  if (total <= 0) return undefined;
-  return `${formatTokenCount(total)} tok`;
-}
-
-function formatByteSize(bytes: number): string {
-  if (bytes < 1024) return `${String(bytes)} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
-}
-
-function formatElapsed(seconds: number): string {
-  if (seconds < 60) return `${String(seconds)}s`;
-  const minutes = Math.floor(seconds / 60);
-  const remainder = seconds % 60;
-  return `${String(minutes)}m ${String(remainder)}s`;
-}
-
-function extractApprovedPlan(output: string): string {
-  const marker = output.includes(AUTO_APPROVED_PLAN_MARKER)
-    ? AUTO_APPROVED_PLAN_MARKER
-    : APPROVED_PLAN_MARKER;
-  const markerIndex = output.indexOf(marker);
-  if (markerIndex < 0) return '';
-  return output.slice(markerIndex + marker.length).trim();
-}
-
-interface ExitPlanModeOutcome {
-  readonly kind: 'approved' | 'auto_approved' | 'rejected';
-  readonly chosen?: string;
-  readonly feedback?: string;
-  readonly path?: string;
-}
-
-const REJECT_PREFIX = 'User rejected the plan.';
-const REJECT_FEEDBACK_PREFIX = 'User rejected the plan. Feedback:';
-const APPROVED_OPTION_RE = /^User approved option "([^"]+)"\./;
-const PLAN_REJECT_PREFIX = 'Plan rejected by user.';
-const SELECTED_APPROACH_RE = /^Exited plan mode\. Selected approach: ([^\n]+)\n/;
-const PLAN_SAVED_TO_RE = /\nPlan saved to: ([^\n]+)\n/;
-
-/**
- * Parses the ExitPlanMode result content string to recover the approval outcome
- * and optional plan path. Core-side templates live in
- * `packages/agent-core/src/tools/builtin/planning/exit-plan-mode.ts` and
- * `.../agent/permission/policies/exit-plan-mode-review-ask.ts`:
- *   - Approved output starts with 'Exited plan mode.' and selected options
- *     are reported as 'Selected approach: <label>'. Older outputs may start
- *     with 'User approved option "<label>".' Plan-file mode may include
- *     'Plan saved to: <path>'.
- *   - Auto-approved output (auto permission mode skips the review ask) also
- *     starts with 'Exited plan mode.' but marks the plan body with
- *     '## Plan (auto-approved, not user-reviewed):' instead of
- *     '## Approved Plan:' — the user never saw or approved the plan.
- *   - Rejected output starts with 'Plan rejected by user.' or older
- *     'User rejected the plan.'; feedback uses 'User rejected the plan.
- *     Feedback:\n\n<text>'.
- * This is a string protocol rather than a structured payload. Prefer a
- * structured event payload if core starts emitting one.
- */
-function interpretExitPlanModeOutcome(output: string): ExitPlanModeOutcome {
-  if (output.startsWith(REJECT_PREFIX)) {
-    if (output.startsWith(REJECT_FEEDBACK_PREFIX)) {
-      const feedback = output.slice(REJECT_FEEDBACK_PREFIX.length).trimStart();
-      return { kind: 'rejected', feedback };
-    }
-    return { kind: 'rejected' };
-  }
-  if (output.startsWith(PLAN_REJECT_PREFIX)) {
-    return { kind: 'rejected' };
-  }
-  const pathMatch = PLAN_SAVED_TO_RE.exec(output);
-  const path = pathMatch?.[1]?.trim();
-  if (output.includes(AUTO_APPROVED_PLAN_MARKER)) {
-    return path !== undefined && path.length > 0
-      ? { kind: 'auto_approved', path }
-      : { kind: 'auto_approved' };
-  }
-  const optionMatch = SELECTED_APPROACH_RE.exec(output) ?? APPROVED_OPTION_RE.exec(output);
-  if (optionMatch !== null) {
-    return path !== undefined && path.length > 0
-      ? { kind: 'approved', chosen: optionMatch[1], path }
-      : { kind: 'approved', chosen: optionMatch[1] };
-  }
-  return path !== undefined && path.length > 0 ? { kind: 'approved', path } : { kind: 'approved' };
-}
-
-function isExitPlanModeOutcomeOutput(output: string): boolean {
-  return (
-    output.startsWith(REJECT_PREFIX) ||
-    output.startsWith(PLAN_REJECT_PREFIX) ||
-    output.startsWith('Exited plan mode.') ||
-    APPROVED_OPTION_RE.test(output) ||
-    output.includes(APPROVED_PLAN_MARKER) ||
-    output.includes(AUTO_APPROVED_PLAN_MARKER)
-  );
-}
-
-function unescapeJsonString(s: string): string {
-  return s.replaceAll(/\\(["\\/bfnrt])/g, (_, ch: string) => {
-    switch (ch) {
-      case 'n':
-        return '\n';
-      case 't':
-        return '\t';
-      case 'r':
-        return '\r';
-      case 'b':
-        return '\b';
-      case 'f':
-        return '\f';
-      case '"':
-        return '"';
-      case '\\':
-        return '\\';
-      case '/':
-        return '/';
-      default:
-        return ch;
-    }
-  });
-}
-
-/**
- * Pull the live value of a JSON string field out of partially-streamed
- * arguments, even if the closing quote hasn't arrived yet. Handles the
- * common JSON string escapes so `\n` in a streamed `content` becomes a
- * real newline we can highlight. Returns `undefined` if the field hasn't
- * started streaming yet.
- */
-function extractPartialStringField(text: string, key: string): string | undefined {
-  const opener = new RegExp(`"${key}"\\s*:\\s*"`);
-  const match = opener.exec(text);
-  if (match === null) return undefined;
-  const start = match.index + match[0].length;
-  let out = '';
-  let i = start;
-  while (i < text.length) {
-    const ch = text[i];
-    if (ch === '\\') {
-      const next = text[i + 1];
-      if (next === undefined) return out;
-      switch (next) {
-        case 'n':
-          out += '\n';
-          break;
-        case 't':
-          out += '\t';
-          break;
-        case 'r':
-          out += '\r';
-          break;
-        case 'b':
-          out += '\b';
-          break;
-        case 'f':
-          out += '\f';
-          break;
-        case '"':
-          out += '"';
-          break;
-        case '\\':
-          out += '\\';
-          break;
-        case '/':
-          out += '/';
-          break;
-        case 'u': {
-          if (i + 5 >= text.length) return out;
-          const hex = text.slice(i + 2, i + 6);
-          const code = Number.parseInt(hex, 16);
-          if (Number.isNaN(code)) return out;
-          out += String.fromCodePoint(code);
-          i += 6;
-          continue;
-        }
-        default:
-          out += next;
-      }
-      i += 2;
-      continue;
-    }
-    if (ch === '"') return out;
-    out += ch;
-    i++;
-  }
-  return out;
-}
-
-function parseArgsPreview(value: string): Record<string, unknown> {
-  const previewText = value.slice(0, STREAMING_ARGS_PREVIEW_MAX_CHARS);
-  if (previewText.trim().length === 0) return {};
-  if (
-    value.length <= STREAMING_ARGS_PREVIEW_MAX_CHARS &&
-    previewText.trimEnd().endsWith('}')
-  ) {
-    try {
-      const parsed = JSON.parse(previewText) as unknown;
-      if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
-        return parsed as Record<string, unknown>;
-      }
-    } catch {
-      // fall through to partial scan
-    }
-  }
-  const result: Record<string, unknown> = {};
-  for (const match of previewText.matchAll(STREAMING_ARGS_FIELD_RE)) {
-    const key = match[1];
-    const rawValue = match[2];
-    if (key === undefined || rawValue === undefined) continue;
-    if (!(key in result)) result[key] = unescapeJsonString(rawValue);
-  }
-  return result;
-}
-
-const PATH_KEYS = new Set(['path', 'file_path']);
-
-function truncateArgValue(key: string, value: string): string {
-  if (value.length <= MAX_ARG_LENGTH) return value;
-  if (PATH_KEYS.has(key)) {
-    // Preserve the tail (filename) — drop the prefix so the user can
-    // still tell which file is being touched.
-    return '…' + value.slice(value.length - (MAX_ARG_LENGTH - 1));
-  }
-  return value.slice(0, MAX_ARG_LENGTH - 3) + '...';
-}
-
-function makeWorkspaceRelativePath(filePath: string, workspaceDir: string | undefined): string {
-  if (workspaceDir === undefined || workspaceDir.length === 0 || !isAbsolute(filePath)) {
-    return filePath;
-  }
-  const relativePath = relative(workspaceDir, filePath);
-  if (
-    relativePath.length === 0 ||
-    relativePath === '..' ||
-    relativePath.startsWith(`..${sep}`) ||
-    isAbsolute(relativePath)
-  ) {
-    return filePath;
-  }
-  return relativePath;
-}
-
-function formatKeyArgument(
-  toolName: string,
-  key: string,
-  value: string,
-  workspaceDir: string | undefined,
-): string {
-  const displayValue =
-    toolName === 'Read' && PATH_KEYS.has(key)
-      ? makeWorkspaceRelativePath(value, workspaceDir)
-      : value;
-  return truncateArgValue(key, displayValue);
-}
-
-function extractKeyArgument(
-  toolName: string,
-  args: Record<string, unknown>,
-  workspaceDir?: string,
-): string | null {
-  const keyMap: Record<string, string[]> = {
-    Bash: ['command'],
-    Read: ['path', 'file_path'],
-    Write: ['path', 'file_path'],
-    Edit: ['path', 'file_path'],
-    Grep: ['pattern'],
-    Glob: ['pattern'],
-    FetchURL: ['url'],
-    WebSearch: ['query'],
-    // Prefer the short `description` so the header preview never spills a
-    // multi-line `prompt` into the TUI chrome.
-    Agent: ['description', 'prompt'],
-  };
-
-  // Glob: concatenate multiple args into a single summary so the header
-  // shows pattern, optional explicit path, and ignored-file inclusion.
-  if (toolName === 'Glob') {
-    const pattern = args['pattern'];
-    if (typeof pattern !== 'string' || pattern.length === 0) return null;
-    let summary = pattern;
-    const path = args['path'];
-    if (typeof path === 'string' && path.length > 0) {
-      summary += ` · ${makeWorkspaceRelativePath(path, workspaceDir)}`;
-    }
-    if (args['include_ignored'] === true) {
-      summary += ' · include ignored';
-    }
-    return truncateArgValue('pattern', summary);
-  }
-
-  const candidates = keyMap[toolName] ?? Object.keys(args);
-  for (const key of candidates) {
-    const val = args[key];
-    if (typeof val === 'string' && val.length > 0) {
-      const firstLine = val.split('\n')[0] ?? val;
-      const displayValue =
-        toolName === 'Bash' && val.includes('\n') ? `${firstLine}…` : firstLine;
-      return formatKeyArgument(toolName, key, displayValue, workspaceDir);
-    }
-  }
-  return null;
-}
-
-function formatSubagentLabel(agentName: string | undefined): string {
-  const raw = agentName?.trim();
-  if (raw === undefined || raw.length === 0) return 'SubAgent';
-  const label = raw
-    .split(/[-_\s]+/)
-    .filter((part) => part.length > 0)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
-    .join(' ');
-  if (/\bagent$/i.test(label)) return label;
-  return `${label} Agent`;
-}
-
-function tailNonEmptyLines(text: string, maxLines: number): string[] {
-  if (text.length === 0) return [];
-  return text
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .filter((line) => line.trim().length > 0)
-    .slice(-maxLines);
-}
-
-class PrefixedWrappedLine implements Component {
-  private renderCache: { width: number; lines: string[] } | undefined;
-
-  constructor(
-    private readonly firstPrefix: string,
-    private readonly continuationPrefix: string,
-    private readonly text: string,
-    // When set, only the last N wrapped display rows are kept, so a long
-    // unwrapped paragraph scrolls within a fixed window instead of growing
-    // unbounded. The first kept row still gets `firstPrefix`.
-    private readonly tailLines?: number,
-    // When set, the output is padded with empty continuation rows until it
-    // reaches this many display rows, so a short paragraph still fills a
-    // fixed-height window. Applied after `tailLines`.
-    private readonly minLines?: number,
-  ) { }
-
-  invalidate(): void {
-    this.renderCache = undefined;
-  }
-
-  render(width: number): string[] {
-    const safeWidth = Math.max(0, width);
-    if (safeWidth <= 0) return [''];
-
-    if (isRenderCacheEnabled() && this.renderCache?.width === safeWidth) {
-      return this.renderCache.lines;
-    }
-
-    const prefixWidth = Math.max(
-      visibleWidth(this.firstPrefix),
-      visibleWidth(this.continuationPrefix),
-    );
-    const contentWidth = Math.max(1, safeWidth - prefixWidth);
-    const wrapped = new Text(this.text, 0, 0).render(contentWidth);
-    const lines =
-      this.tailLines !== undefined && wrapped.length > this.tailLines
-        ? wrapped.slice(wrapped.length - this.tailLines)
-        : wrapped;
-    if (this.minLines !== undefined) {
-      while (lines.length < this.minLines) lines.push('');
-    }
-    const rendered = lines
-      .map((line, index) =>
-        index === 0 ? `${this.firstPrefix}${line}` : `${this.continuationPrefix}${line}`,
-      )
-      .map((line) => truncateToWidth(line, safeWidth, '…'));
-    if (isRenderCacheEnabled()) {
-      this.renderCache = { width: safeWidth, lines: rendered };
-    }
-    return rendered;
-  }
-}
+export type { ToolCallReadSnapshot, ToolCallSubagentSnapshot };
 
 export class ToolCallComponent extends Container {
   private expanded = false;
@@ -2281,52 +1824,4 @@ export class ToolCallComponent extends Container {
     }
     return true;
   }
-}
-
-/**
- * Computes the second-level "latest activity" line for group rows:
- *   1. latest ongoing sub-tool (`Using {name} ({keyArg})`)
- *   2. latest finished sub-tool (`Used {name} ({keyArg})`)
- *   3. last non-empty line from accumulated subagent text
- */
-function computeLatestActivity(
-  ongoing: ReadonlyMap<string, OngoingSubCall>,
-  finished: readonly FinishedSubCall[],
-  text: string,
-  workspaceDir?: string,
-): string | undefined {
-  if (ongoing.size > 0) {
-    const lastOngoing = [...ongoing.values()].at(-1);
-    if (lastOngoing !== undefined) {
-      return formatActivityLine('Using', lastOngoing.name, lastOngoing.args, workspaceDir);
-    }
-  }
-  if (finished.length > 0) {
-    const last = finished.at(-1);
-    if (last !== undefined) {
-      return formatActivityLine('Used', last.name, last.args, workspaceDir);
-    }
-  }
-  if (text.length > 0) {
-    const tail = text
-      .split('\n')
-      .toReversed()
-      .find((l) => l.trim().length > 0);
-    if (tail !== undefined) return tail.trim();
-  }
-  return undefined;
-}
-
-function formatTokens(n: number): string {
-  return `${formatTokenCount(n)} tok`;
-}
-
-function formatActivityLine(
-  verb: string,
-  toolName: string,
-  args: Record<string, unknown>,
-  workspaceDir?: string,
-): string {
-  const keyArg = extractKeyArgument(toolName, args, workspaceDir);
-  return keyArg ? `${verb} ${toolName} (${keyArg})` : `${verb} ${toolName}`;
 }
