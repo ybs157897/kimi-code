@@ -196,10 +196,11 @@ func (a *App) ProductStreamCancel(streamID string) error {
 // seq }, exit frames as { sessionId, terminalId, type: "exit", exitCode }
 // (exitCode null when the frame carries none). Terminal frames never cross the
 // kimi:event chat channel. sinceSeqJSON is the optional resume sequence number
-// as a JSON number carried to the sidecar attach as since_seq (empty or 0
-// replays nothing); the sidecar host resolves the session terminal service and
-// replays buffered frames after it. Attaching an already-attached terminal is
-// a no-op (the existing subscription stands).
+// as a JSON number carried to the sidecar attach as since_seq; it is omitted
+// when 0, and the host's ISessionTerminalService contract replays every
+// buffered frame strictly after it (so 0 / omitted replays the whole buffered
+// history, including the exit frame). Attaching an already-attached terminal
+// is a no-op (the existing subscription stands).
 func (a *App) ProductTerminalAttach(sessionId, terminalId, sinceSeqJSON string) error {
 	client, err := a.requireClient()
 	if err != nil {
@@ -294,7 +295,7 @@ type productSub struct {
 // App.subs). Unlike subscribe it returns the listen error so ProductSubscribe
 // can report a failed setup, and it records the ipc subscription id for
 // ProductUnsubscribe.
-func (a *App) subscribeProduct(client *ipcclient.Client, sessionId, agentId string, cursor []any) error {
+func (a *App) subscribeProduct(client ipcClient, sessionId, agentId string, cursor []any) error {
 	key := productSubKeyPrefix + sessionId + "/" + agentId
 
 	a.mu.Lock()
@@ -376,7 +377,7 @@ type terminalSub struct {
 // the product stream (session/agent scoped) the terminal feed is session
 // scoped, and each pushed frame is re-emitted on the dedicated kimi:terminal
 // channel rather than kimi:event.
-func (a *App) attachTerminal(client *ipcclient.Client, sessionId, terminalId string, sinceSeq int64) error {
+func (a *App) attachTerminal(client ipcClient, sessionId, terminalId string, sinceSeq int64) error {
 	key := sessionId + "\x00" + terminalId
 
 	a.mu.Lock()
@@ -386,8 +387,11 @@ func (a *App) attachTerminal(client *ipcclient.Client, sessionId, terminalId str
 	}
 	a.mu.Unlock()
 
-	// The sidecar host reads arg[0] for { terminal_id, since_seq }; since_seq
-	// is omitted when 0 so the host attaches without replay.
+	// The sidecar host reads arg[0] for { terminal_id, since_seq }; since_seq is
+	// omitted when 0, and the engine's ISessionTerminalService.attach contract
+	// replays every buffered frame strictly after the cursor — so an omitted
+	// (0) cursor replays the terminal's whole buffered history, including the
+	// exit frame. This mirrors host.ts's terminalAttachFromFrame default.
 	listenArg := map[string]any{"terminal_id": terminalId}
 	if sinceSeq > 0 {
 		listenArg["since_seq"] = sinceSeq
@@ -474,9 +478,10 @@ func (a *App) emitTerminalFrame(data json.RawMessage) {
 }
 
 // parseTerminalSinceSeq parses the optional resume sequence number for a
-// terminal attach. Empty or blank input means 0 (attach without replay); a
-// JSON number is used as-is. Anything else is rejected so a malformed payload
-// fails fast.
+// terminal attach. Empty or blank input means 0, which the host's
+// ISessionTerminalService contract interprets as "replay the whole buffered
+// history" (every frame strictly after the cursor); a JSON number is used
+// as-is. Anything else is rejected so a malformed payload fails fast.
 func parseTerminalSinceSeq(sinceSeqJSON string) (int64, error) {
 	trimmed := strings.TrimSpace(sinceSeqJSON)
 	if trimmed == "" {

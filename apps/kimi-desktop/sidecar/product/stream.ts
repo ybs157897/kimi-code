@@ -31,6 +31,14 @@ import type { ProductFrame, WireEvent, WireResyncRequired } from './wire.js';
  *  without limit for a long-lived, chatty session. */
 const DEFAULT_JOURNAL_CAPACITY = 1024;
 
+/**
+ * How long a suspended stream keeps its underlying projector + journal alive
+ * after the last listener leaves (e.g. an IPC disconnect), so a reconnect can
+ * be caught up point-to-point from the journal instead of a full resync. After
+ * the window a truly-abandoned stream releases the projector for good.
+ */
+const SUSPEND_KEEPALIVE_MS = 5 * 60 * 1000;
+
 /** A resume cursor carried on a product subscription (from the listen arg). */
 export interface ProductStreamCursor {
   /** The epoch the caller last observed; a mismatch forces a resync. */
@@ -52,6 +60,18 @@ interface StreamState {
   readonly journal: JournalEntry[];
   readonly listeners: Set<(frame: ProductFrame) => void>;
   underlying: IDisposable | undefined;
+  /** Pending release of a suspended stream (see SUSPEND_KEEPALIVE_MS). */
+  idleTimer: NodeJS.Timeout | undefined;
+}
+
+/**
+ * A live product subscription. `dispose()` releases the listener AND the
+ * underlying projector when it was the last one (explicit unsubscribe);
+ * `suspend()` removes only the listener — the projector keeps journaling
+ * through the keepalive window so a reconnect replays the disconnected span.
+ */
+export interface ProductStreamListen extends IDisposable {
+  suspend(): void;
 }
 
 type ResumePlan =
@@ -84,6 +104,7 @@ export class ProductStreamHub {
         journal: [],
         listeners: new Set(),
         underlying: undefined,
+        idleTimer: undefined,
       };
       this.streams.set(key, state);
     }
@@ -128,20 +149,39 @@ export class ProductStreamHub {
     });
   }
 
+  /** Fully release the underlying projector and cancel any pending idle timer. */
+  private releaseUnderlying(state: StreamState): void {
+    if (state.idleTimer !== undefined) {
+      clearTimeout(state.idleTimer);
+      state.idleTimer = undefined;
+    }
+    if (state.underlying !== undefined) {
+      state.underlying.dispose();
+      state.underlying = undefined;
+    }
+  }
+
   /**
    * Subscribe a consumer, optionally resuming from a cursor. The consumer first
    * receives its catch-up — replayed journal frames, or a single
    * `resync_required` control frame when the journal cannot cover the cursor —
-   * then live frames. Returns a disposable that removes the consumer and, once
-   * the last listener leaves, detaches the underlying klient subscription.
+   * then live frames. Returns a listen handle whose `dispose()` detaches the
+   * consumer and, once the last listener leaves, releases the underlying klient
+   * subscription; `suspend()` detaches only the consumer so the underlying
+   * keeps journaling through the keepalive window (IPC disconnect recovery).
    */
   subscribe(
     sessionId: string,
     agentId: string,
     cursor: ProductStreamCursor | undefined,
     push: (frame: ProductFrame) => void,
-  ): IDisposable {
+  ): ProductStreamListen {
     const state = this.ensure(sessionId, agentId);
+    if (state.idleTimer !== undefined) {
+      // A suspended stream is being re-subscribed — cancel its pending release.
+      clearTimeout(state.idleTimer);
+      state.idleTimer = undefined;
+    }
 
     // Resolve the catch-up BEFORE registering the live listener, so a frame
     // arriving during attach cannot slip ahead of the replayed prefix.
@@ -156,16 +196,23 @@ export class ProductStreamHub {
     this.attachUnderlying(state);
 
     let disposed = false;
+    const detach = (keepUnderlying: boolean): void => {
+      if (disposed) return;
+      disposed = true;
+      state.listeners.delete(push);
+      if (state.listeners.size > 0) return;
+      if (keepUnderlying) {
+        // Suspended: the journal must keep collecting through the disconnect
+        // window so a reconnect can be caught up (or resync when it overflows).
+        state.idleTimer = setTimeout(() => this.releaseUnderlying(state), SUSPEND_KEEPALIVE_MS);
+        state.idleTimer.unref?.();
+      } else {
+        this.releaseUnderlying(state);
+      }
+    };
     return {
-      dispose: () => {
-        if (disposed) return;
-        disposed = true;
-        state.listeners.delete(push);
-        if (state.listeners.size === 0 && state.underlying !== undefined) {
-          state.underlying.dispose();
-          state.underlying = undefined;
-        }
-      },
+      dispose: () => detach(false),
+      suspend: () => detach(true),
     };
   }
 

@@ -11,6 +11,10 @@
  * deltas, tool dispatch/progress/result, usage, approval/question request +
  * resolve, and notice/warning/error.
  *
+ * Complete-event coverage adds: tasks/subagents (task lifecycle, subagent
+ * lifecycle with per-agent task patching, shell output), session metadata
+ * changes, goal updates, prompt lifecycle, and compaction.
+ *
  * Seq is NOT stamped here: the projector emits unsequenced draft frames and the
  * `ProductStreamHub` owns the monotonic per-(session, agent) seq + journal, so
  * the same seq space survives detach/re-attach (see stream.ts).
@@ -19,12 +23,13 @@
 import type { IDisposable, Klient } from '@moonshot-ai/klient';
 import type { Interaction } from '@moonshot-ai/agent-core-v2/session/interaction/interaction';
 
-import { toWireApproval, toWireQuestion, ulid } from './builders.js';
+import { toWireApproval, toWireGoal, toWireQuestion, ulid } from './builders.js';
 import type {
   WireEvent,
   WireMessageContent,
   WireSessionUsage,
   WireSessionUsageDelta,
+  WireTask,
 } from './wire.js';
 
 /** Raw agent event payloads are read defensively (loose engine shapes). */
@@ -46,6 +51,8 @@ interface ProjectState {
   turnErrorEmitted: boolean;
   /** Pending interaction id → kind, for routing resolutions. */
   interactions: Map<string, 'approval' | 'question'>;
+  /** Wire task rows keyed by task id (subagent id / task id), for patching. */
+  tasks: Map<string, WireTask>;
 }
 
 function createState(): ProjectState {
@@ -62,6 +69,7 @@ function createState(): ProjectState {
     turnCount: 0,
     turnErrorEmitted: false,
     interactions: new Map(),
+    tasks: new Map(),
   };
 }
 
@@ -328,6 +336,17 @@ export class ProductProjector {
       const lastTurnReason =
         reason === 'completed' ? 'completed' : reason === 'cancelled' ? 'cancelled' : 'failed';
       workChanged({ busy: false, main_turn_active: false, last_turn_reason: lastTurnReason });
+      // Side-channel (BTW) agents: signal the turn end explicitly so the
+      // desktop client can synthesize the daemon-equivalent `agentTurnEnded`
+      // AppEvent. The main agent path keeps emitting only the events
+      // kimi-web's `toAppEvent` knows, so this frame is main-only-excluded.
+      if (agentId !== 'main') {
+        emit(
+          frame('event.turn.ended', {
+            reason: lastTurnReason,
+          }),
+        );
+      }
       // Surface a structured error notice for a failed turn. The engine may
       // also emit a standalone `error` event either side of turn.ended; the
       // turnErrorEmitted flag (reset on turn.started) keeps it to one notice.
@@ -398,6 +417,341 @@ export class ProductProjector {
       }
     };
 
+    // ── task / subagent handlers ───────────────────────────────────────────
+
+    /** Merge a patch into the stored task row (or seed a base subagent task)
+     *  and return the merged row. Mirrors the daemon projector's
+     *  `patchSubagent`: each subagent lifecycle frame re-emits the patched
+     *  task as `event.task.created` so the UI reducer converges on one row
+     *  per subagent id. */
+    const taskPatch = (id: string, patch: Partial<WireTask>): WireTask => {
+      const prev = state.tasks.get(id);
+      const base: WireTask = prev ?? {
+        id,
+        session_id: sessionId,
+        kind: 'subagent',
+        description: 'Sub Agent',
+        status: 'running',
+        created_at: new Date().toISOString(),
+        subagent_phase: 'queued',
+      };
+      const next: WireTask = { ...base, ...patch, id, session_id: sessionId };
+      state.tasks.set(id, next);
+      return next;
+    };
+
+    const onSubagentSpawned = (raw: RawEvent): void => {
+      const subagentId = str(raw, 'subagentId');
+      if (subagentId === undefined || subagentId.length === 0) return;
+      const subagentName = str(raw, 'subagentName');
+      const task = taskPatch(subagentId, {
+        description: str(raw, 'description') ?? subagentName ?? 'Sub Agent',
+        status: 'running',
+        subagent_phase: 'queued',
+        subagent_type: subagentName,
+        parent_tool_call_id: str(raw, 'parentToolCallId'),
+        swarm_index: num(raw, 'swarmIndex'),
+        run_in_background: raw['runInBackground'] === true,
+      });
+      emit(frame('event.task.created', { task }));
+    };
+
+    const onSubagentStarted = (raw: RawEvent): void => {
+      const subagentId = str(raw, 'subagentId');
+      if (subagentId === undefined || subagentId.length === 0) return;
+      const task = taskPatch(subagentId, {
+        status: 'running',
+        subagent_phase: 'working',
+        started_at: new Date().toISOString(),
+      });
+      emit(frame('event.task.created', { task }));
+    };
+
+    const onSubagentSuspended = (raw: RawEvent): void => {
+      const subagentId = str(raw, 'subagentId');
+      if (subagentId === undefined || subagentId.length === 0) return;
+      const task = taskPatch(subagentId, {
+        status: 'running',
+        subagent_phase: 'suspended',
+        suspended_reason: str(raw, 'reason'),
+      });
+      emit(frame('event.task.created', { task }));
+    };
+
+    const onSubagentCompleted = (raw: RawEvent): void => {
+      const subagentId = str(raw, 'subagentId');
+      if (subagentId === undefined || subagentId.length === 0) return;
+      const outputPreview = str(raw, 'resultSummary');
+      const task = taskPatch(subagentId, {
+        status: 'completed',
+        subagent_phase: 'completed',
+        completed_at: new Date().toISOString(),
+        output_preview: outputPreview,
+      });
+      emit(frame('event.task.created', { task }));
+      emit(
+        frame('event.task.completed', {
+          task_id: subagentId,
+          status: 'completed',
+          output_preview: outputPreview,
+        }),
+      );
+    };
+
+    const onSubagentFailed = (raw: RawEvent): void => {
+      const subagentId = str(raw, 'subagentId');
+      if (subagentId === undefined || subagentId.length === 0) return;
+      const outputPreview = str(raw, 'error');
+      const task = taskPatch(subagentId, {
+        status: 'failed',
+        subagent_phase: 'failed',
+        completed_at: new Date().toISOString(),
+        output_preview: outputPreview,
+      });
+      emit(frame('event.task.created', { task }));
+      emit(
+        frame('event.task.completed', {
+          task_id: subagentId,
+          status: 'failed',
+          output_preview: outputPreview,
+        }),
+      );
+    };
+
+    const onTaskStarted = (raw: RawEvent): void => {
+      const info = (raw['info'] ?? {}) as RawEvent;
+      const taskIdRaw = info['taskId'];
+      const taskId =
+        typeof taskIdRaw === 'string' && taskIdRaw.length > 0
+          ? taskIdRaw
+          : typeof taskIdRaw === 'number'
+            ? String(taskIdRaw)
+            : ulid('task_');
+      const startedAtNum = num(info, 'startedAt');
+      const startedAt = startedAtNum === undefined ? undefined : new Date(startedAtNum).toISOString();
+      const kind = str(info, 'kind');
+      const command = str(info, 'command');
+      const description = str(info, 'description') ?? command ?? 'Background task';
+      if (kind === 'agent') {
+        // A background subagent registers under its own task id, but the
+        // subagent-* lifecycle frames key by the subagent (agent) id. Key the
+        // row by the agent id — like the daemon projector — so late-subscribing
+        // clients still converge on ONE row when task.started arrives without a
+        // preceding subagent.spawned. Fall back to a standalone taskId-keyed
+        // row when no agent id is present.
+        const agentId = str(info, 'agentId');
+        if (agentId !== undefined && agentId.length > 0) {
+          const task = taskPatch(agentId, {
+            description,
+            status: 'running',
+            started_at: startedAt,
+            subagent_phase: 'queued',
+            run_in_background: true,
+          });
+          emit(frame('event.task.created', { task }));
+          return;
+        }
+        emit(
+          frame('event.task.created', {
+            task: {
+              id: taskId,
+              session_id: sessionId,
+              kind: 'subagent',
+              description,
+              status: 'running',
+              created_at: startedAt ?? new Date().toISOString(),
+              started_at: startedAt,
+              subagent_phase: 'queued',
+              run_in_background: true,
+            },
+          }),
+        );
+        return;
+      }
+      emit(
+        frame('event.task.created', {
+          task: {
+            id: taskId,
+            session_id: sessionId,
+            kind: kind === 'process' ? 'bash' : 'tool',
+            description,
+            command: kind === 'process' ? command : undefined,
+            status: 'running',
+            created_at: startedAt ?? new Date().toISOString(),
+            started_at: startedAt,
+            output_preview:
+              kind === 'process' && command !== undefined ? `$ ${command}` : undefined,
+          },
+        }),
+      );
+    };
+
+    const onTaskTerminated = (raw: RawEvent): void => {
+      const info = (raw['info'] ?? {}) as RawEvent;
+      const taskIdRaw = info['taskId'];
+      const taskId =
+        typeof taskIdRaw === 'string' && taskIdRaw.length > 0
+          ? taskIdRaw
+          : typeof taskIdRaw === 'number'
+            ? String(taskIdRaw)
+            : undefined;
+      if (taskId === undefined) return;
+      const status = str(info, 'status');
+      const exitCode = num(info, 'exitCode');
+      // 'killed' → cancelled; 'failed'/'timed_out'/'lost' (or any non-zero
+      // exit code) → failed; everything else completes.
+      let wireStatus: 'completed' | 'failed' | 'cancelled' = 'completed';
+      if (status === 'killed') {
+        wireStatus = 'cancelled';
+      } else if (
+        status === 'failed' ||
+        status === 'timed_out' ||
+        status === 'lost' ||
+        (exitCode !== undefined && exitCode !== 0)
+      ) {
+        wireStatus = 'failed';
+      }
+      // No output_preview here: the command is already kept on the task as
+      // `command`; re-previewing `$ <command>` would clobber real output.
+      emit(frame('event.task.completed', { task_id: taskId, status: wireStatus }));
+    };
+
+    const onShellOutput = (raw: RawEvent): void => {
+      const update = (raw['update'] ?? {}) as RawEvent;
+      const chunk = str(update, 'text') ?? '';
+      if (chunk.length === 0) return;
+      const commandId = str(raw, 'commandId');
+      const taskId =
+        str(raw, 'taskId') ?? (commandId !== undefined ? `shell-${commandId}` : undefined);
+      if (taskId === undefined) return;
+      emit(
+        frame('event.task.progress', {
+          task_id: taskId,
+          output_chunk: chunk,
+          stream: update['kind'] === 'stderr' ? 'stderr' : 'stdout',
+        }),
+      );
+    };
+
+    // ── goal / prompt / compaction / metadata handlers ─────────────────────
+
+    const onGoalUpdated = (raw: RawEvent): void => {
+      emit(frame('event.goal.updated', { snapshot: toWireGoal(raw['snapshot']) }));
+    };
+
+    const onPromptCompleted = (raw: RawEvent): void => {
+      const promptId = str(raw, 'promptId');
+      if (promptId === undefined || promptId.length === 0) return;
+      const reason = str(raw, 'reason');
+      emit(
+        frame('event.prompt.completed', {
+          prompt_id: promptId,
+          finished_at: str(raw, 'finishedAt') ?? new Date().toISOString(),
+          reason:
+            reason === 'completed' || reason === 'failed' || reason === 'blocked'
+              ? reason
+              : undefined,
+        }),
+      );
+    };
+
+    const onPromptAborted = (raw: RawEvent): void => {
+      const promptId = str(raw, 'promptId');
+      if (promptId === undefined || promptId.length === 0) return;
+      emit(
+        frame('event.prompt.aborted', {
+          prompt_id: promptId,
+          aborted_at: str(raw, 'abortedAt') ?? new Date().toISOString(),
+        }),
+      );
+    };
+
+    const onCompactionStarted = (raw: RawEvent): void => {
+      emit(
+        frame('event.compaction.started', {
+          trigger: str(raw, 'trigger') === 'manual' ? 'manual' : 'auto',
+          instruction: str(raw, 'instruction'),
+        }),
+      );
+    };
+
+    const onCompactionCompleted = (raw: RawEvent): void => {
+      const result = (raw['result'] ?? {}) as RawEvent;
+      emit(
+        frame('event.compaction.completed', {
+          tokens_before: num(result, 'tokensBefore'),
+          tokens_after: num(result, 'tokensAfter'),
+          summary: str(result, 'summary'),
+        }),
+      );
+    };
+
+    const onCompactionCancelled = (): void => {
+      emit(frame('event.compaction.cancelled', {}));
+    };
+
+    /**
+     * A scheduled reminder fired into the session. The engine persists the
+     * injected user message but does not broadcast a message.created for it —
+     * synthesize one here so the notice shows up live, mirroring the daemon
+     * projector's cron.fired branch (agentEventProjector.ts). The promptId is
+     * intentionally omitted (the daemon client caches promptIds for Stop and a
+     * synthetic id would clobber the real one); a later snapshot reload
+     * replaces the message log wholesale, so this copy never duplicates the
+     * persisted one.
+     */
+    const onCronFired = (raw: RawEvent): void => {
+      const origin = raw['origin'];
+      const prompt = str(raw, 'prompt');
+      if (
+        origin === null ||
+        typeof origin !== 'object' ||
+        (origin as Record<string, unknown>)['kind'] !== 'cron_job' ||
+        prompt === undefined ||
+        prompt.length === 0
+      ) {
+        return;
+      }
+      emit(
+        frame('event.message.created', {
+          message: {
+            id: ulid('cron_'),
+            session_id: sessionId,
+            role: 'user',
+            content: [{ type: 'text', text: prompt }],
+            created_at: new Date().toISOString(),
+            metadata: { origin: origin as Record<string, unknown> },
+          },
+        }),
+      );
+    };
+
+    /** Session metadata changed — read the fresh meta and emit a lightweight
+     *  patch for the changed keys (title / lastPrompt). Best-effort: if the
+     *  meta read fails, skip silently. */
+    const onMetadataChanged = async (payload: { changed: readonly string[] }): Promise<void> => {
+      if (payload.changed.length === 0) return;
+      try {
+        const meta = await this.klient.session(sessionId).get();
+        const patch: { title?: string; lastPrompt?: string } = {};
+        if (
+          payload.changed.includes('title') &&
+          typeof meta.title === 'string' &&
+          meta.title.length > 0
+        ) {
+          patch.title = meta.title;
+        }
+        if (payload.changed.includes('lastPrompt') && typeof meta.lastPrompt === 'string') {
+          patch.lastPrompt = meta.lastPrompt;
+        }
+        if (patch.title !== undefined || patch.lastPrompt !== undefined) {
+          emit(frame('event.session.meta.updated', { patch }));
+        }
+      } catch {
+        // Best-effort meta read — skip silently when it fails.
+      }
+    };
+
     // ── attach subscriptions ────────────────────────────────────────────────
 
     const agent = this.klient.session(sessionId).agent(agentId);
@@ -416,12 +770,29 @@ export class ProductProjector {
       agentEvents.on('error', onError),
       agentEvents.on('warning', onWarning),
       agentEvents.on('notice', onNotice),
+      // Tasks / subagents / goal / prompt / compaction
+      agentEvents.on('task.started', onTaskStarted),
+      agentEvents.on('task.terminated', onTaskTerminated),
+      agentEvents.on('subagent.spawned', onSubagentSpawned),
+      agentEvents.on('subagent.started', onSubagentStarted),
+      agentEvents.on('subagent.suspended', onSubagentSuspended),
+      agentEvents.on('subagent.completed', onSubagentCompleted),
+      agentEvents.on('subagent.failed', onSubagentFailed),
+      agentEvents.on('shell.output', onShellOutput),
+      agentEvents.on('goal.updated', onGoalUpdated),
+      agentEvents.on('prompt.completed', onPromptCompleted),
+      agentEvents.on('prompt.aborted', onPromptAborted),
+      agentEvents.on('compaction.started', onCompactionStarted),
+      agentEvents.on('compaction.completed', onCompactionCompleted),
+      agentEvents.on('compaction.cancelled', onCompactionCancelled),
+      agentEvents.on('cron.fired', onCronFired),
     );
 
     const sessionEvents = this.klient.session(sessionId).events;
     subs.push(
       sessionEvents.on('interactions.changed', onInteractionsChanged),
       sessionEvents.on('interactions.resolved', onInteractionsResolved),
+      sessionEvents.on('metadata.changed', onMetadataChanged),
     );
 
     let disposed = false;

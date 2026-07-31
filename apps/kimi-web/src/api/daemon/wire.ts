@@ -714,6 +714,36 @@ type WireEventSessionHistoryCompacted = WireEventBase<'event.session.history_com
   reason: 'auto_compact' | 'manual_compact' | 'history_rewrite';
   summary_message_id?: string;
 }>;
+type WireEventSessionMetaUpdated = WireEventBase<'event.session.meta.updated', {
+  title?: string;
+  patch?: { title?: string; lastPrompt?: string };
+}>;
+
+// Goal
+type WireEventGoalUpdated = WireEventBase<'event.goal.updated', { snapshot: WireGoalSnapshot | null }>;
+
+// Compaction
+type WireEventCompactionStarted = WireEventBase<'event.compaction.started', {
+  trigger: 'manual' | 'auto';
+  instruction?: string;
+}>;
+type WireEventCompactionCompleted = WireEventBase<'event.compaction.completed', {
+  tokens_before?: number;
+  tokens_after?: number;
+  summary?: string;
+}>;
+type WireEventCompactionCancelled = WireEventBase<'event.compaction.cancelled', Record<string, never>>;
+
+// Prompt lifecycle
+type WireEventPromptCompleted = WireEventBase<'event.prompt.completed', {
+  prompt_id: string;
+  finished_at: string;
+  reason?: 'completed' | 'failed' | 'blocked';
+}>;
+type WireEventPromptAborted = WireEventBase<'event.prompt.aborted', {
+  prompt_id: string;
+  aborted_at: string;
+}>;
 
 // Workspace lifecycle (global — not session-scoped)
 type WireEventWorkspaceCreated = WireEventBase<'event.workspace.created', { workspace: WireWorkspace }>;
@@ -855,6 +885,16 @@ export type WireEvent =
   | WireEventSessionStatusChanged
   | WireEventSessionUsageUpdated
   | WireEventSessionHistoryCompacted
+  | WireEventSessionMetaUpdated
+  // Goal
+  | WireEventGoalUpdated
+  // Compaction
+  | WireEventCompactionStarted
+  | WireEventCompactionCompleted
+  | WireEventCompactionCancelled
+  // Prompt lifecycle
+  | WireEventPromptCompleted
+  | WireEventPromptAborted
   // Workspace lifecycle
   | WireEventWorkspaceCreated
   | WireEventWorkspaceUpdated

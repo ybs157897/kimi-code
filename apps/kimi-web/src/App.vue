@@ -271,6 +271,9 @@ const {
   previewLoading,
   previewError,
   previewDownloadUrl,
+  previewPdfUrl,
+  previewCanBlobDownload,
+  downloadPreviewFile,
   previewExternalActions,
   openFilePreview,
   openMediaPreview,
@@ -1088,12 +1091,15 @@ function openPr(url: string): void {
         :error="previewError"
         :line="previewTarget?.line"
         :download-url="previewDownloadUrl"
+        :pdf-url="previewPdfUrl"
+        :can-blob-download="previewCanBlobDownload"
         closable
         :external-actions="previewExternalActions"
         :open-file="openFilePreview"
         @close="closeFilePreview"
         @open-external="openPreviewInEditor"
         @reveal="revealPreviewFile"
+        @download-file="downloadPreviewFile"
       />
     </aside>
 

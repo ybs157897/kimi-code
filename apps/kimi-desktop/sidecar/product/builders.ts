@@ -1,8 +1,9 @@
 /**
  * Wire builders for the product layer — mirror kap-server's edge projections
- * (`packages/kap-server/src/routes/{sessions,approvals,questions}.ts`) so the
- * desktop sidecar returns/emits byte-compatible kimi-web wire JSON. Pure
- * functions only; no engine access here (callers pass the in-process shapes).
+ * (`packages/kap-server/src/routes/{sessions,approvals,questions,goal}.ts`)
+ * so the desktop sidecar returns/emits byte-compatible kimi-web wire JSON.
+ * Pure functions only; no engine access here (callers pass the in-process
+ * shapes).
  */
 
 import type { ContentPart } from '@moonshot-ai/agent-core-v2/kosong/contract/message';
@@ -15,6 +16,7 @@ import type {
   ExpertTeamDefinition,
   ExpertTeamSnapshot,
 } from '@moonshot-ai/agent-core-v2/session/expertTeam/expertTeam';
+import type { SkillSummary } from '@moonshot-ai/agent-core-v2/app/skillCatalog/types';
 
 import type {
   WireApprovalRequest,
@@ -22,12 +24,14 @@ import type {
   WireConfigProvider,
   WireExpertTeamDefinition,
   WireExpertTeamSnapshot,
+  WireGoalSnapshot,
   WireImageSource,
   WireMessageContent,
   WireMeta,
   WireQuestionRequest,
   WireSession,
   WireSessionUsage,
+  WireSkillDescriptor,
   WireTaskListItem,
   WireWorkspace,
 } from './wire.js';
@@ -222,6 +226,66 @@ export function toWireTask(
   return item;
 }
 
+// ---------------------------------------------------------------------------
+// Goal (routes/goal.ts) — defensive camelCase projection
+// ---------------------------------------------------------------------------
+
+/**
+ * Project a raw goal snapshot onto the wire `WireGoalSnapshot` (camelCase,
+ * same shape as GET /sessions/{id}/goal). The klient `goal.updated` payload
+ * is already the wire shape; snake_case aliases are tolerated defensively.
+ * Returns null when the snapshot is absent or its status is not a known wire
+ * value — mirrors kimi-web's `mapGoalSnapshot` (agentEventProjector.ts).
+ */
+export function toWireGoal(raw: unknown): WireGoalSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const s = raw as Record<string, unknown>;
+  const status = s['status'];
+  if (status !== 'active' && status !== 'paused' && status !== 'blocked' && status !== 'complete') {
+    return null;
+  }
+  const budget = (s['budget'] ?? {}) as Record<string, unknown>;
+  const readNum = (camel: string, snake: string): number => {
+    if (typeof s[camel] === 'number') return s[camel] as number;
+    if (typeof s[snake] === 'number') return s[snake] as number;
+    return 0;
+  };
+  const readStr = (camel: string, snake: string): string | undefined => {
+    if (typeof s[camel] === 'string') return s[camel] as string;
+    if (typeof s[snake] === 'string') return s[snake] as string;
+    return undefined;
+  };
+  const readBudgetNum = (camel: string, snake: string): number | null => {
+    if (typeof budget[camel] === 'number') return budget[camel] as number;
+    if (typeof budget[snake] === 'number') return budget[snake] as number;
+    return null;
+  };
+  const readBudgetBool = (camel: string, snake: string): boolean =>
+    budget[camel] === true || budget[snake] === true;
+  return {
+    goalId: readStr('goalId', 'goal_id') ?? 'goal',
+    objective: typeof s['objective'] === 'string' ? (s['objective'] as string) : '',
+    completionCriterion: readStr('completionCriterion', 'completion_criterion'),
+    status,
+    turnsUsed: readNum('turnsUsed', 'turns_used'),
+    tokensUsed: readNum('tokensUsed', 'tokens_used'),
+    wallClockMs: readNum('wallClockMs', 'wall_clock_ms'),
+    terminalReason: readStr('terminalReason', 'terminal_reason'),
+    budget: {
+      tokenBudget: readBudgetNum('tokenBudget', 'token_budget'),
+      turnBudget: readBudgetNum('turnBudget', 'turn_budget'),
+      wallClockBudgetMs: readBudgetNum('wallClockBudgetMs', 'wall_clock_budget_ms'),
+      remainingTokens: readBudgetNum('remainingTokens', 'remaining_tokens'),
+      remainingTurns: readBudgetNum('remainingTurns', 'remaining_turns'),
+      remainingWallClockMs: readBudgetNum('remainingWallClockMs', 'remaining_wall_clock_ms'),
+      tokenBudgetReached: readBudgetBool('tokenBudgetReached', 'token_budget_reached'),
+      turnBudgetReached: readBudgetBool('turnBudgetReached', 'turn_budget_reached'),
+      wallClockBudgetReached: readBudgetBool('wallClockBudgetReached', 'wall_clock_budget_reached'),
+      overBudget: readBudgetBool('overBudget', 'over_budget'),
+    },
+  };
+}
+
 /** Mirrors kap-server `toWireSession` (routes/sessions.ts). */
 export function toWireSession(fields: SessionWireFields, cwd: string, facts: SessionFacts): WireSession {
   return {
@@ -308,13 +372,17 @@ export function toWireQuestion(interaction: Interaction, sessionId: string): Wir
 function imageSourceToUrl(source: WireImageSource): string | undefined {
   if (source.kind === 'url') return source.url;
   if (source.kind === 'base64') return `data:${source.media_type};base64,${source.data}`;
-  // 'file' sources need a blob upload round-trip the first slice does not do.
+  // 'file' sources never reach this converter: the facade resolves every
+  // file-backed part through promptMedia.resolvePromptMediaFiles first
+  // (materialized/compressed into url/base64/text parts), so a leftover
+  // `kind: 'file'` here is a caller bug, not a silently dropped attachment.
   return undefined;
 }
 
 /** Convert a prompt's wire content into engine prompt parts. Unsupported parts
  *  (tool_use/tool_result/file/thinking) are dropped — a user prompt only ever
- *  carries text/image/video. */
+ *  carries text/image/video, and file parts are resolved by
+ *  `promptMedia.resolvePromptMediaFiles` before this conversion runs. */
 export function wireContentToPromptParts(content: readonly WireMessageContent[]): ContentPart[] {
   const parts: ContentPart[] = [];
   for (const part of content) {
@@ -363,6 +431,29 @@ export function toWireWorkspace(ws: WorkspaceWireFields, sessionCount: number): 
     created_at: new Date(ws.createdAt).toISOString(),
     last_opened_at: new Date(ws.lastOpenedAt).toISOString(),
     session_count: sessionCount,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Skill (routes/skills.ts `toProtocolSkill`)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors kap-server `toProtocolSkill` (routes/skills.ts): only
+ * `name`/`description`/`path`/`source` plus the optional `type` and
+ * `disable_model_invocation` are emitted; `isSubSkill` is intentionally
+ * dropped.
+ */
+export function toWireSkillDescriptor(skill: SkillSummary): WireSkillDescriptor {
+  return {
+    name: skill.name,
+    description: skill.description,
+    path: skill.path,
+    source: skill.source,
+    ...(skill.type !== undefined ? { type: skill.type } : {}),
+    ...(skill.disableModelInvocation !== undefined
+      ? { disable_model_invocation: skill.disableModelInvocation }
+      : {}),
   };
 }
 

@@ -35,6 +35,19 @@ export const KIMI_STREAM_CHANNEL = 'kimi:stream';
  */
 export const KIMI_TERMINAL_CHANNEL = 'kimi:terminal';
 
+/**
+ * The Wails event channel the shell emits real IPC connection state on:
+ * `{ state: "connected" | "disconnected" }`. The webview flips its
+ * `onConnectionChange` / `health()` on these frames, so a broken socket is
+ * visible even before the next subscribe call fails.
+ */
+export const KIMI_CONNECTION_CHANNEL = 'kimi:connection';
+
+/** The connection-state payload on `kimi:connection` (see KIMI_CONNECTION_CHANNEL). */
+export interface DesktopConnectionState {
+  state: 'connected' | 'disconnected';
+}
+
 // ---------------------------------------------------------------------------
 // Wails globals — present only inside the desktop shell's webview.
 // ---------------------------------------------------------------------------
@@ -83,12 +96,19 @@ export interface WailsAppBindings {
   /**
    * Attach a session terminal's output stream (Slice 6). `sinceSeqJSON` is the
    * JSON-encoded replay cursor (the last seq the client saw, or `0` for a fresh
-   * attach); the shell opens the IPC `listen` and re-emits frames on
-   * `kimi:terminal`.
+   * attach — the host replays the terminal's whole buffered history); the shell
+   * opens the IPC `listen` and re-emits frames on `kimi:terminal`.
    */
   ProductTerminalAttach(sessionId: string, terminalId: string, sinceSeqJSON: string): Promise<void>;
   /** Detach a session terminal's output stream (Slice 6). */
   ProductTerminalDetach(sessionId: string, terminalId: string): Promise<void>;
+  /**
+   * Report `{ state: "connected" | "disconnected" }`, forcing a bounded
+   * synchronous IPC recovery when the connection is currently broken. The
+   * webview's `reconnect()` calls this first so a resubscribe never targets a
+   * dead socket.
+   */
+  EnsureConnected(): Promise<string>;
 }
 
 /**
@@ -360,9 +380,30 @@ export interface DesktopStreamEvent {
   type: 'data' | 'end' | 'error';
   chunk?: string;
   seq?: number;
-  meta?: { mime: string; size: number; filename: string };
+  meta?: DesktopStreamMeta;
   code?: number;
   msg?: string;
+}
+
+/**
+ * The `end` frame's aggregate metadata (Slice 5): the assembled Blob's mime
+ * type, its total byte size, and the server-chosen download filename (Slice 7
+ * exportSession uses it as the user-facing archive name).
+ */
+export interface DesktopStreamMeta {
+  mime: string;
+  size: number;
+  filename: string;
+}
+
+/**
+ * A fully assembled product download stream (Slice 7): the Blob plus the
+ * `end` frame's metadata, when the stream carried it. `streamToBlob` maps this
+ * to the blob alone; `streamToBlobWithMeta` hands both to the caller.
+ */
+export interface DesktopStreamResult {
+  blob: Blob;
+  meta?: DesktopStreamMeta;
 }
 
 /**
@@ -439,6 +480,16 @@ export interface DesktopBridge {
    */
   streamToBlob(method: string, args: unknown[], signal?: AbortSignal): Promise<Blob>;
   /**
+   * Like `streamToBlob`, but resolves with the `end` frame's metadata too
+   * (Slice 7 exportSession): `{mime, size, filename}` when the stream carried
+   * it, so the caller can name the downloaded artifact from the server.
+   */
+  streamToBlobWithMeta(
+    method: string,
+    args: unknown[],
+    signal?: AbortSignal,
+  ): Promise<DesktopStreamResult>;
+  /**
    * Attach a session terminal's output stream (Slice 6), optionally replaying
    * buffered output after `sinceSeq` (the last seq the caller saw; omitted for a
    * fresh attach). Frames arrive via `onTerminalEvent` until detached.
@@ -452,4 +503,17 @@ export interface DesktopBridge {
    * leaves.
    */
   onTerminalEvent(callback: (event: DesktopTerminalEvent) => void): () => void;
+  /**
+   * Subscribe to real IPC connection state (`kimi:connection` frames). The
+   * shell emits `{ state: "disconnected" }` when the socket breaks and
+   * `{ state: "connected" }` after a successful re-dial/restart. Returns an
+   * unsubscribe function; the native listener is released when the last
+   * subscriber leaves.
+   */
+  onConnectionState(callback: (state: 'connected' | 'disconnected') => void): () => void;
+  /**
+   * Force a bounded synchronous IPC recovery when the connection is broken and
+   * report the resulting state (`connected` / `disconnected`).
+   */
+  EnsureConnected(): Promise<'connected' | 'disconnected'>;
 }

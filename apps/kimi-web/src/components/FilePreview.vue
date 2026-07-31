@@ -78,7 +78,14 @@ const props = defineProps<{
   loading: boolean;
   error?: string | null;
   line?: number;
+  /** Real download URL (browser transports). Desktop transports pass null and
+      use the `downloadFile` event → getWorkspaceFileBlob + object URL instead. */
   downloadUrl?: string | null;
+  /** Blob-backed object URL for PDF previews on transports without a fetchable
+      URL (desktop); the parent owns its lifecycle (revoked on close/switch). */
+  pdfUrl?: string | null;
+  /** Whether the blob-download action (emit 'downloadFile') is available. */
+  canBlobDownload?: boolean;
   closable?: boolean;
   externalActions?: boolean;
   /** Open a linked file from inside a Markdown preview (resolved against the
@@ -90,6 +97,8 @@ const emit = defineEmits<{
   close: [];
   openExternal: [];
   reveal: [];
+  /** Blob download (desktop transports): fetch getWorkspaceFileBlob and save. */
+  downloadFile: [];
 }>();
 
 function handleMarkdownOpenFile(target: { path: string; line?: number }): void {
@@ -329,6 +338,7 @@ const videoSrc = computed<string | null>(() => {
 const pdfSrc = computed<string | null>(() => {
   const f = props.file;
   if (!f || contentKind.value !== 'pdf') return null;
+  if (props.pdfUrl) return props.pdfUrl;
   if (props.downloadUrl) return props.downloadUrl;
   if (f.encoding === 'base64') return `data:${f.mime};base64,${f.content}`;
   return null;
@@ -533,6 +543,15 @@ function truncatePath(path: string, maxLen = 55): string {
         >
           <Icon name="download" size="md" />
         </a>
+        <!-- Desktop transports have no fetchable URL: download via blob. -->
+        <IconButton
+          v-else-if="canBlobDownload"
+          size="sm"
+          :label="t('filePreview.download')"
+          @click="emit('downloadFile')"
+        >
+          <Icon name="download" size="md" />
+        </IconButton>
         <IconButton
           v-if="!file.isBinary && contentKind !== 'image'"
           size="sm"

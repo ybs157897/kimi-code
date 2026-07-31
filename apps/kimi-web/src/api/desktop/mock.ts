@@ -39,6 +39,7 @@ import type {
   DesktopSessionListPage,
   DesktopSessionSummary,
   DesktopStreamEvent,
+  DesktopStreamResult,
   DesktopTerminalEvent,
   ProductEventPayload,
   ProductStreamCursor,
@@ -196,6 +197,9 @@ export class MockDesktopBridge implements DesktopBridge {
   // plus active attach subscriptions keyed by sessionId
   private terminalListeners = new Set<(event: DesktopTerminalEvent) => void>();
   private terminalAttachments = new Map<string, ReturnType<typeof setTimeout>>();
+  // Real IPC connection state (`kimi:connection`): the mock never breaks, but
+  // tests can drive emitConnectionStateForTest to exercise recovery paths.
+  private connectionListeners = new Set<(state: 'connected' | 'disconnected') => void>();
   private productProviders = new Map<string, MockProviderRecord>([
     [
       'mock',
@@ -581,6 +585,9 @@ export class MockDesktopBridge implements DesktopBridge {
       case 'uploadFinish':
         data = this.productUploadFinish(args[0]);
         break;
+      case 'uploadCancel':
+        data = this.productUploadCancel(args[0]);
+        break;
       // Slice 6 — session terminals. CRUD rides ProductCall; input/resize/close
       // (the connectEvents fire-and-forget ops) resolve to simple ack shapes, and
       // attach/detach ride the bridge methods below (not ProductCall).
@@ -604,6 +611,27 @@ export class MockDesktopBridge implements DesktopBridge {
         break;
       case 'terminalClose':
         data = { closed: true };
+        break;
+      // Slice 7 — skills (session + workspace catalogs share the wire shape),
+      // skill activation, code-extension commands/reload/activation. Canned
+      // kap-server wire shapes; the export rides the stream surface below.
+      case 'listSkills':
+        data = this.mockSkillList();
+        break;
+      case 'listSkillsForWorkspace':
+        data = this.mockSkillList();
+        break;
+      case 'activateSkill':
+        data = { activated: true, skill_name: args[1] };
+        break;
+      case 'listExtensionCommands':
+        data = { commands: [{ extension_id: 'ext-1', name: 'cmd', description: 'mock' }] };
+        break;
+      case 'reloadExtensions':
+        data = { active: ['/mock/ext.js'], errors: [] };
+        break;
+      case 'activateExtensionCommand':
+        data = { activated: true };
         break;
       default:
         throw new Error(`mock desktop bridge: product method "${method}" is not yet supported`);
@@ -698,6 +726,14 @@ export class MockDesktopBridge implements DesktopBridge {
   }
 
   streamToBlob(method: string, args: unknown[], signal?: AbortSignal): Promise<Blob> {
+    return assembleStreamToBlob(this, method, args, signal).then(({ blob }) => blob);
+  }
+
+  streamToBlobWithMeta(
+    method: string,
+    args: unknown[],
+    signal?: AbortSignal,
+  ): Promise<DesktopStreamResult> {
     return assembleStreamToBlob(this, method, args, signal);
   }
 
@@ -748,6 +784,24 @@ export class MockDesktopBridge implements DesktopBridge {
     for (const listener of Array.from(this.terminalListeners)) listener(event);
   }
 
+  onConnectionState(callback: (state: 'connected' | 'disconnected') => void): () => void {
+    this.connectionListeners.add(callback);
+    return () => {
+      this.connectionListeners.delete(callback);
+    };
+  }
+
+  /** Fan out one `kimi:connection` frame to the registered listeners (tests can
+   *  drive this to simulate an IPC break / recovery). */
+  emitConnectionStateForTest(state: 'connected' | 'disconnected'): void {
+    for (const listener of Array.from(this.connectionListeners)) listener(state);
+  }
+
+  async EnsureConnected(): Promise<'connected' | 'disconnected'> {
+    // The mock bridge is always "connected" — there is no real IPC to recover.
+    return 'connected';
+  }
+
   /** Canned session terminal (wire shape, snake_case) scoped to a session. */
   private mockTerminal(sessionId: string): {
     id: string;
@@ -771,6 +825,15 @@ export class MockDesktopBridge implements DesktopBridge {
     };
   }
 
+  /** Canned skill catalog — session and workspace lists share the wire shape. */
+  private mockSkillList(): {
+    skills: Array<{ name: string; description: string; path: string; source: string }>;
+  } {
+    return {
+      skills: [{ name: 'mock-skill', description: 'mock', path: '/mock', source: 'project' }],
+    };
+  }
+
   /** Deliver the canned download frames for one mock stream. */
   private emitMockStream(method: string, args: unknown[], streamId: string): void {
     const deliver = (event: DesktopStreamEvent): void => {
@@ -779,6 +842,7 @@ export class MockDesktopBridge implements DesktopBridge {
     };
     let payload: string;
     let filename: string;
+    let mime = 'application/octet-stream';
     if (method === 'getFileBlob') {
       payload = 'mock-binary';
       filename = 'mock-file.bin';
@@ -786,6 +850,12 @@ export class MockDesktopBridge implements DesktopBridge {
       payload = 'mock-workspace-file';
       const path = typeof args[1] === 'string' ? args[1] : '';
       filename = path.split('/').pop() ?? 'download';
+    } else if (method === 'exportSession') {
+      // Slice 7 — canned session archive: the same base64 chunk assembly, with
+      // the server-chosen zip filename in the `end` frame's meta.
+      payload = 'mock-zip-bytes';
+      filename = 'kimi-session-mock.zip';
+      mime = 'application/zip';
     } else {
       deliver({
         streamId,
@@ -802,7 +872,7 @@ export class MockDesktopBridge implements DesktopBridge {
     deliver({
       streamId,
       type: 'end',
-      meta: { mime: 'application/octet-stream', size: bytes.length, filename },
+      meta: { mime, size: bytes.length, filename },
     });
     this.mockCancelledStreams.delete(streamId);
   }
@@ -1546,6 +1616,12 @@ export class MockDesktopBridge implements DesktopBridge {
       size: upload.received,
       created_at: new Date().toISOString(),
     };
+  }
+
+  private productUploadCancel(uploadIdRaw: unknown): { cancelled: true } {
+    const uploadId = requireMockString(uploadIdRaw, 'upload id');
+    this.mockUploads.delete(uploadId);
+    return { cancelled: true };
   }
 
   private productListModels(): { items: WireModel[] } {

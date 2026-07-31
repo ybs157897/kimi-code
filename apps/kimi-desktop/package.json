@@ -7,11 +7,13 @@
   "scripts": {
     "build:frontend": "pnpm --filter @moonshot-ai/kimi-web build && node scripts/copy-dist.mjs",
     "build:sidecar": "node scripts/build-sidecar.mjs",
-    "build": "pnpm run build:frontend && pnpm run build:sidecar && wails build -tags packaged -skipbindings",
+    "build": "pnpm run build:frontend && pnpm run build:sidecar && wails build -tags packaged -skipbindings && node scripts/package-macos.mjs",
     "dev": "pnpm run build:frontend && go run -tags desktop,production .",
     "typecheck": "go vet ./...",
     "sidecar": "tsx --tsconfig ./sidecar/tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./sidecar/main.ts",
-    "typecheck:sidecar": "tsc -p ./sidecar/tsconfig.json --noEmit"
+    "typecheck:sidecar": "tsc -p ./sidecar/tsconfig.json --noEmit",
+    "test:sidecar": "vitest run",
+    "smoke:sidecar": "node scripts/smoke-extension.mjs"
   },
   "dependencies": {
     "@moonshot-ai/agent-core-v2": "workspace:^",
@@ -19,6 +21,7 @@
   },
   "devDependencies": {
     "postject": "1.0.0-alpha.6",
-    "tsx": "^4.21.0"
+    "tsx": "^4.21.0",
+    "vitest": "4.1.4"
   }
 }

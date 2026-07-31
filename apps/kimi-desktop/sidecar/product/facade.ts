@@ -13,13 +13,16 @@ import type { AgentHandle, IDisposable, Klient } from '@moonshot-ai/klient';
 import type { ScopeLike } from '@moonshot-ai/klient/memory';
 import { RPCError } from '@moonshot-ai/klient';
 import { createReadStream } from 'node:fs';
-import { basename, isAbsolute } from 'node:path';
+import { mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { basename, isAbsolute, join } from 'node:path';
 import { Readable } from 'node:stream';
 import { ISessionLifecycleService } from '@moonshot-ai/agent-core-v2/app/sessionLifecycle/sessionLifecycle';
 import {
   ISessionLegacyService,
 } from '@moonshot-ai/agent-core-v2/app/sessionLegacy/sessionLegacy';
 import { ISessionActivityView } from '@moonshot-ai/agent-core-v2/session/sessionActivity/sessionActivity';
+import { IBootstrapService } from '@moonshot-ai/agent-core-v2/app/bootstrap/bootstrap';
 import type { QuestionAnswers } from '@moonshot-ai/agent-core-v2/session/question/question';
 import type {
   FsDiffResponse,
@@ -39,11 +42,13 @@ import { Error2, isError2 } from '@moonshot-ai/agent-core-v2/_base/errors/errors
 import {
   IAgentContextMemoryService,
   IAgentConversationUndoService,
+  IAgentExtensionService,
   IAgentFullCompactionService,
   IAgentLifecycleService,
   IAgentProfileService,
   IAgentPromptService,
   IAgentRPCService,
+  IAgentSkillService,
   IAgentTaskService,
   IAuthLegacyService,
   IAuthSummaryService,
@@ -51,7 +56,6 @@ import {
   IEventService,
   IFileService,
   IHostFileSystem,
-  IHostFolderBrowser,
   HostFolderNotAbsoluteError,
   HostFolderNotFoundError,
   HostFolderPermissionError,
@@ -62,6 +66,8 @@ import {
   ISessionBtwService,
   ISessionContext,
   ISessionExpertTeamService,
+  ISessionExportService,
+  ISessionExtensionService,
   ISessionFsService,
   ISessionIndex,
   ISessionInteractionService,
@@ -72,9 +78,11 @@ import {
   ISessionTerminalService,
   IWorkspaceService,
   IWorkspaceSessions,
+  IWorkspaceSkillCatalogService,
   SECONDARY_DERIVED_MODEL_ID,
   createTerminalRequestSchema,
   ensureMainAgent,
+  sessionMediaOriginalsDir,
   toProtocolMessage,
 } from '@moonshot-ai/agent-core-v2';
 import type { FileMeta, Terminal, TerminalAttachSink } from '@moonshot-ai/agent-core-v2';
@@ -102,12 +110,14 @@ import {
   toWireExpertTeamSnapshot,
   toWireQuestion,
   toWireSession,
+  toWireSkillDescriptor,
   toWireTask,
   toWireWorkspace,
   ulid,
   wireContentToPromptParts,
   type SessionFacts,
 } from './builders.js';
+import { assertPromptFileRefs, resolvePromptMediaFiles } from './promptMedia.js';
 import type {
   WireApprovalResponse,
   WireAuthResult,
@@ -115,6 +125,8 @@ import type {
   WireEnvelope,
   WireExpertTeamDefinition,
   WireExpertTeamSnapshot,
+  WireExtensionCommand,
+  WireExtensionReloadResult,
   WireFsBrowseResult,
   WireFsHomeResult,
   WireGitStatusResult,
@@ -160,6 +172,7 @@ const WORKSPACE_NOT_FOUND = 40410;
 const FS_PERMISSION_DENIED = 40411;
 const PROVIDER_NOT_FOUND = 40412;
 const TERMINAL_NOT_FOUND = 40414;
+const SKILL_NOT_FOUND = 40415;
 const SESSION_BUSY = 40901;
 const APPROVAL_ALREADY_RESOLVED = 40902;
 const TASK_ALREADY_FINISHED = 40904;
@@ -169,7 +182,9 @@ const FS_GIT_UNAVAILABLE = 40908;
 const QUESTION_DISMISSED = 40909;
 const COMPACTION_UNABLE = 40910;
 const SESSION_UNDO_UNAVAILABLE = 40911;
+const SKILL_NOT_ACTIVATABLE = 40912;
 const FS_ALREADY_EXISTS = 40919;
+const FILE_TOO_LARGE = 41301;
 const FS_TOO_LARGE = 41302;
 const FS_TOO_MANY_RESULTS = 41303;
 const FS_PATH_ESCAPES_SESSION = 41304;
@@ -195,9 +210,22 @@ export const PRODUCT_SERVICE = 'desktopProduct';
 /** Slice 5 — chunked upload session TTL and concurrency cap. */
 const UPLOAD_SESSION_TTL_MS = 5 * 60 * 1000;
 const MAX_UPLOAD_SESSIONS = 10;
+/** Slice 5 — single-file byte cap per upload session (41301 FILE_TOO_LARGE). */
+const MAX_UPLOAD_BYTES = 256 * 1024 * 1024;
+/** Slice 5 — per-chunk base64 frame cap (the client sends ~684 KiB per 512 KiB). */
+const MAX_UPLOAD_CHUNK_BASE64 = 1024 * 1024;
+/** Strict padded base64 — rejects silently-corrupted `Buffer.from` passthroughs. */
+const BASE64_RE = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
 
 /** Raw bytes per product binary stream frame (512 KiB → ~684 KiB in base64). */
 const PRODUCT_STREAM_CHUNK_BYTES = 512 * 1024;
+
+/** Cap for session-export archives — mirrors kap-server's 64 MiB web limit. */
+const MAX_SESSION_EXPORT_BYTES = 64 * 1024 * 1024;
+
+/** Skill prompt-metadata limits — mirror agent-core-v2 promptMetadataText.ts. */
+const MAX_SKILL_PROMPT_METADATA_LENGTH = 4000;
+const MAX_SKILL_PROMPT_TITLE_LENGTH = 200;
 
 function ok<T>(data: T): WireEnvelope<T> {
   return { code: 0, msg: 'success', data, request_id: ulid('req_') };
@@ -207,6 +235,9 @@ function ok<T>(data: T): WireEnvelope<T> {
 export interface ProductCallContext {
   readonly sessionId?: string;
   readonly agentId?: string;
+  /** The IPC connection that issued the call — uploads are scoped to it so a
+   *  disconnect can cancel in-flight sessions. */
+  readonly connId?: string;
 }
 
 /** One data frame of a product binary stream (`stream_data` payload). */
@@ -229,12 +260,19 @@ export interface ProductStreamEnd {
 
 export type ProductStreamItem = ProductStreamChunk | ProductStreamEnd;
 
-/** In-flight chunked upload state (Slice 5); TTL-cleaned and capped. */
+/**
+ * In-flight chunked upload state (Slice 5). Chunks stream into a per-session
+ * temp directory under the engine cache (never accumulated in memory), and
+ * every exit path — finish, cancel, TTL, chunk failure, IPC teardown via
+ * `cancelUploadsForConnection` — removes the temp directory.
+ */
 interface UploadSession {
   readonly name: string;
   readonly mimeType: string | undefined;
-  readonly chunks: Buffer[];
+  readonly tempDir: string;
+  readonly tempPath: string;
   received: number;
+  readonly connId: string | undefined;
   readonly timer: NodeJS.Timeout;
 }
 
@@ -242,6 +280,12 @@ interface PromptRoute {
   readonly sessionId: string;
   readonly agentId: string;
   readonly turnId: number | undefined;
+}
+
+/** Test seam for upload limits — the host uses the module defaults. */
+export interface ProductFacadeLimits {
+  readonly maxUploadBytes?: number;
+  readonly maxUploadChunkBase64?: number;
 }
 
 export class ProductFacade {
@@ -270,7 +314,17 @@ export class ProductFacade {
     /** The stream hub whose watermark backs getSessionSnapshot. Optional so the
      *  facade stays constructible without the event layer (tests). */
     private readonly streamHub?: ProductStreamHub,
+    /** Upload limits — defaults apply in the host; tests shrink them. */
+    private readonly limits: ProductFacadeLimits = {},
   ) {}
+
+  private get maxUploadBytes(): number {
+    return this.limits.maxUploadBytes ?? MAX_UPLOAD_BYTES;
+  }
+
+  private get maxUploadChunkBase64(): number {
+    return this.limits.maxUploadChunkBase64 ?? MAX_UPLOAD_CHUNK_BASE64;
+  }
 
   /** Dispatch a `desktopProduct` method by name over a positional arg array. */
   async dispatch(method: string, args: readonly unknown[], ctx: ProductCallContext): Promise<WireEnvelope<unknown>> {
@@ -418,7 +472,7 @@ export class ProductFacade {
         return this.setDefaultModel(args[0]);
       // Slice 5 — binary files (chunked upload; downloads are product streams).
       case 'uploadStart':
-        return this.uploadStart(args[0]);
+        return this.uploadStart(args[0], ctx);
       case 'uploadChunk':
         return this.uploadChunk(args[0], args[1]);
       case 'uploadFinish':
@@ -440,6 +494,17 @@ export class ProductFacade {
         return this.terminalInput(this.argSessionId(args[0], ctx), args[1], args[2]);
       case 'terminalResize':
         return this.terminalResize(this.argSessionId(args[0], ctx), args[1], args[2], args[3]);
+      // Slice 7 — skills, extensions, session export.
+      case 'listSkillsForWorkspace':
+        return this.listSkillsForWorkspace(args[0]);
+      case 'activateSkill':
+        return this.activateSkill(this.argSessionId(args[0], ctx), args[1], args[2]);
+      case 'listExtensionCommands':
+        return this.listExtensionCommands(this.argSessionId(args[0], ctx));
+      case 'reloadExtensions':
+        return this.reloadExtensions(this.argSessionId(args[0], ctx));
+      case 'activateExtensionCommand':
+        return this.activateExtensionCommand(this.argSessionId(args[0], ctx), args[1]);
       default:
         throw new RPCError(REQUEST_INVALID, `unknown product method: ${method}`);
     }
@@ -529,12 +594,45 @@ export class ProductFacade {
   async submitPrompt(sessionId: string, inputRaw: unknown): Promise<WireEnvelope<unknown>> {
     const input = (inputRaw ?? {}) as WirePromptSubmission;
     const agentId = input.agent_id ?? 'main';
-    const parts = wireContentToPromptParts(input.content ?? []);
+    const content = input.content ?? [];
+
+    // Fail fast on stale or mis-kinded file references BEFORE anything
+    // session-scoped happens (mirrors kap-server assertPromptFileRefs): a bad
+    // file_id must not create the agent or touch model/thinking/permission.
+    await assertPromptFileRefs(content, this.scope.accessor.get(IFileService));
+
+    const agent = this.klient.session(sessionId).agent(agentId);
+
+    // Media resolution runs BEFORE any control mutation, so a failed
+    // submission leaves the session's controls untouched. File-backed images
+    // are read from IFileService, format-gated, compressed and re-emitted as
+    // base64 parts; videos materialize to the cache and become internal
+    // `kimi-file://` references; plain files land in the session attachments
+    // dir as path notices — exactly the kap-server pipeline (prompts.ts
+    // resolvePromptMediaFiles), never silently dropped.
+    const resolved = await resolvePromptMediaFiles(
+      content,
+      this.scope.accessor.get(IFileService),
+      this.scope.accessor.get(IBootstrapService).cacheDir,
+      {
+        hostFs: this.scope.accessor.get(IHostFileSystem),
+        resolveOriginalsDir: async () => {
+          const session = await this.scope.accessor.get(ISessionLifecycleService).resume(sessionId);
+          if (session === undefined) return undefined;
+          return sessionMediaOriginalsDir(session.accessor.get(ISessionContext).sessionDir);
+        },
+        resolveAttachmentsDir: async () => {
+          const session = await this.scope.accessor.get(ISessionLifecycleService).resume(sessionId);
+          if (session === undefined) return undefined;
+          return join(session.accessor.get(ISessionContext).sessionDir, 'attachments');
+        },
+      },
+    );
+    const parts = wireContentToPromptParts(resolved.content);
     if (parts.length === 0) {
       throw new RPCError(REQUEST_INVALID, 'prompt content is empty');
     }
 
-    const agent = this.klient.session(sessionId).agent(agentId);
     // Per-prompt runtime controls (kap-server applies these before enqueue).
     // Best-effort: a failure here must not block the prompt itself.
     await this.applyPromptControls(agent, input);
@@ -1365,16 +1463,7 @@ export class ProductFacade {
     const handle = await this.resumeSession(sessionId);
     const skills = await handle.accessor.get(ISessionSkillCatalog).listSkills();
     return ok<{ skills: WireSkillDescriptor[] }>({
-      skills: skills.map((s) => ({
-        name: s.name,
-        description: s.description,
-        path: s.path,
-        source: s.source,
-        ...(s.type !== undefined ? { type: s.type } : {}),
-        ...(s.disableModelInvocation !== undefined
-          ? { disable_model_invocation: s.disableModelInvocation }
-          : {}),
-      })),
+      skills: skills.map(toWireSkillDescriptor),
     });
   }
 
@@ -1845,7 +1934,7 @@ export class ProductFacade {
   // ---------------------------------------------------------------------------
 
   // uploadStart — open a chunked upload session → { upload_id }.
-  async uploadStart(inputRaw: unknown): Promise<WireEnvelope<{ upload_id: string }>> {
+  async uploadStart(inputRaw: unknown, ctx: ProductCallContext = {}): Promise<WireEnvelope<{ upload_id: string }>> {
     if (!isRecord(inputRaw)) {
       throw new RPCError(REQUEST_INVALID, 'uploadStart requires an object with a file name');
     }
@@ -1858,11 +1947,36 @@ export class ProductFacade {
       );
     }
     const uploadId = ulid('up_');
+    // Chunks land in a per-session temp directory under the engine cache, so
+    // an arbitrarily large upload never accumulates in memory; the directory
+    // is removed by every exit path below (finish / cancel / TTL / failure /
+    // connection teardown).
+    const uploadsRoot = join(this.scope.accessor.get(IBootstrapService).cacheDir, 'uploads');
+    await mkdir(uploadsRoot, { recursive: true });
+    const tempDir = await mkdtemp(join(uploadsRoot, `${uploadId}-`));
+    const tempPath = join(tempDir, 'body');
+    // Create the body immediately: a valid zero-byte Blob sends no chunks, so
+    // uploadFinish must still have an empty stream to persist.
+    try {
+      await writeFile(tempPath, new Uint8Array(), { flag: 'wx' });
+    } catch (error) {
+      await rm(tempDir, { recursive: true, force: true });
+      throw error;
+    }
     const timer = setTimeout(() => {
       this.uploads.delete(uploadId);
+      void rm(tempDir, { recursive: true, force: true });
     }, UPLOAD_SESSION_TTL_MS);
     timer.unref();
-    this.uploads.set(uploadId, { name, mimeType, chunks: [], received: 0, timer });
+    this.uploads.set(uploadId, {
+      name,
+      mimeType,
+      tempDir,
+      tempPath,
+      received: 0,
+      connId: ctx.connId,
+      timer,
+    });
     return ok({ upload_id: uploadId });
   }
 
@@ -1875,17 +1989,44 @@ export class ProductFacade {
     if (typeof chunkRaw !== 'string') {
       throw new RPCError(REQUEST_INVALID, 'uploadChunk requires a base64 chunk string');
     }
+    if (chunkRaw.length > this.maxUploadChunkBase64) {
+      throw new RPCError(
+        REQUEST_INVALID,
+        `upload chunk exceeds the ${this.maxUploadChunkBase64}-byte base64 frame limit`,
+      );
+    }
+    if (!BASE64_RE.test(chunkRaw) || chunkRaw.length % 4 !== 0) {
+      throw new RPCError(REQUEST_INVALID, 'upload chunk is not valid base64');
+    }
     const session = this.uploads.get(uploadId);
     if (session === undefined) {
       throw new RPCError(REQUEST_INVALID, `unknown upload session: ${uploadId}`);
     }
     const chunk = Buffer.from(chunkRaw, 'base64');
-    session.chunks.push(chunk);
+    if (session.received + chunk.byteLength > this.maxUploadBytes) {
+      this.uploads.delete(uploadId);
+      clearTimeout(session.timer);
+      await rm(session.tempDir, { recursive: true, force: true });
+      throw new RPCError(
+        FILE_TOO_LARGE,
+        `upload exceeds the ${this.maxUploadBytes}-byte file limit`,
+      );
+    }
+    try {
+      await writeFile(session.tempPath, chunk, { flag: 'a' });
+    } catch (error) {
+      // A failed write poisons the session — clean it up before reporting.
+      this.uploads.delete(uploadId);
+      clearTimeout(session.timer);
+      await rm(session.tempDir, { recursive: true, force: true });
+      throw error;
+    }
     session.received += chunk.byteLength;
     return ok({ received: session.received });
   }
 
-  // uploadFinish — assemble the chunks, save through IFileService → FileMeta.
+  // uploadFinish — stream the temp file through IFileService → FileMeta; the
+  // temp directory is removed whether the save succeeds or fails.
   async uploadFinish(uploadIdRaw: unknown): Promise<WireEnvelope<FileMeta>> {
     const uploadId = requireString(uploadIdRaw, 'uploadId');
     const session = this.uploads.get(uploadId);
@@ -1894,22 +2035,41 @@ export class ProductFacade {
     }
     clearTimeout(session.timer);
     this.uploads.delete(uploadId);
-    const body = Buffer.concat(session.chunks);
-    const meta = await this.scope.accessor
-      .get(IFileService)
-      .save(Readable.from([body]), session.name, { mimeType: session.mimeType });
-    return ok(meta);
+    try {
+      const meta = await this.scope.accessor
+        .get(IFileService)
+        .save(createReadStream(session.tempPath), session.name, { mimeType: session.mimeType });
+      return ok(meta);
+    } finally {
+      await rm(session.tempDir, { recursive: true, force: true });
+    }
   }
 
-  // uploadCancel — drop the session (idempotent) → { cancelled: true }.
+  // uploadCancel — drop the session (idempotent) and its temp dir → { cancelled: true }.
   async uploadCancel(uploadIdRaw: unknown): Promise<WireEnvelope<{ cancelled: true }>> {
     const uploadId = requireString(uploadIdRaw, 'uploadId');
     const session = this.uploads.get(uploadId);
     if (session !== undefined) {
       clearTimeout(session.timer);
       this.uploads.delete(uploadId);
+      await rm(session.tempDir, { recursive: true, force: true });
     }
     return ok({ cancelled: true as const });
+  }
+
+  /** Cancel every upload session opened by a disconnected IPC connection. */
+  async cancelUploadsForConnection(connId: string): Promise<void> {
+    const doomed: UploadSession[] = [];
+    for (const [uploadId, session] of this.uploads) {
+      if (session.connId === connId) {
+        doomed.push(session);
+        clearTimeout(session.timer);
+        this.uploads.delete(uploadId);
+      }
+    }
+    await Promise.all(
+      doomed.map((session) => rm(session.tempDir, { recursive: true, force: true })),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -2043,16 +2203,159 @@ export class ProductFacade {
     return handle.accessor.get(ISessionTerminalService);
   }
 
+  // ---------------------------------------------------------------------------
+  // Slice 7 — workspace skills, skill activation, and code extensions. Each
+  // mirrors the kap-server route named in its comment (routes/skills.ts,
+  // routes/extensions.ts); `exportSession` is a stream method and lives in
+  // streamDispatch below.
+  // ---------------------------------------------------------------------------
+
+  // listSkillsForWorkspace — GET /workspaces/{id}/skills → { skills }. The
+  // workspace id is resolved to its root (40410 when unknown), then the
+  // App-scoped IWorkspaceSkillCatalogService scans the same roots a session in
+  // that cwd would.
+  async listSkillsForWorkspace(
+    workspaceIdRaw: unknown,
+  ): Promise<WireEnvelope<{ skills: WireSkillDescriptor[] }>> {
+    const workspaceId = requireString(workspaceIdRaw, 'workspaceId');
+    const ws = await this.scope.accessor.get(IWorkspaceService).get(workspaceId);
+    if (ws === undefined) {
+      throw new RPCError(WORKSPACE_NOT_FOUND, `workspace ${workspaceId} does not exist`);
+    }
+    const skills = await this.scope.accessor.get(IWorkspaceSkillCatalogService).list(ws.root);
+    return ok({ skills: skills.map(toWireSkillDescriptor) });
+  }
+
+  // activateSkill — POST /sessions/{id}/skills/{name}:activate →
+  // { activated, skill_name }. The activation is awaited so the engine's skill
+  // errors surface as wire codes (40415 / 40912 / 40901, see mapSkillError);
+  // the prompt-metadata update then mirrors kap-server's applyPromptMetadataUpdate
+  // so a first `/<skill>` message titles the session.
+  async activateSkill(
+    sessionId: string,
+    skillNameRaw: unknown,
+    bodyRaw: unknown,
+  ): Promise<WireEnvelope<{ activated: true; skill_name: string }>> {
+    const name = requireString(skillNameRaw, 'skillName');
+    const body = isRecord(bodyRaw) ? bodyRaw : {};
+    const args = optionalString(body['args']);
+    try {
+      const handle = await this.resumeSession(sessionId);
+      const agent = await ensureMainAgent(handle);
+      await agent.accessor.get(IAgentSkillService).activate({ name, args });
+      await this.applySkillPromptMetadata(
+        handle.accessor.get(ISessionMetadata),
+        sessionId,
+        name,
+        args,
+      );
+      return ok({ activated: true as const, skill_name: name });
+    } catch (error) {
+      throw mapSkillError(error);
+    }
+  }
+
   /**
-   * Dispatch a `desktopProduct` stream method (Slice 5 binary downloads).
-   * Returns an async iterable of `{ chunk, seq }` base64 data frames ending in
-   * a `{ end: true, mime, size, filename }` sentinel the IPC host turns into
-   * the `stream_end` payload. Unknown methods throw synchronously.
+   * Mirror kap-server's applyPromptMetadataUpdate (agent/rpc/prompt-metadata.ts)
+   * for the skill path: `lastPrompt` = '/<name> <args>' (trimmed, ≤4000 chars),
+   * and the first 200 chars become the title only while the session is still
+   * untitled (no custom title). Publishes `session.meta.updated` like the edge.
+   */
+  private async applySkillPromptMetadata(
+    metadata: ISessionMetadata,
+    sessionId: string,
+    name: string,
+    args: string | undefined,
+  ): Promise<void> {
+    const argsText = args?.trim();
+    const text = `/${name}${argsText === undefined || argsText.length === 0 ? '' : ` ${argsText}`}`
+      .trim()
+      .slice(0, MAX_SKILL_PROMPT_METADATA_LENGTH);
+    const current = await metadata.read();
+    const patch: { lastPrompt: string; title?: string; isCustomTitle?: boolean } = {
+      lastPrompt: text,
+    };
+    if (!current.isCustomTitle && isUntitledTitle(current.title)) {
+      patch.title = text.slice(0, MAX_SKILL_PROMPT_TITLE_LENGTH);
+      patch.isCustomTitle = false;
+    }
+    await metadata.update(patch);
+    this.scope.accessor.get(IEventService).publish({
+      type: 'session.meta.updated',
+      payload: {
+        agentId: 'main',
+        sessionId,
+        title: patch.title,
+        patch: {
+          title: patch.title,
+          isCustomTitle: patch.isCustomTitle,
+          lastPrompt: text,
+        },
+      },
+    });
+  }
+
+  // listExtensionCommands — GET /sessions/{id}/extensions/commands → { commands }.
+  async listExtensionCommands(
+    sessionId: string,
+  ): Promise<WireEnvelope<{ commands: WireExtensionCommand[] }>> {
+    const handle = await this.resumeSession(sessionId);
+    const commands = await handle.accessor.get(ISessionExtensionService).listCommands();
+    return ok({
+      commands: commands.map((command) => ({
+        extension_id: command.extensionId,
+        name: command.name,
+        description: command.description,
+      })),
+    });
+  }
+
+  // reloadExtensions — POST /sessions/{id}/extensions/reload →
+  // { active: string[], errors: [{ path, error }] } (the engine's
+  // ExtensionReloadSummary, already the wire shape).
+  async reloadExtensions(
+    sessionId: string,
+  ): Promise<WireEnvelope<WireExtensionReloadResult>> {
+    const handle = await this.resumeSession(sessionId);
+    const summary = await handle.accessor.get(ISessionExtensionService).reload();
+    return ok({
+      active: [...summary.active],
+      errors: summary.errors.map((entry) => ({ path: entry.path, error: entry.error })),
+    });
+  }
+
+  // activateExtensionCommand — POST /sessions/{id}/extensions/commands/activate
+  // → { activated }. Runs on the main agent (the OnDemand agent-scope service
+  // is triggered by the accessor).
+  async activateExtensionCommand(
+    sessionId: string,
+    bodyRaw: unknown,
+  ): Promise<WireEnvelope<{ activated: boolean }>> {
+    const body = isRecord(bodyRaw) ? bodyRaw : {};
+    const extensionId = requireString(body['extension_id'], 'extension_id');
+    const name = requireString(body['name'], 'name');
+    const args = optionalString(body['args']);
+    const handle = await this.resumeSession(sessionId);
+    const agent = await ensureMainAgent(handle);
+    const activated = await agent.accessor
+      .get(IAgentExtensionService)
+      .activateCommand({ extensionId, name, args });
+    return ok({ activated });
+  }
+
+  /**
+   * Dispatch a `desktopProduct` stream method (Slice 5 binary downloads; Slice 7
+   * session export). Returns an async iterable of `{ chunk, seq }` base64 data
+   * frames ending in a `{ end: true, mime, size, filename }` sentinel the IPC
+   * host turns into the `stream_end` payload. Unknown methods throw
+   * synchronously. `signal` propagates the host's stream_cancel / disconnect
+   * abort into long-running operations (session export).
    */
   streamDispatch(
     method: string,
     args: readonly unknown[],
     ctx: ProductCallContext,
+    signal?: AbortSignal,
   ): AsyncIterable<ProductStreamItem> {
     switch (method) {
       case 'getFileBlob':
@@ -2062,6 +2365,8 @@ export class ProductFacade {
           this.argSessionId(args[0], ctx),
           requireString(args[1], 'path'),
         );
+      case 'exportSession':
+        return this.exportSessionStream(this.argSessionId(args[0], ctx), args[1], signal);
       default:
         throw new RPCError(REQUEST_INVALID, `unknown product stream method: ${method}`);
     }
@@ -2096,6 +2401,58 @@ export class ProductFacade {
       };
     } catch (error) {
       throw mapBlobStreamError(error);
+    }
+  }
+
+  /**
+   * exportSession — POST /sessions/{id}/export (stream). Mirrors kap-server
+   * routes/sessionExport.ts: the archive is written into a controlled mkdtemp
+   * dir under the export service's default `kimi-debug-<id8>-<date>.zip` name,
+   * streamed as 512 KiB base64 frames with a final `{ end: true, mime, size,
+   * filename }` sentinel, and the whole temp dir is removed in a finally — so
+   * stream_cancel / disconnect (which abort `signal` and return the generator
+   * early) never leak the archive.
+   */
+  private async *exportSessionStream(
+    sessionId: string,
+    bodyRaw: unknown,
+    signal?: AbortSignal,
+  ): AsyncGenerator<ProductStreamItem> {
+    const body = isRecord(bodyRaw) ? bodyRaw : {};
+    const webLog = optionalString(body['web_log']);
+    const tempDir = await mkdtemp(
+      join(tmpdir(), `kimi-session-export-${sanitizeExportId(sessionId)}-`),
+    );
+    try {
+      const result = await this.scope.accessor.get(ISessionExportService).export(
+        {
+          sessionId,
+          outputPath: join(tempDir, defaultExportZipName(sessionId, new Date())),
+          includeGlobalLog: true,
+          includeDesktopLog: false,
+          version: SERVER_VERSION,
+        },
+        {
+          webLog,
+          maxArchiveBytes: MAX_SESSION_EXPORT_BYTES,
+          signal,
+        },
+      );
+      const { size } = await stat(result.zipPath);
+      yield* base64ChunkStream(createReadStream(result.zipPath));
+      // The download name mirrors kap-server's content-disposition
+      // (`kimi-session-<safeId>.zip`), independent of the on-disk temp name.
+      yield {
+        end: true,
+        mime: 'application/zip',
+        size,
+        filename: `kimi-session-${sanitizeExportId(sessionId)}.zip`,
+      };
+    } catch (error) {
+      throw mapExportError(error);
+    } finally {
+      // Remove the zip and its parent temp dir (idempotent on abort).
+      await rm(tempDir, { recursive: true, force: true, maxRetries: 3 });
     }
   }
 
@@ -2378,6 +2735,75 @@ function mapBlobStreamError(error: unknown): RPCError {
     return new RPCError(FILE_NOT_FOUND, error.message);
   }
   return mapFsError(error);
+}
+
+/**
+ * Mirror kap-server's skills `sendMappedError` (routes/skills.ts):
+ * `skill.not_found` / `skill.name_empty` → 40415, `skill.type_unsupported` →
+ * 40912, `turn.agent_busy` → 40901, `session.not_found` → 40401. Anything else
+ * is rethrown (the host reports it as an internal error, matching the route).
+ */
+function mapSkillError(error: unknown): RPCError {
+  if (error instanceof RPCError) return error;
+  if (isError2(error)) {
+    switch (error.code) {
+      case 'skill.not_found':
+      case 'skill.name_empty':
+        return new RPCError(SKILL_NOT_FOUND, error.message);
+      case 'skill.type_unsupported':
+        return new RPCError(SKILL_NOT_ACTIVATABLE, error.message);
+      case 'turn.agent_busy':
+        return new RPCError(SESSION_BUSY, error.message);
+      case 'session.not_found':
+        return new RPCError(SESSION_NOT_FOUND, error.message);
+      default:
+        break;
+    }
+  }
+  throw error;
+}
+
+/**
+ * Mirror kap-server's session-export `sendMappedError` (routes/sessionExport.ts):
+ * `session.not_found` → 40401, `session.export_too_large` → 41301 (fixed
+ * message), and the remaining export domain codes (`session.export_missing_version`
+ * / `session.export_not_found` / `session.export_output_conflict`) → 50001.
+ * Anything else is rethrown (the host reports it as an internal error).
+ */
+function mapExportError(error: unknown): RPCError {
+  if (error instanceof RPCError) return error;
+  if (isError2(error)) {
+    switch (error.code) {
+      case 'session.not_found':
+        return new RPCError(SESSION_NOT_FOUND, error.message);
+      case 'session.export_too_large':
+        return new RPCError(FILE_TOO_LARGE, 'session export exceeds the 64 MiB web limit');
+      case 'session.export_missing_version':
+      case 'session.export_not_found':
+      case 'session.export_output_conflict':
+        return new RPCError(INTERNAL_ERROR, error.message);
+      default:
+        break;
+    }
+  }
+  throw error;
+}
+
+/** Temp-dir id fragment for export — mirrors kap-server's sanitizeSessionId. */
+function sanitizeExportId(sessionId: string): string {
+  return sessionId.replaceAll(/[^A-Za-z0-9_-]/g, '_').slice(0, 48) || 'session';
+}
+
+/** Mirrors the export service's default zip name (`kimi-debug-<id8>-<date>.zip`). */
+function defaultExportZipName(sessionId: string, now: Date): string {
+  const shortId = sessionId.slice(0, 8);
+  const timestamp = now.toISOString().replaceAll(/[-:]/g, '').replace(/T/, '-').slice(0, 15);
+  return `kimi-debug-${shortId}-${timestamp}.zip`;
+}
+
+/** Mirrors agent-core-v2's `isUntitled` (agent/rpc/prompt-metadata.ts). */
+function isUntitledTitle(title: string | undefined): boolean {
+  return title === undefined || title.trim().length === 0 || title === 'New Session';
 }
 
 /** Re-block a byte stream into fixed-size base64 frames with a running seq. */

@@ -21,12 +21,15 @@
 // `query`/`body`/`wire` are the snake_case kimi-web request wire (the same
 // shapes the daemon HTTP client builds); ids are passed positionally.
 //
-// Methods outside the first slice are not stubbed silently: the factory wraps
-// the instance in a Proxy that throws a clear "not yet supported" error for any
-// KimiWebApi member the class does not implement.
+// Every KimiWebApi member is implemented as a real method (the class declares
+// `implements KimiWebApi`, so the typechecker keeps the surface complete);
+// the factory therefore returns the instance directly — the first-slice Proxy
+// that stubbed missing members with a "not yet supported" throw is gone.
 
 import type {
   AppConfig,
+  AppExtensionCommand,
+  AppExtensionReloadResult,
   AppExpertTeam,
   AppExpertTeamStatus,
   AppGoal,
@@ -113,7 +116,101 @@ import type {
   WireWorkspace,
 } from '../daemon/wire';
 import { base64FromBytes } from './base64';
-import type { DesktopBridge } from './types';
+import type { DesktopBridge, ProductEventPayload } from './types';
+
+/**
+ * Every KimiWebApi member `WailsKimiWebApi` implements — the complete desktop
+ * product transport surface (all 81 members, kept in sync by the
+ * `implements KimiWebApi` clause; `deleteSession` / `setDefaultModel` are
+ * class-only leftovers and intentionally absent). The coverage test
+ * (`test/product-method-coverage.test.ts`) asserts this list against the
+ * sidecar `ProductFacade` dispatch tables so a client method can never target
+ * a product method the real shell does not register.
+ */
+export const DESKTOP_SUPPORTED_METHODS: readonly string[] = [
+  'getHealth',
+  'getMeta',
+  'listSessions',
+  'createSession',
+  'getSession',
+  'updateSession',
+  'getSessionStatus',
+  'getSessionGoal',
+  'getSessionWarnings',
+  'archiveSession',
+  'restoreSession',
+  'listMessages',
+  'getSessionSnapshot',
+  'exportSession',
+  'submitPrompt',
+  'steerPrompts',
+  'abortPrompt',
+  'abortSession',
+  'compactSession',
+  'undoSession',
+  'forkSession',
+  'createChildSession',
+  'listChildSessions',
+  'startBtw',
+  'respondApproval',
+  'respondQuestion',
+  'dismissQuestion',
+  'listSkills',
+  'listSkillsForWorkspace',
+  'activateSkill',
+  'listExtensionCommands',
+  'reloadExtensions',
+  'activateExtensionCommand',
+  'listExpertTeams',
+  'getExpertTeam',
+  'activateExpertTeam',
+  'deactivateExpertTeam',
+  'listTasks',
+  'getTask',
+  'cancelTask',
+  'listTerminals',
+  'createTerminal',
+  'getTerminal',
+  'closeTerminal',
+  'listDirectory',
+  'readFile',
+  'searchFiles',
+  'grepFiles',
+  'getGitStatus',
+  'getFileDiff',
+  'getFileDownloadUrl',
+  'getWorkspaceFileBlob',
+  'openFile',
+  'revealFile',
+  'openInApp',
+  'connectEvents',
+  'listWorkspaces',
+  'addWorkspace',
+  'updateWorkspace',
+  'deleteWorkspace',
+  'browseFs',
+  'getFsHome',
+  'listModels',
+  'listProviders',
+  'createProvider',
+  'getProvider',
+  'replaceProvider',
+  'deleteProvider',
+  'refreshProvider',
+  'refreshAllProviders',
+  'refreshOAuthProviderModels',
+  'uploadFile',
+  'getFileUrl',
+  'getFileBlob',
+  'supportsSyncFileUrls',
+  'getConfig',
+  'setConfig',
+  'getAuth',
+  'startOAuthLogin',
+  'pollOAuthLogin',
+  'cancelOAuthLogin',
+  'logout',
+];
 
 // ---------------------------------------------------------------------------
 // Wire response shapes for boot endpoints not in shared wire.ts — mirrored
@@ -214,6 +311,33 @@ interface WireTerminal {
   exit_code?: number | null;
 }
 
+// ---------------------------------------------------------------------------
+// Slice 7 — skills, code extensions. Mirrored field-for-field from the daemon
+// client's local DTOs (daemon/client.ts `WireSkillDescriptor` /
+// `WireExtensionCommand` / `WireExtensionReloadResult`), matching the sidecar's
+// kap-server-parity wire exactly.
+// ---------------------------------------------------------------------------
+
+interface WireSkillDescriptor {
+  name: string;
+  description: string;
+  path: string;
+  source: string;
+  type?: string;
+  disable_model_invocation?: boolean;
+}
+
+interface WireExtensionCommand {
+  extension_id: string;
+  name: string;
+  description: string;
+}
+
+interface WireExtensionReloadResult {
+  active: string[];
+  errors: Array<{ path: string; error: string }>;
+}
+
 function toAppTerminal(data: WireTerminal): AppTerminal {
   return {
     id: data.id,
@@ -260,8 +384,14 @@ function isCompactionReason(reason: string): boolean {
   return reason === 'auto_compact' || reason === 'manual_compact';
 }
 
-export class WailsKimiWebApi {
+export class WailsKimiWebApi implements KimiWebApi {
   private readonly bridge: DesktopBridge;
+  /**
+   * Explicit agentId → parent sessionId relationship recorded by `startBtw`,
+   * so side-channel (BTW) subscriptions never guess their session from UI
+   * state or string prefixes.
+   */
+  private readonly sideAgentSessionByAgentId = new Map<string, string>();
 
   constructor(bridge: DesktopBridge) {
     this.bridge = bridge;
@@ -653,6 +783,9 @@ export class WailsKimiWebApi {
   // returned agent_id on the normal prompt route.
   async startBtw(sessionId: string): Promise<{ agentId: string }> {
     const data = await this.call<{ agent_id: string }>('startBtw', [sessionId]);
+    // Record the agent → parent session relationship for markSideChannelAgent
+    // and reconnect (never derived from UI state or string prefixes).
+    this.sideAgentSessionByAgentId.set(data.agent_id, sessionId);
     return { agentId: data.agent_id };
   }
 
@@ -834,6 +967,86 @@ export class WailsKimiWebApi {
   }
 
   // -------------------------------------------------------------------------
+  // Slice 7 — skills, code extensions, session export. Each mirrors the daemon
+  // client's REST call (daemon/client.ts), routed through ProductCall; the
+  // export is a binary product stream (Slice 5 infrastructure) whose `end`
+  // frame's filename becomes the download name.
+  // -------------------------------------------------------------------------
+
+  // GET /workspaces/{id}/skills — the session-less workspace skill catalog.
+  async listSkillsForWorkspace(workspaceId: string): Promise<AppSkill[]> {
+    const data = await this.call<{ skills: WireSkillDescriptor[] }>('listSkillsForWorkspace', [
+      workspaceId,
+    ]);
+    return (data.skills ?? []).map((s) => ({
+      name: s.name,
+      description: s.description,
+      source: s.source,
+    }));
+  }
+
+  // POST /sessions/{id}/skills/{name}:activate — start a skill-activation turn.
+  async activateSkill(
+    sessionId: string,
+    skillName: string,
+    args?: string,
+  ): Promise<{ activated: true; skillName: string }> {
+    const data = await this.call<{ activated: true; skill_name: string }>('activateSkill', [
+      sessionId,
+      skillName,
+      args !== undefined ? { args } : {},
+    ]);
+    return { activated: data.activated, skillName: data.skill_name };
+  }
+
+  // GET /sessions/{id}/extensions/commands — callback-free command metadata.
+  async listExtensionCommands(sessionId: string): Promise<AppExtensionCommand[]> {
+    const data = await this.call<{ commands: WireExtensionCommand[] }>('listExtensionCommands', [
+      sessionId,
+    ]);
+    return data.commands.map((c) => ({
+      extensionId: c.extension_id,
+      name: c.name,
+      description: c.description,
+    }));
+  }
+
+  // POST /sessions/{id}/extensions/reload — reload the workspace's extensions.
+  async reloadExtensions(sessionId: string): Promise<AppExtensionReloadResult> {
+    const data = await this.call<WireExtensionReloadResult>('reloadExtensions', [sessionId]);
+    return { active: data.active, errors: data.errors };
+  }
+
+  // POST /sessions/{id}/extensions/commands/activate — run an extension command
+  // on the main agent.
+  async activateExtensionCommand(
+    sessionId: string,
+    extensionId: string,
+    name: string,
+    args?: string,
+  ): Promise<{ activated: boolean }> {
+    const data = await this.call<{ activated: boolean }>('activateExtensionCommand', [
+      sessionId,
+      { extension_id: extensionId, name, args },
+    ]);
+    return { activated: data.activated };
+  }
+
+  // POST /sessions/{id}/export — stream the session archive zip (binary
+  // product stream); the `end` frame's filename is the server-side download
+  // name, falling back to `${sessionId}.zip` when absent.
+  async exportSession(
+    sessionId: string,
+    webLog?: string,
+  ): Promise<{ blob: Blob; fileName: string }> {
+    const { blob, meta } = await this.bridge.streamToBlobWithMeta('exportSession', [
+      sessionId,
+      webLog !== undefined ? { web_log: webLog } : {},
+    ]);
+    return { blob, fileName: meta?.filename ?? `${sessionId}.zip` };
+  }
+
+  // -------------------------------------------------------------------------
   // Slice 4 — structured session filesystem (P1). Each mirrors the daemon
   // client's `fs:<action>` REST call, routed through ProductCall to the
   // sidecar facade's ISessionFsService handlers. Request bodies are snake_case
@@ -976,21 +1189,41 @@ export class WailsKimiWebApi {
   }): Promise<{ id: string; name: string; mediaType: string; size: number }> {
     const name = input.name ?? (input.file instanceof File ? input.file.name : 'upload');
     const mediaType = input.file.type !== '' ? input.file.type : 'application/octet-stream';
-    const start = await this.call<{ upload_id: string }>('uploadStart', [
-      { name, media_type: mediaType },
-    ]);
-    const uploadId = start.upload_id;
-    for (let offset = 0; offset < input.file.size; offset += UPLOAD_CHUNK_BYTES) {
-      const slice = input.file.slice(offset, offset + UPLOAD_CHUNK_BYTES);
-      const chunk = base64FromBytes(new Uint8Array(await slice.arrayBuffer()));
-      await this.call<{ received: number }>('uploadChunk', [uploadId, chunk]);
+    let uploadId: string | undefined;
+    try {
+      const start = await this.call<{ upload_id: string }>('uploadStart', [
+        { name, media_type: mediaType },
+      ]);
+      uploadId = start.upload_id;
+      for (let offset = 0; offset < input.file.size; offset += UPLOAD_CHUNK_BYTES) {
+        const slice = input.file.slice(offset, offset + UPLOAD_CHUNK_BYTES);
+        const chunk = base64FromBytes(new Uint8Array(await slice.arrayBuffer()));
+        await this.call<{ received: number }>('uploadChunk', [uploadId, chunk]);
+      }
+      const meta = await this.call<WireFileMeta>('uploadFinish', [uploadId]);
+      return { id: meta.id, name: meta.name, mediaType: meta.media_type, size: meta.size };
+    } catch (error) {
+      // Best-effort cancel so the sidecar frees the partial upload (and its
+      // temp file) immediately instead of waiting out the TTL.
+      if (uploadId !== undefined) {
+        await this.call<{ cancelled: true }>('uploadCancel', [uploadId]).catch(() => undefined);
+      }
+      throw error;
     }
-    const meta = await this.call<WireFileMeta>('uploadFinish', [uploadId]);
-    return { id: meta.id, name: meta.name, mediaType: meta.media_type, size: meta.size };
   }
 
   async getFileBlob(fileId: string): Promise<Blob> {
     return this.bridge.streamToBlob('getFileBlob', [fileId]);
+  }
+
+  /**
+   * The desktop IPC transport cannot produce usable synchronous file URLs —
+   * callers must route through getFileBlob / getWorkspaceFileBlob and build
+   * their own `URL.createObjectURL`. The sync getters below still throw so a
+   * non-migrated call site fails loudly instead of rendering a dead URL.
+   */
+  supportsSyncFileUrls(): boolean {
+    return false;
   }
 
   getFileUrl(_fileId: string): string {
@@ -1190,6 +1423,15 @@ export class WailsKimiWebApi {
     const cursors = new Map<string, AppSessionCursor>();
     // Sessions with an active bridge subscription — the set reconnect() resumes.
     const subscribed = new Set<string>();
+    // Side-channel (BTW) agents: agentId → parent session + own cursor space.
+    // `active` flips when the Side Chat is open (reconnect resumes active ones);
+    // the entry survives a close so a quick re-open resumes from the journal.
+    interface SideAgentState {
+      sessionId: string;
+      cursor?: AppSessionCursor;
+      active: boolean;
+    }
+    const sideAgents = new Map<string, SideAgentState>();
     let connected = true;
 
     const advanceCursor = (sessionId: string, seq: number): void => {
@@ -1200,7 +1442,106 @@ export class WailsKimiWebApi {
       }
     };
 
+    const advanceSideCursor = (agentId: string, seq: number): void => {
+      const side = sideAgents.get(agentId);
+      if (side === undefined || !Number.isFinite(seq) || seq <= 0) return;
+      if (side.cursor === undefined || seq > side.cursor.seq) {
+        side.cursor = { seq, epoch: side.cursor?.epoch };
+      }
+    };
+
+    const streamCursor = (cursor?: AppSessionCursor): { epoch?: string; afterSeq?: number } | undefined =>
+      cursor === undefined ? undefined : { epoch: cursor.epoch, afterSeq: cursor.seq };
+
+    /**
+     * Route one frame that arrived on a side-channel agent's subscription. The
+     * side chat consumes the same AppEvents the daemon projector synthesizes for
+     * side agents (`agentDelta` / `agentTurnEnded`, plus `taskProgress` /
+     * `taskCompleted` keyed by the agent id — see daemon/agentEventProjector.ts
+     * and useKimiWebClient.processEvent). Nothing here ever enters the main
+     * transcript path; session-scoped frames (work/usage) still flow through
+     * `toAppEvent` so the parent session's busy state matches the browser.
+     */
+    const routeSideEvent = (payload: ProductEventPayload, side: SideAgentState): void => {
+      const wireEvent = payload.event;
+      const seq = wireEventSeq(wireEvent);
+      advanceSideCursor(payload.agentId, seq);
+      const rawType = (wireEvent as { type?: unknown }).type;
+      if (rawType === 'resync_required') {
+        // The journal could not cover the side agent's cursor. Adopt the
+        // watermark and signal a session resync (the app re-reads the session
+        // snapshot; side chat keeps streaming from the watermark).
+        const control = wireEvent as unknown as Partial<DesktopResyncFrame>;
+        if (control.payload !== undefined) {
+          const { current_seq: currentSeq, epoch } = control.payload;
+          side.cursor = { seq: currentSeq, epoch };
+          handlers.onResync(side.sessionId, currentSeq, epoch);
+        }
+        return;
+      }
+      if (rawType === 'event.assistant.delta') {
+        const delta = (wireEvent as { payload?: { delta?: { text?: string; thinking?: string } } }).payload
+          ?.delta;
+        if (delta?.text !== undefined && delta.text.length > 0) {
+          handlers.onEvent(
+            { type: 'agentDelta', sessionId: side.sessionId, agentId: payload.agentId, delta: { text: delta.text } },
+            { sessionId: side.sessionId, seq },
+          );
+        }
+        if (delta?.thinking !== undefined && delta.thinking.length > 0) {
+          handlers.onEvent(
+            {
+              type: 'agentDelta',
+              sessionId: side.sessionId,
+              agentId: payload.agentId,
+              delta: { thinking: delta.thinking },
+            },
+            { sessionId: side.sessionId, seq },
+          );
+        }
+        return;
+      }
+      if (rawType === 'event.turn.ended') {
+        const reason = (wireEvent as { payload?: { reason?: string } }).payload?.reason;
+        handlers.onEvent(
+          { type: 'agentTurnEnded', sessionId: side.sessionId, agentId: payload.agentId, reason },
+          { sessionId: side.sessionId, seq },
+        );
+        return;
+      }
+      if (rawType === 'event.task.progress' || rawType === 'event.task.completed') {
+        // Only the BTW agent's own task (taskId === agentId) feeds the side
+        // chat text; anything else stays out of the main transcript too.
+        const taskId = (wireEvent as { payload?: { task_id?: unknown } }).payload?.task_id;
+        if (taskId !== payload.agentId) return;
+        handlers.onEvent(toAppEvent(wireEvent), { sessionId: side.sessionId, seq });
+        return;
+      }
+      if (rawType === 'event.session.work_changed' || rawType === 'event.session.usage_updated') {
+        // Session-scoped aggregates: keep the parent session's busy/usage state
+        // in sync, exactly like the browser's session-level frames.
+        handlers.onEvent(toAppEvent(wireEvent), { sessionId: side.sessionId, seq });
+        return;
+      }
+      // Everything else (messages, meta, notices) is deliberately not merged
+      // into the main store — side chat state is built from the events above.
+    };
+
     const off = this.bridge.onProductEvent((payload) => {
+      // Side-channel agent frames are routed before the main-transcript path so
+      // they can never pollute `messagesBySession` / the main cursor. Only
+      // ACTIVE side agents route (a released one drops stragglers).
+      if (payload.agentId !== MAIN_AGENT_ID) {
+        const side = sideAgents.get(payload.agentId);
+        if (side !== undefined && side.active) {
+          routeSideEvent(payload, side);
+        }
+        // Unknown non-main agents (background subagents) and released side
+        // agents are dropped; the main projector already folds subagent
+        // progress into task events.
+        return;
+      }
+
       // v2 sync control frame: the stream could not incrementally cover our
       // cursor. Adopt its watermark and ask the app layer to re-read the
       // snapshot — never silently continue past the hole. Inspected loosely
@@ -1244,24 +1585,52 @@ export class WailsKimiWebApi {
 
     handlers.onConnectionChange(true);
 
+    const markConnected = (): void => {
+      if (!connected) {
+        connected = true;
+        handlers.onConnectionChange(true);
+      }
+    };
+    const noteSubscribeFailure = (error: unknown): void => {
+      connected = false;
+      handlers.onConnectionChange(false);
+      handlers.onError(0, `desktop transport: subscribe failed: ${String(error)}`, false);
+    };
+
     const doSubscribe = (sessionId: string): void => {
-      const cursor = cursors.get(sessionId);
-      const streamCursor =
-        cursor === undefined ? undefined : { epoch: cursor.epoch, afterSeq: cursor.seq };
-      void this.bridge.ProductSubscribe(sessionId, MAIN_AGENT_ID, streamCursor).then(
-        () => {
-          if (!connected) {
-            connected = true;
-            handlers.onConnectionChange(true);
-          }
-        },
-        (error: unknown) => {
+      void this.bridge
+        .ProductSubscribe(sessionId, MAIN_AGENT_ID, streamCursor(cursors.get(sessionId)))
+        .then(markConnected, noteSubscribeFailure);
+    };
+
+    const doSubscribeSide = (agentId: string, side: SideAgentState): void => {
+      void this.bridge
+        .ProductSubscribe(side.sessionId, agentId, streamCursor(side.cursor))
+        .then(markConnected, noteSubscribeFailure);
+    };
+
+    /** Re-establish every active subscription (main sessions + side agents) at
+     *  its last cursor after the IPC connection recovered. */
+    const resubscribeAll = (): void => {
+      for (const sessionId of subscribed) doSubscribe(sessionId);
+      for (const [agentId, side] of sideAgents) {
+        if (side.active) doSubscribeSide(agentId, side);
+      }
+    };
+
+    // Real IPC state from the Go shell: a broken socket flips the client to
+    // disconnected immediately (health()/onConnectionChange reflect it), and a
+    // successful re-dial auto-resubscribes every active stream from its cursor.
+    const connectionOff = this.bridge.onConnectionState((state) => {
+      if (state === 'disconnected') {
+        if (connected) {
           connected = false;
           handlers.onConnectionChange(false);
-          handlers.onError(0, `desktop transport: subscribe failed: ${String(error)}`, false);
-        },
-      );
-    };
+        }
+        return;
+      }
+      resubscribeAll();
+    });
 
     return {
       subscribe: (sessionId: string, cursor?: AppSessionCursor): void => {
@@ -1315,59 +1684,86 @@ export class WailsKimiWebApi {
           handlers.onError(0, `desktop transport: terminal close failed: ${String(error)}`, false);
         });
       },
-      markSideChannelAgent: (_agentId: string): void => {
-        // No-op on this transport: side-channel (BTW) agent projection lives in
-        // the sidecar, which currently projects only the main agent. Multi-agent
-        // projection is a follow-up; there is no client-side projector to mark.
+      markSideChannelAgent: (agentId: string, sessionId?: string): void => {
+        // Establish the agent → parent-session relationship (explicit arg, or
+        // the mapping startBtw recorded) and subscribe its product stream so
+        // BTW deltas/turn/task events reach the Side Chat in real time.
+        const parent = sessionId ?? this.sideAgentSessionByAgentId.get(agentId);
+        if (parent === undefined) {
+          handlers.onError(0, `desktop transport: markSideChannelAgent: unknown session for ${agentId}`, false);
+          return;
+        }
+        const existing = sideAgents.get(agentId);
+        if (existing !== undefined && existing.active) return;
+        const side: SideAgentState = { sessionId: parent, cursor: existing?.cursor, active: true };
+        sideAgents.set(agentId, side);
+        doSubscribeSide(agentId, side);
       },
-      health: (): { connected: boolean; open: boolean; stale: boolean } => ({
-        // The desktop IPC is owned by the Go shell and shares the webview
-        // lifetime, so there is no background-tab half-open state to detect;
-        // `connected` only drops when a subscribe call itself failed.
-        connected,
-        open: connected,
-        stale: false,
-      }),
+      unsubscribeSideAgent: (agentId: string): void => {
+        const side = sideAgents.get(agentId);
+        if (side === undefined) return;
+        side.active = false;
+        // Keep the cursor so a quick re-open resumes from the journal.
+        void this.bridge.ProductUnsubscribe(side.sessionId, agentId).catch((error: unknown) => {
+          handlers.onError(0, `desktop transport: side unsubscribe failed: ${String(error)}`, false);
+        });
+      },
+      health: (): { connected: boolean; open: boolean; stale: boolean } => {
+        // `stale` reflects the real IPC state: the Go shell reports a broken
+        // socket (and this client flips to disconnected) until a reconnect
+        // resubscribes every active session/agent successfully.
+        return { connected, open: connected, stale: !connected };
+      },
       reconnect: (): void => {
-        // Re-subscribe every active session at its last cursor; the sidecar
+        // Rebuild the IPC connection first (the Go shell re-dials the sidecar,
+        // restarting it when the process died), then re-subscribe every active
+        // session and side-channel agent at its last cursor; the sidecar
         // journal catches each up (or sends resync_required).
-        for (const sessionId of subscribed) doSubscribe(sessionId);
+        void this.bridge.EnsureConnected().then(
+          (state) => {
+            if (state === 'connected') {
+              resubscribeAll();
+            } else {
+              connected = false;
+              handlers.onConnectionChange(false);
+              handlers.onError(0, 'desktop transport: IPC recovery failed', false);
+            }
+          },
+          (error: unknown) => {
+            connected = false;
+            handlers.onConnectionChange(false);
+            handlers.onError(0, `desktop transport: IPC recovery failed: ${String(error)}`, false);
+          },
+        );
       },
       close: (): void => {
         for (const sessionId of subscribed) {
           void this.bridge.ProductUnsubscribe(sessionId, MAIN_AGENT_ID).catch(() => undefined);
         }
         subscribed.clear();
+        for (const [agentId, side] of sideAgents) {
+          if (side.active) {
+            void this.bridge.ProductUnsubscribe(side.sessionId, agentId).catch(() => undefined);
+          }
+        }
+        sideAgents.clear();
         off();
         terminalOff();
+        connectionOff();
       },
     };
   }
 }
 
 /**
- * Wrap a WailsKimiWebApi in the full KimiWebApi surface. The first-slice
- * methods + connectEvents are real; every other KimiWebApi member resolves to a
- * function that throws a clear "not yet supported on desktop transport" error
- * (never a silent stub). The Proxy keeps this forward-compatible: newly added
- * KimiWebApi methods throw until a later slice implements them.
+ * Create the desktop product transport. Every KimiWebApi member is a real
+ * method on `WailsKimiWebApi` (`implements KimiWebApi` — the typechecker keeps
+ * the surface complete), so there is no Proxy fallback anymore: the factory
+ * simply returns the instance. Kept as a function for backward compatibility
+ * with callers that route through the factory.
  */
 export function createWailsKimiWebApi(bridge: DesktopBridge): KimiWebApi {
-  const impl = new WailsKimiWebApi(bridge);
-  return new Proxy(impl, {
-    get(target, prop, receiver) {
-      const value = Reflect.get(target, prop, receiver) as unknown;
-      if (typeof value === 'function') return (value as (...a: unknown[]) => unknown).bind(target);
-      if (value !== undefined || typeof prop === 'symbol') return value;
-      // Never appear thenable (e.g. if the singleton is accidentally awaited).
-      if (prop === 'then') return undefined;
-      return (): never => {
-        throw new Error(
-          `desktop transport: "${String(prop)}" is not yet supported on the desktop product transport (first slice only)`,
-        );
-      };
-    },
-  }) as unknown as KimiWebApi;
+  return new WailsKimiWebApi(bridge);
 }
 
 /** Mirrors the daemon client's `providerRequestBody` (client.ts). */

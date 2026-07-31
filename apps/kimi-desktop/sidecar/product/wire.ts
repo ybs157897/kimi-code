@@ -4,8 +4,9 @@
  * import from the web app (separate TypeScript project, and the two sides meet
  * only over the wire), so the shapes the product layer RETURNS and EMITS are
  * re-declared here field-for-field. Keep this in lockstep with `wire.ts`; do
- * not invent alternative field names. Only the first-vertical-slice subset is
- * mirrored (chat-loop methods + streaming events).
+ * not invent alternative field names. The chat-loop methods, streaming
+ * events, and the full event projection catalog (tasks/subagents, session
+ * meta, goal, prompt lifecycle, compaction) are mirrored.
  *
  * ALL fields stay snake_case exactly as they appear on the kimi-web wire.
  */
@@ -509,6 +510,19 @@ export interface WireSkillDescriptor {
   disable_model_invocation?: boolean;
 }
 
+// GET /sessions/{id}/extensions/commands
+export interface WireExtensionCommand {
+  extension_id: string;
+  name: string;
+  description: string;
+}
+
+// POST /sessions/{id}/extensions/reload
+export interface WireExtensionReloadResult {
+  active: string[];
+  errors: Array<{ path: string; error: string }>;
+}
+
 // GET /sessions/{id}/tasks
 export type WireTaskKind = 'subagent' | 'bash' | 'tool';
 
@@ -637,6 +651,51 @@ type WireEventSessionUsageUpdated = WireEventBase<
   }
 >;
 
+type WireEventSessionMetaUpdated = WireEventBase<
+  'event.session.meta.updated',
+  {
+    title?: string;
+    patch?: { title?: string; lastPrompt?: string };
+  }
+>;
+
+// Goal
+type WireEventGoalUpdated = WireEventBase<
+  'event.goal.updated',
+  { snapshot: WireGoalSnapshot | null }
+>;
+
+// Compaction
+type WireEventCompactionStarted = WireEventBase<
+  'event.compaction.started',
+  { trigger: 'manual' | 'auto'; instruction?: string }
+>;
+
+type WireEventCompactionCompleted = WireEventBase<
+  'event.compaction.completed',
+  { tokens_before?: number; tokens_after?: number; summary?: string }
+>;
+
+type WireEventCompactionCancelled = WireEventBase<
+  'event.compaction.cancelled',
+  Record<string, never>
+>;
+
+// Prompt lifecycle
+type WireEventPromptCompleted = WireEventBase<
+  'event.prompt.completed',
+  {
+    prompt_id: string;
+    finished_at: string;
+    reason?: 'completed' | 'failed' | 'blocked';
+  }
+>;
+
+type WireEventPromptAborted = WireEventBase<
+  'event.prompt.aborted',
+  { prompt_id: string; aborted_at: string }
+>;
+
 type WireEventMessageCreated = WireEventBase<
   'event.message.created',
   { message: WireMessage }
@@ -704,6 +763,42 @@ type WireEventQuestionAnswered = WireEventBase<
   }
 >;
 
+// Tasks (subagents / detached bash / tool tasks)
+type WireEventTaskCreated = WireEventBase<'event.task.created', { task: WireTask }>;
+
+type WireEventTaskProgress = WireEventBase<
+  'event.task.progress',
+  {
+    task_id: string;
+    output_chunk: string;
+    stream: 'stdout' | 'stderr';
+  }
+>;
+
+type WireEventTaskCompleted = WireEventBase<
+  'event.task.completed',
+  {
+    task_id: string;
+    status: WireTaskStatus;
+    output_preview?: string;
+    output_bytes?: number;
+  }
+>;
+
+/**
+ * A turn ended (side-channel agents only — the main-agent path stays on the
+ * existing message/usage/work events). The desktop client consumes this to
+ * synthesize the daemon-equivalent `agentTurnEnded` AppEvent for Side Chat;
+ * the projector emits it solely for `agentId !== 'main'` subscriptions so the
+ * main transcript never sees a type `toAppEvent` does not know.
+ */
+type WireEventTurnEnded = WireEventBase<
+  'event.turn.ended',
+  {
+    reason?: 'completed' | 'cancelled' | 'failed';
+  }
+>;
+
 /**
  * Catch-all for notices/warnings/errors the projector surfaces without a
  * dedicated product event type. Mirrors wire.ts's `WireEventUnknown` so
@@ -723,6 +818,16 @@ type WireEventNotice = WireEventBase<
 export type WireEvent =
   | WireEventSessionWorkChanged
   | WireEventSessionUsageUpdated
+  | WireEventSessionMetaUpdated
+  // Goal
+  | WireEventGoalUpdated
+  // Compaction
+  | WireEventCompactionStarted
+  | WireEventCompactionCompleted
+  | WireEventCompactionCancelled
+  // Prompt lifecycle
+  | WireEventPromptCompleted
+  | WireEventPromptAborted
   | WireEventMessageCreated
   | WireEventMessageUpdated
   | WireEventAssistantDelta
@@ -731,6 +836,11 @@ export type WireEvent =
   | WireEventApprovalResolved
   | WireEventQuestionRequested
   | WireEventQuestionAnswered
+  // Tasks
+  | WireEventTaskCreated
+  | WireEventTaskProgress
+  | WireEventTaskCompleted
+  | WireEventTurnEnded
   | WireEventNotice;
 
 /**

@@ -53,6 +53,14 @@ async function main() {
         disableExperimentalSEAWarning: true,
         useCodeCache: false,
         useSnapshot: false,
+        // Chunks that must exist as REAL files at runtime inside the
+        // single-file SEA: the extension host API (jiti's alias target) and
+        // jiti's self-contained babel transform. The sidecar materializes both
+        // next to the home dir at startup.
+        assets: {
+          extensionHostApi: join(distDir, 'extension-host.cjs'),
+          jitiBabel: join(distDir, 'jiti-babel.cjs'),
+        },
       },
       null,
       2,

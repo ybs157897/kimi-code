@@ -10,7 +10,7 @@ import type { KimiClientState } from '../daemon/eventReducer';
 import { toAppEvent } from '../daemon/mappers';
 import type { WireEvent } from '../daemon/wire';
 import type { AppEvent, AppSession, AppSessionSnapshot, KimiEventHandlers, KimiEventMeta } from '../types';
-import { createWailsKimiWebApi } from './client';
+import { WailsKimiWebApi, createWailsKimiWebApi } from './client';
 import { isDesktopShellAvailable, isDesktopTransportEnabled } from './index';
 import { MockDesktopBridge } from './mock';
 import type { DesktopBridge, ProductEventPayload, ProductStreamCursor } from './types';
@@ -58,8 +58,14 @@ interface RecordingBridge {
   bridge: DesktopBridge;
   subscribes: Array<{ sessionId: string; agentId: string; cursor?: ProductStreamCursor }>;
   unsubscribes: Array<{ sessionId: string; agentId: string }>;
-  emit: (event: unknown) => void;
+  terminalAttaches: Array<{ sessionId: string; terminalId: string; sinceSeq?: number }>;
+  calls: Array<{ method: string; args: unknown[] }>;
+  emit: (event: unknown, agentId?: string) => void;
+  emitConnection: (state: 'connected' | 'disconnected') => void;
+  ensureConnectedCalls: () => number;
   setFailSubscribe: (fail: boolean) => void;
+  /** Make ProductCall reject for a specific method (e.g. uploadChunk). */
+  failCallMethod: (method: string | null) => void;
 }
 
 /**
@@ -70,9 +76,15 @@ interface RecordingBridge {
  */
 function makeRecordingBridge(opts?: { failSubscribe?: boolean }): RecordingBridge {
   let listener: ((payload: ProductEventPayload) => void) | undefined;
+  let connectionListener: ((state: 'connected' | 'disconnected') => void) | undefined;
   const subscribes: RecordingBridge['subscribes'] = [];
   const unsubscribes: RecordingBridge['unsubscribes'] = [];
+  const terminalAttaches: RecordingBridge['terminalAttaches'] = [];
+  const calls: RecordingBridge['calls'] = [];
   let failSubscribe = opts?.failSubscribe ?? false;
+  let failedCallMethod: string | null = null;
+  let ensureConnectedCount = 0;
+  let ensureConnectedResult: 'connected' | 'disconnected' = 'connected';
   const bridge = {
     kind: 'mock' as const,
     Hello: async () => ({}),
@@ -80,8 +92,32 @@ function makeRecordingBridge(opts?: { failSubscribe?: boolean }): RecordingBridg
     CreateSession: async () => ({ sessionId: 's', agentId: 'main' }),
     Submit: async () => undefined,
     Cancel: async () => undefined,
-    ProductCall: async () =>
-      JSON.stringify({ code: 0, msg: 'success', data: {}, request_id: 'r' }),
+    ProductCall: async (method: string, argsJSON: string): Promise<string> => {
+      const args = JSON.parse(argsJSON) as unknown[];
+      calls.push({ method, args });
+      if (failedCallMethod === method) throw new Error(`call boom: ${method}`);
+      if (method === 'startBtw') {
+        return JSON.stringify({ code: 0, msg: 'success', data: { agent_id: 'btw-1' }, request_id: 'r' });
+      }
+      if (method === 'uploadStart') {
+        return JSON.stringify({ code: 0, msg: 'success', data: { upload_id: 'up_placeholder' }, request_id: 'r' });
+      }
+      if (method === 'uploadFinish') {
+        return JSON.stringify({
+          code: 0,
+          msg: 'success',
+          data: {
+            id: 'f_empty',
+            name: 'empty.txt',
+            media_type: 'application/octet-stream',
+            size: 0,
+            created_at: '2026-01-01T00:00:00.000Z',
+          },
+          request_id: 'r',
+        });
+      }
+      return JSON.stringify({ code: 0, msg: 'success', data: {}, request_id: 'r' });
+    },
     ProductSubscribe: async (
       sessionId: string,
       agentId: string,
@@ -93,6 +129,18 @@ function makeRecordingBridge(opts?: { failSubscribe?: boolean }): RecordingBridg
     ProductUnsubscribe: async (sessionId: string, agentId: string): Promise<void> => {
       unsubscribes.push({ sessionId, agentId });
     },
+    ProductTerminalAttach: async (
+      sessionId: string,
+      terminalId: string,
+      sinceSeq?: number,
+    ): Promise<void> => {
+      terminalAttaches.push({ sessionId, terminalId, sinceSeq });
+    },
+    ProductTerminalDetach: async () => undefined,
+    EnsureConnected: async (): Promise<'connected' | 'disconnected'> => {
+      ensureConnectedCount += 1;
+      return ensureConnectedResult;
+    },
     onEvent: () => () => {},
     onProductEvent: (callback: (payload: ProductEventPayload) => void) => {
       listener = callback;
@@ -101,15 +149,28 @@ function makeRecordingBridge(opts?: { failSubscribe?: boolean }): RecordingBridg
       };
     },
     onTerminalEvent: () => () => {},
+    onConnectionState: (callback: (state: 'connected' | 'disconnected') => void) => {
+      connectionListener = callback;
+      return () => {
+        connectionListener = undefined;
+      };
+    },
   } as unknown as DesktopBridge;
   return {
     bridge,
     subscribes,
     unsubscribes,
-    emit: (event: unknown) =>
-      listener?.({ sessionId: 's-1', agentId: 'main', event } as ProductEventPayload),
+    terminalAttaches,
+    calls,
+    emit: (event: unknown, agentId = 'main') =>
+      listener?.({ sessionId: 's-1', agentId, event } as ProductEventPayload),
+    emitConnection: (state: 'connected' | 'disconnected') => connectionListener?.(state),
+    ensureConnectedCalls: () => ensureConnectedCount,
     setFailSubscribe: (fail: boolean) => {
       failSubscribe = fail;
+    },
+    failCallMethod: (method: string | null) => {
+      failedCallMethod = method;
     },
   };
 }
@@ -281,10 +342,110 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
     expect((state.questionsBySession[sessionId] ?? []).map((q) => q.questionId)).toContain('q-1');
   });
 
-  it('methods outside the implemented slices throw a clear error', async () => {
+  // ---------------------------------------------------------------------------
+  // Slice 7 — skills, code extensions, session export, and the Proxy removal.
+  // Every KimiWebApi member is now a real method on WailsKimiWebApi, so the
+  // factory returns the instance directly and nothing throws "not yet supported".
+  // ---------------------------------------------------------------------------
+
+  it('listSkills / listSkillsForWorkspace map the skills wire (source kept)', async () => {
     const bridge = new MockDesktopBridge();
     const api = createWailsKimiWebApi(bridge);
-    expect(() => api.listSkillsForWorkspace('w-1')).toThrow(/not yet supported/);
+    const session = await createSession(api);
+
+    const sessionPending = api.listSkills(session.id);
+    const workspacePending = api.listSkillsForWorkspace('mock-workspace');
+    await vi.advanceTimersByTimeAsync(100);
+
+    await expect(sessionPending).resolves.toEqual([
+      { name: 'mock-skill', description: 'mock', source: 'project' },
+    ]);
+    await expect(workspacePending).resolves.toEqual([
+      { name: 'mock-skill', description: 'mock', source: 'project' },
+    ]);
+  });
+
+  it('activateSkill resolves the activation and echoes the skill name', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const session = await createSession(api);
+
+    const pending = api.activateSkill(session.id, 'mock-skill', '--flag');
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(pending).resolves.toEqual({ activated: true, skillName: 'mock-skill' });
+  });
+
+  it('listExtensionCommands maps the extension command wire', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const session = await createSession(api);
+
+    const pending = api.listExtensionCommands(session.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(pending).resolves.toEqual([
+      { extensionId: 'ext-1', name: 'cmd', description: 'mock' },
+    ]);
+  });
+
+  it('reloadExtensions passes through active paths and errors', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const session = await createSession(api);
+
+    const pending = api.reloadExtensions(session.id);
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(pending).resolves.toEqual({ active: ['/mock/ext.js'], errors: [] });
+  });
+
+  it('activateExtensionCommand resolves the activated flag', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const session = await createSession(api);
+
+    const pending = api.activateExtensionCommand(session.id, 'ext-1', 'cmd', '--flag');
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(pending).resolves.toEqual({ activated: true });
+  });
+
+  it('exportSession streams the zip and takes the filename from the end meta', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const session = await createSession(api);
+
+    const pending = api.exportSession(session.id, 'log line 1\nlog line 2');
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await pending;
+
+    expect(result.fileName).toBe('kimi-session-mock.zip');
+    expect(result.blob.type).toBe('application/zip');
+    expect(await result.blob.text()).toBe('mock-zip-bytes');
+  });
+
+  it('exportSession without webLog still streams and names the archive', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+    const session = await createSession(api);
+
+    const pending = api.exportSession(session.id);
+    await vi.advanceTimersByTimeAsync(100);
+    const result = await pending;
+
+    expect(result.fileName).toBe('kimi-session-mock.zip');
+    expect(await result.blob.text()).toBe('mock-zip-bytes');
+  });
+
+  it('the factory returns the real class — no Proxy fallback remains', async () => {
+    const bridge = new MockDesktopBridge();
+    const api = createWailsKimiWebApi(bridge);
+
+    // A Proxy would wrap the instance; the factory now hands the class back.
+    expect(api).toBeInstanceOf(WailsKimiWebApi);
+    // The Proxy turned unknown members into throwing functions; a real class
+    // leaves them `undefined` (and every KimiWebApi member works directly).
+    expect((api as unknown as Record<string, unknown>)['noSuchMethod']).toBeUndefined();
+    const pending = api.listSkillsForWorkspace('mock-workspace');
+    await vi.advanceTimersByTimeAsync(100);
+    await expect(pending).resolves.toBeTruthy();
   });
 
   // ---------------------------------------------------------------------------
@@ -389,6 +550,21 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
       mediaType: 'text/plain',
       size: file.size,
     });
+  });
+
+  it('uploadFile persists a zero-byte Blob without sending a chunk', async () => {
+    const rec = makeRecordingBridge();
+    const api = createWailsKimiWebApi(rec.bridge);
+
+    const result = await api.uploadFile({ file: new Blob([]), name: 'empty.txt' });
+
+    expect(result).toEqual({
+      id: 'f_empty',
+      name: 'empty.txt',
+      mediaType: 'application/octet-stream',
+      size: 0,
+    });
+    expect(rec.calls.map((call) => call.method)).toEqual(['uploadStart', 'uploadFinish']);
   });
 
   it('uploadFile splits payloads larger than the 512 KiB chunk size', async () => {
@@ -952,12 +1128,221 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
 
     conn.subscribe('s-1', { seq: 0, epoch: 'ep-1' });
     await vi.advanceTimersByTimeAsync(1);
-    expect(conn.health()).toEqual({ connected: false, open: false, stale: false });
+    // stale mirrors the real IPC state: known-broken until a reconnect lands.
+    expect(conn.health()).toEqual({ connected: false, open: false, stale: true });
 
     rec.setFailSubscribe(false);
     conn.reconnect();
     await vi.advanceTimersByTimeAsync(1);
     expect(conn.health()).toEqual({ connected: true, open: true, stale: false });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Multi-agent (BTW side channel): subscription, routing, release, recovery.
+  // ---------------------------------------------------------------------------
+
+  function sideDeltaFrame(seq: number, text: string): unknown {
+    return {
+      type: 'event.assistant.delta',
+      seq,
+      session_id: 's-1',
+      timestamp: new Date().toISOString(),
+      payload: { message_id: 'm1', content_index: 0, delta: { text } },
+    };
+  }
+
+  function sideTurnEndedFrame(seq: number): unknown {
+    return {
+      type: 'event.turn.ended',
+      seq,
+      session_id: 's-1',
+      timestamp: new Date().toISOString(),
+      payload: { reason: 'completed' },
+    };
+  }
+
+  it('startBtw records the agent → session mapping and markSideChannelAgent subscribes it', async () => {
+    const rec = makeRecordingBridge();
+    const api = createWailsKimiWebApi(rec.bridge);
+    const { agentId } = await api.startBtw('s-1');
+    expect(agentId).toBe('btw-1');
+
+    const conn = api.connectEvents(noopHandlers());
+    conn.markSideChannelAgent(agentId);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rec.subscribes).toContainEqual({ sessionId: 's-1', agentId: 'btw-1', cursor: undefined });
+  });
+
+  it('routes side-agent deltas and turn-end to agentDelta/agentTurnEnded without polluting the main transcript', async () => {
+    const rec = makeRecordingBridge();
+    const api = createWailsKimiWebApi(rec.bridge);
+    const events: AppEvent[] = [];
+    const conn = api.connectEvents(noopHandlers({ onEvent: (event) => events.push(event) }));
+
+    conn.subscribe('s-1', { seq: 0, epoch: 'ep-1' });
+    conn.markSideChannelAgent('btw-1', 's-1');
+    await vi.advanceTimersByTimeAsync(1);
+
+    // BTW stream: text delta + turn end.
+    rec.emit(sideDeltaFrame(1, 'hello from btw'), 'btw-1');
+    rec.emit(sideTurnEndedFrame(2), 'btw-1');
+    // Main stream in parallel: a work frame.
+    rec.emit(workFrame(3));
+
+    const sideEvents = events.filter((e) => e.type === 'agentDelta' || e.type === 'agentTurnEnded');
+    expect(sideEvents).toHaveLength(2);
+    expect(sideEvents[0]).toMatchObject({
+      type: 'agentDelta',
+      sessionId: 's-1',
+      agentId: 'btw-1',
+      delta: { text: 'hello from btw' },
+    });
+    expect(sideEvents[1]).toMatchObject({
+      type: 'agentTurnEnded',
+      sessionId: 's-1',
+      agentId: 'btw-1',
+      reason: 'completed',
+    });
+    // The main transcript only saw the main-agent frame (no message/delta
+    // events leaked from the BTW stream).
+    const mainEvents = events.filter((e) => e.type !== 'agentDelta' && e.type !== 'agentTurnEnded');
+    expect(mainEvents).toHaveLength(1);
+    expect(mainEvents[0]).toMatchObject({ type: 'sessionWorkChanged', sessionId: 's-1' });
+
+    // The BTW stream advanced its own cursor, not the main session cursor.
+    conn.reconnect();
+    await vi.advanceTimersByTimeAsync(1);
+    const sideSubscribes = rec.subscribes.filter((s) => s.agentId === 'btw-1' && s.sessionId === 's-1');
+    expect(sideSubscribes.at(-1)?.cursor).toEqual({ epoch: undefined, afterSeq: 2 });
+  });
+
+  it('unsubscribeSideAgent detaches the side stream (cursor kept for re-open)', async () => {
+    const rec = makeRecordingBridge();
+    const api = createWailsKimiWebApi(rec.bridge);
+    const events: AppEvent[] = [];
+    const conn = api.connectEvents(noopHandlers({ onEvent: (event) => events.push(event) }));
+
+    conn.markSideChannelAgent('btw-1', 's-1');
+    await vi.advanceTimersByTimeAsync(1);
+    rec.emit(sideDeltaFrame(1, 'x'), 'btw-1');
+    expect(events).toHaveLength(1);
+
+    conn.unsubscribeSideAgent?.('btw-1');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rec.unsubscribes).toContainEqual({ sessionId: 's-1', agentId: 'btw-1' });
+
+    // Frames for the released agent are dropped — no side chat events.
+    rec.emit(sideDeltaFrame(2, 'y'), 'btw-1');
+    expect(events).toHaveLength(1);
+
+    // Re-open resumes from the saved cursor.
+    conn.markSideChannelAgent('btw-1', 's-1');
+    await vi.advanceTimersByTimeAsync(1);
+    const sideSubscribes = rec.subscribes.filter((s) => s.agentId === 'btw-1' && s.sessionId === 's-1');
+    expect(sideSubscribes.at(-1)?.cursor).toEqual({ epoch: undefined, afterSeq: 1 });
+  });
+
+  it('close() releases main and side-agent subscriptions', async () => {
+    const rec = makeRecordingBridge();
+    const api = createWailsKimiWebApi(rec.bridge);
+    const conn = api.connectEvents(noopHandlers());
+
+    conn.subscribe('s-1');
+    conn.markSideChannelAgent('btw-1', 's-1');
+    await vi.advanceTimersByTimeAsync(1);
+    conn.close();
+
+    expect(rec.unsubscribes).toContainEqual({ sessionId: 's-1', agentId: 'main' });
+    expect(rec.unsubscribes).toContainEqual({ sessionId: 's-1', agentId: 'btw-1' });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Real IPC connection state: disconnect events, health(), reconnect().
+  // ---------------------------------------------------------------------------
+
+  it('a kimi:connection disconnect flips health to stale and connected recovers with resubscription', async () => {
+    const rec = makeRecordingBridge();
+    const api = createWailsKimiWebApi(rec.bridge);
+    const changes: boolean[] = [];
+    const conn = api.connectEvents(noopHandlers({ onConnectionChange: (state) => changes.push(state) }));
+
+    conn.subscribe('s-1', { seq: 3, epoch: 'ep-1' });
+    conn.markSideChannelAgent('btw-1', 's-1');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(conn.health()).toEqual({ connected: true, open: true, stale: false });
+
+    rec.emitConnection('disconnected');
+    expect(conn.health()).toEqual({ connected: false, open: false, stale: true });
+    expect(changes).toContain(false);
+
+    // The Go shell re-dialed: every active subscription resumes at its cursor.
+    rec.emitConnection('connected');
+    await vi.advanceTimersByTimeAsync(1);
+    expect(conn.health()).toEqual({ connected: true, open: true, stale: false });
+    const mainResume = rec.subscribes.find((s) => s.agentId === 'main' && s.sessionId === 's-1');
+    const sideResume = rec.subscribes.find((s) => s.agentId === 'btw-1' && s.sessionId === 's-1');
+    expect(mainResume?.cursor).toEqual({ epoch: 'ep-1', afterSeq: 3 });
+    expect(sideResume?.cursor).toBeUndefined();
+    expect(rec.subscribes.length).toBeGreaterThanOrEqual(4); // 2 initial + 2 resumed
+  });
+
+  it('reconnect() rebuilds the IPC connection (EnsureConnected) before resubscribing', async () => {
+    const rec = makeRecordingBridge();
+    const api = createWailsKimiWebApi(rec.bridge);
+    const conn = api.connectEvents(noopHandlers());
+
+    conn.subscribe('s-1', { seq: 0, epoch: 'ep-1' });
+    await vi.advanceTimersByTimeAsync(1);
+    const before = rec.subscribes.length;
+
+    conn.reconnect();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rec.ensureConnectedCalls()).toBe(1);
+    expect(rec.subscribes.length).toBe(before + 1);
+  });
+
+  it('a failed EnsureConnected reports the failure instead of resubscribing a dead socket', async () => {
+    const rec = makeRecordingBridge();
+    const api = createWailsKimiWebApi(rec.bridge);
+    const errors: string[] = [];
+    const conn = api.connectEvents(noopHandlers({ onError: (_, msg) => errors.push(msg) }));
+
+    conn.subscribe('s-1', { seq: 0, epoch: 'ep-1' });
+    await vi.advanceTimersByTimeAsync(1);
+    const before = rec.subscribes.length;
+
+    // Make EnsureConnected report disconnected (recovery failed).
+    (rec.bridge as unknown as { EnsureConnected: () => Promise<'disconnected'> }).EnsureConnected =
+      async () => 'disconnected';
+    conn.reconnect();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(rec.subscribes.length).toBe(before);
+    expect(conn.health()).toEqual({ connected: false, open: false, stale: true });
+    expect(errors.some((msg) => msg.includes('recovery'))).toBe(true);
+  });
+
+  it('terminalAttach forwards the replay cursor to the shell', async () => {
+    const rec = makeRecordingBridge();
+    const api = createWailsKimiWebApi(rec.bridge);
+    const conn = api.connectEvents(noopHandlers());
+
+    conn.terminalAttach('s-1', 't-1', 7);
+    expect(rec.terminalAttaches).toEqual([{ sessionId: 's-1', terminalId: 't-1', sinceSeq: 7 }]);
+  });
+
+  it('uploadFile best-effort cancels the partial upload when a chunk fails', async () => {
+    const rec = makeRecordingBridge();
+    const api = createWailsKimiWebApi(rec.bridge);
+    rec.failCallMethod('uploadChunk');
+
+    const pending = api.uploadFile({ file: new Blob(['boom']), name: 'x.txt' });
+    await expect(pending).rejects.toThrow(/call boom/);
+    const methods = rec.calls.map((c) => c.method);
+    expect(methods).toContain('uploadStart');
+    expect(methods).toContain('uploadChunk');
+    // The finally-cancel must have reached the sidecar.
+    expect(methods).toContain('uploadCancel');
+    expect(rec.calls.find((c) => c.method === 'uploadCancel')?.args).toEqual(['up_placeholder']);
   });
 
   // ---------------------------------------------------------------------------

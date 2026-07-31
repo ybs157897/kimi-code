@@ -46,6 +46,12 @@ export interface ServeProductIpcOptions {
   readonly endpoint: string;
   /** Optional token; when set, the client's `hello` must carry the same token. */
   readonly token?: string;
+  /** Test seam: substitute the host's internals (a fake facade/hub) so the IPC
+   *  protocol can be exercised without bootstrapping a full engine. */
+  readonly overrides?: {
+    readonly facade?: ProductFacade;
+    readonly hub?: ProductStreamHub;
+  };
 }
 
 export interface ProductIpcHost {
@@ -145,8 +151,8 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
   const projector = new ProductProjector(klient);
   // The hub owns the per-(session, agent) epoch/seq/journal; the facade reads the
   // same watermark for getSessionSnapshot so snapshot + subscription share a cursor.
-  const hub = new ProductStreamHub(projector);
-  const facade = new ProductFacade(klient, options.scope, hub);
+  const hub = options.overrides?.hub ?? new ProductStreamHub(projector);
+  const facade = options.overrides?.facade ?? new ProductFacade(klient, options.scope, hub);
   const tcp = parseTcpEndpoint(options.endpoint);
   if (tcp === undefined) {
     // Best-effort cleanup of a stale Unix socket file.
@@ -158,11 +164,18 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
   }
 
   const connections = new Set<Socket>();
+  // Per-connection id for connection-scoped resources (uploads): a teardown
+  // cancels every upload session its connection opened.
+  let nextConnId = 0;
 
   const server: Server = createServer((socket) => {
     connections.add(socket);
+    const connId = `conn_${++nextConnId}`;
     const decoder = new NdjsonDecoder();
-    const listens = new Map<string, IDisposable>();
+    // A listen handle: `suspend` is present only for product-stream listens —
+    // a teardown suspends them (journal keeps collecting through the reconnect
+    // window) while terminal / raw-klient listens are fully disposed.
+    const listens = new Map<string, { dispose: () => void; suspend?: () => void }>();
     const activeStreams = new Map<string, AbortController>();
     let helloDone = false;
 
@@ -215,7 +228,7 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
           // Interception point 1: the reserved product service.
           if (frame.service === PRODUCT_SERVICE) {
             facade
-              .dispatch(String(frame.method), args, scopeRefFromFrame(frame))
+              .dispatch(String(frame.method), args, { ...scopeRefFromFrame(frame), connId })
               .then((data) => {
                 send({ type: 'result', id, data });
               })
@@ -343,6 +356,7 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
                 String(frame.method),
                 args,
                 scopeRefFromFrame(frame),
+                ac.signal,
               );
             } catch (error) {
               activeStreams.delete(id);
@@ -420,10 +434,20 @@ export async function serveProductIpc(options: ServeProductIpcOptions): Promise<
       }
     });
     const teardown = (): void => {
-      for (const sub of listens.values()) sub.dispose();
+      // Product-stream listens are suspended, not disposed: the underlying
+      // projector + journal keep running through the disconnect window so a
+      // reconnecting client is caught up from the journal (or told to resync).
+      // Terminal sinks and raw klient listens must be released immediately.
+      for (const sub of listens.values()) {
+        if (sub.suspend !== undefined) sub.suspend();
+        else sub.dispose();
+      }
       listens.clear();
       for (const ac of activeStreams.values()) ac.abort();
       activeStreams.clear();
+      // In-flight uploads opened by this connection must not outlive it: their
+      // temp files are removed so a window close / IPC drop cannot leak bytes.
+      void facade.cancelUploadsForConnection(connId).catch(() => undefined);
       connections.delete(socket);
     };
     socket.on('close', teardown);

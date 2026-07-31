@@ -17,7 +17,8 @@
  * seeds, but a product IPC host instead of `createKlient({ scope })`.
  */
 
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
@@ -39,11 +40,63 @@ const ENDPOINT_ENV = 'KIMI_DESKTOP_IPC_ENDPOINT';
 const TOKEN_ENV = 'KIMI_DESKTOP_IPC_TOKEN';
 /** Desktop-only home override. KIMI_CODE_HOME is intentionally ignored. */
 const HOME_ENV = 'KIMI_DESKTOP_HOME';
+/** Env var the extension loader reads for its host API module path. */
+const HOST_API_ENV = 'KIMI_EXTENSION_HOST_API';
+/** Name of the SEA asset that carries the bundled extension host API chunk. */
+const HOST_API_ASSET = 'extensionHostApi';
 
 function resolveDesktopHome(): string {
   const fromEnv = process.env[HOME_ENV];
   if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
   return join(homedir(), '.kimi-desktop');
+}
+
+/**
+ * In a packaged SEA several modules cannot be resolved from disk (there is no
+ * node_modules): the extension host API (jiti's alias target) and jiti's
+ * self-contained babel transform. The build embeds them as SEA assets; this
+ * materializes each next to the home dir once and points the consuming code at
+ * it via env. Dev mode (tsx ESM over node_modules) skips this entirely.
+ */
+const SEA_ASSETS: ReadonlyArray<{ asset: string; file: string; env: string }> = [
+  {
+    asset: HOST_API_ASSET,
+    file: 'extension-host.cjs',
+    env: HOST_API_ENV,
+  },
+  {
+    asset: 'jitiBabel',
+    file: 'jiti-babel.cjs',
+    env: 'KIMI_JITI_BABEL_PATH',
+  },
+];
+
+async function materializeSeaAssets(home: string): Promise<void> {
+  let sea: { isSea(): boolean; getAsset(name: string, encoding?: 'utf8'): string } | undefined;
+  try {
+    // `node:sea` exists on Node 24; guard anyway so a non-SEA runtime never
+    // trips over module availability.
+    sea = createRequire(import.meta.url)('node:sea') as typeof sea;
+  } catch {
+    return;
+  }
+  if (sea === undefined || !sea.isSea()) return;
+  for (const { asset, file, env } of SEA_ASSETS) {
+    try {
+      const source = sea.getAsset(asset, 'utf8');
+      const target = join(home, file);
+      try {
+        await writeFile(target, source, { flag: 'wx' });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+        const existing = await readFile(target, 'utf8').catch(() => '');
+        if (existing !== source) await writeFile(target, source);
+      }
+      process.env[env] = target;
+    } catch (error) {
+      console.error(`desktop-sidecar: failed to materialize ${asset}:`, error);
+    }
+  }
 }
 
 function resolveEndpoint(): string {
@@ -77,6 +130,7 @@ async function main(): Promise<void> {
   // This process-local assignment never changes the CLI's environment.
   process.env['KIMI_CODE_HOME'] = kimiHome;
   await mkdir(kimiHome, { recursive: true });
+  await materializeSeaAssets(kimiHome);
   if (!endpoint.startsWith('tcp://')) {
     await mkdir(dirname(endpoint), { recursive: true });
   }

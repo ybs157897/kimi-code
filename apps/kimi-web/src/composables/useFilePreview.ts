@@ -49,12 +49,44 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
       mediaObjectUrl = null;
     }
   }
+  // Blob-backed object URL for PDF previews on transports without a fetchable
+  // URL (desktop getWorkspaceFileBlob). Loaded lazily when a PDF opens; revoked
+  // when the preview is replaced or closed (never left dangling).
+  const previewPdfUrl = ref<string | null>(null);
+  function revokePreviewPdfUrl(): void {
+    if (previewPdfUrl.value !== null) {
+      URL.revokeObjectURL(previewPdfUrl.value);
+      previewPdfUrl.value = null;
+    }
+  }
 
   const previewDownloadUrl = computed(() => {
     const path = previewNormalizedPath.value;
     return path ? client.getFileDownloadUrl(path) : null;
   });
+  /** Desktop transports: the blob-download action is available whenever a
+   *  normalized preview path exists. */
+  const previewCanBlobDownload = computed(() => previewNormalizedPath.value !== null);
   const previewExternalActions = computed(() => previewTarget.value !== null);
+
+  /** Download the currently previewed workspace file (desktop transports): pull
+   *  the bytes via getWorkspaceFileBlob, save through a temporary object URL,
+   *  and revoke it in all outcomes (success, failure, abort). */
+  async function downloadPreviewFile(): Promise<void> {
+    const path = previewNormalizedPath.value;
+    if (!path) return;
+    const blob = await client.getWorkspaceFileBlob(path);
+    if (!blob) return; // failure already reported via pushOperationFailure
+    const url = URL.createObjectURL(blob);
+    try {
+      const anchor = document.createElement('a');
+      anchor.href = url;
+      anchor.download = previewFile.value?.path?.split('/').pop() ?? 'download';
+      anchor.click();
+    } finally {
+      URL.revokeObjectURL(url);
+    }
+  }
 
   function trimTrailingSlash(path: string): string {
     return path.length > 1 ? path.replace(/\/+$/, '') : path;
@@ -140,6 +172,13 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
       if (requestSeq !== previewRequestSeq) return;
       if (result) {
         previewFile.value = { ...result, path: result.path || normalized.path };
+        // Desktop transports: a PDF iframe needs a fetchable URL — pull the
+        // bytes lazily via getWorkspaceFileBlob and back it with a blob URL
+        // (revoked on close/switch). Browser transports keep the real
+        // download URL via previewDownloadUrl.
+        if (result.mime === 'application/pdf') {
+          void loadPreviewPdf(requestSeq, normalized.path);
+        }
       } else {
         // readFileContent swallows daemon failures into null — show the error
         // state instead of a misleading 0-byte "empty file" (the cause is
@@ -154,6 +193,16 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
         previewLoading.value = false;
       }
     }
+  }
+
+  /** Lazily load the previewed PDF's bytes into a blob URL (desktop only; the
+   *  browser path uses the real download URL). Guards against a stale request
+   *  winning the race and revokes any earlier PDF blob URL. */
+  async function loadPreviewPdf(requestSeq: number, path: string): Promise<void> {
+    const blob = await client.getWorkspaceFileBlob(path);
+    if (blob === null || requestSeq !== previewRequestSeq) return;
+    revokePreviewPdfUrl();
+    previewPdfUrl.value = URL.createObjectURL(blob);
   }
 
   function mimeFromDataUrl(url: string): string | undefined {
@@ -219,6 +268,7 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
     previewError.value = null;
     previewLoading.value = false;
     revokeMediaObjectUrl();
+    revokePreviewPdfUrl();
   }
 
   function closeFilePreview(): void {
@@ -252,6 +302,9 @@ export function useFilePreview({ client, detailTarget }: UseFilePreviewOptions) 
     previewLoading,
     previewError,
     previewDownloadUrl,
+    previewPdfUrl,
+    previewCanBlobDownload,
+    downloadPreviewFile,
     previewExternalActions,
     openFilePreview,
     openMediaPreview,

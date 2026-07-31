@@ -556,6 +556,38 @@ export function toAppEvent(wire: WireEvent): AppEvent {
         summaryMessageId: w.payload.summary_message_id,
       };
 
+    case 'event.session.meta.updated':
+      // Lightweight meta patch (auto-generated title / other-client rename /
+      // latest prompt). The payload carries the patch plus a top-level title
+      // alias on the daemon form; only the changed keys ride along.
+      return {
+        type: 'sessionMetaUpdated',
+        sessionId: w.session_id,
+        title: w.payload.patch?.title ?? w.payload.title,
+        lastPrompt: w.payload.patch?.lastPrompt,
+      };
+
+    // ----- Compaction -----
+    case 'event.compaction.started':
+      return {
+        type: 'compactionStarted',
+        sessionId: w.session_id,
+        trigger: w.payload.trigger,
+        instruction: w.payload.instruction,
+      };
+
+    case 'event.compaction.completed':
+      return {
+        type: 'compactionCompleted',
+        sessionId: w.session_id,
+        tokensBefore: w.payload.tokens_before,
+        tokensAfter: w.payload.tokens_after,
+        summary: w.payload.summary,
+      };
+
+    case 'event.compaction.cancelled':
+      return { type: 'compactionCancelled', sessionId: w.session_id };
+
     case 'event.goal.updated': {
       const goal = toAppGoal(w.payload.snapshot ?? null);
       return {
@@ -666,6 +698,22 @@ export function toAppEvent(wire: WireEvent): AppEvent {
         sessionId: w.session_id,
         questionId: w.payload.question_id,
         dismissedAt: w.payload.dismissed_at,
+      };
+
+    // ----- Prompt lifecycle -----
+    case 'event.prompt.completed':
+      return {
+        type: 'promptCompleted',
+        sessionId: w.session_id,
+        promptId: w.payload.prompt_id,
+        reason: w.payload.reason ?? 'completed',
+      };
+
+    case 'event.prompt.aborted':
+      return {
+        type: 'promptAborted',
+        sessionId: w.session_id,
+        promptId: w.payload.prompt_id,
       };
 
     // ----- Tasks -----

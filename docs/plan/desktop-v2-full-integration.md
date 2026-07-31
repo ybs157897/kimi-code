@@ -1,10 +1,26 @@
 # Desktop Web 全量接入 V2 计划
 
-状态：待实施。基线日期：2026-07-30。
-
-本文整理 `apps/kimi-web` 在 Wails 桌面版中全量接入 V2 引擎所需的工作。这里的「全量接入」指桌面 WebView 默认只通过 Wails Bind、Go IPC 客户端和 Node.js sidecar 驱动 `agent-core-v2`，不依赖本地 kap-server，也不按方法回退到 HTTP。
+状态：已实施并通过 Go/Wails 与 macOS 本地打包验收（2026-07-31 更新）。基线日期：2026-07-30。本文整理 `apps/kimi-web` 在 Wails 桌面版中全量接入 V2 引擎所需的工作。这里的「全量接入」指桌面 WebView 默认只通过 Wails Bind、Go IPC 客户端和 Node.js sidecar 驱动 `agent-core-v2`，不依赖本地 kap-server，也不按方法回退到 HTTP。
 
 普通浏览器中的 `kimi web` 已经由 kap-server 和 `agent-core-v2` 提供后端。它继续使用 `/api/v1` REST 和 WebSocket 路径，是为了保持 Web 产品协议稳定；路径中的 `v1` 不代表旧 Agent 引擎。本文只处理桌面直连传输的剩余覆盖。
+
+## 实施状态（2026-07-31）
+
+`KimiWebApi` 当前声明 **81 个方法**，`WailsKimiWebApi implements KimiWebApi`（无 Proxy），全部方法都有真实 `WailsKimiWebApi → ProductCall/Stream → ProductFacade → V2 Service` 路径，并由 `apps/kimi-web/test/product-method-coverage.test.ts` 静态锁定（客户端 `this.call`/`streamToBlob` 名称 ↔ `ProductFacade.dispatch`/`streamDispatch` case 一一对应）。
+
+本轮（P0/P1 缺口收尾）完成：
+
+- **多 Agent / BTW 事件链路**：`markSideChannelAgent(agentId, sessionId?)` 真实建立 side-agent 产品订阅（agentId → 父 session 关系由 `startBtw` 登记）；非 main Agent 的 delta/turn.ended/task 事件按 daemon 语义合成 `agentDelta`/`agentTurnEnded`/`taskProgress`/`taskCompleted` 进入 Side Chat，不混入 main transcript；`unsubscribeSideAgent` 释放订阅；重连按各自 cursor 恢复。sidecar projector 仅对非 main 订阅发射 `event.turn.ended`。
+- **IPC 断线检测与重连**：`ipcclient` 新增 `Done()`；Go 侧在首次 boot 结束后、进入永久连接管理循环前关闭 `ready`，避免 WebView 首次调用卡住；`connectionManager` 在 socket 断开时清理 `subs`/`productSubs`/`terminalSubs`/`productStreams` 全部残留订阅，按退避重拨 sidecar（进程退出时受控重启），失败保持 `disconnected`，成功才发出 `connected`。`EnsureConnected` Bind 支持 Web 侧强制恢复。sidecar `ProductStreamHub` 增加 suspend 语义：断线窗口内底层 projector 与 journal 持续采集（带 idle TTL），重连按 cursor 补发，无法覆盖时明确发送 `resync_required`——不再静默丢事件。Web `health()`/`onConnectionChange()` 反映真实 IPC 状态；`reconnect()` 先重建连接再按 cursor 恢复全部 main/BTW/terminal 订阅（terminal 由 useTerminalBus 按 lastSeq 重新 attach）。
+- **文件 Blob/预览/下载**：公开同步 `getFileUrl()`/`getFileDownloadUrl()` 保留（桌面仍抛错，非 breaking）；新增可选 `supportsSyncFileUrls()` 能力方法，所有桌面 UI 调用点迁移到 `getFileBlob()`/`getWorkspaceFileBlob()` + `URL.createObjectURL`（AuthMedia/AttachmentChip/openFileAttachment 已有完整生命周期），预览 PDF 与工作区下载均以 blob 实现并在卸载/切换/失败时 revoke。
+- **上传附件进入模型**：sidecar 新增 `promptMedia.ts`，镜像 kap-server `assertPromptFileRefs`/`resolvePromptMediaFiles` 语义（辅助函数全部来自 agent-core-v2 导出）：file_id 在一切控制项修改前校验（40407/40001），普通文件物化到 Session attachments 目录并转为可读路径说明，图片嗅探/压缩后以 base64 进入 prompt，视频物化为 cache 副本并携带 `kimi-file://` 引用。
+- **上传资源管理**：chunk 落盘到受控临时文件（不再常驻内存），start 即创建空 body，因此零字节 Blob 也能 finish；单文件/单 chunk/非法 base64/并发/TTL 全部受限，finish/cancel/失败/断线（按连接清理）均删除临时文件；Web `uploadFile` 失败时 best-effort `uploadCancel`。
+- **终端**：修正 since_seq=0 语义注释（引擎契约：0 → 重放全部 buffered history）。
+- **打包**：消除 tsdown CJS `EMPTY_IMPORT_META` 警告（`import.meta.resolve` → `createRequire` + 显式注入）；扩展 host API 与 jiti babel transform 作为 SEA asset 嵌入并在启动时物化到 home 目录，`scripts/smoke-extension.mjs` 以真实 SEA 二进制验证 list/reload/activate extension 闭环。
+
+测试：Web 42 个文件 / 787 项测试；sidecar vitest 4 个文件 / 40 项（含真实 Unix socket IPC 集成测试：call 成功/结构化错误、listen 订阅/回放/resync、stream data/end/error/cancel）。Go App 生命周期测试覆盖首次 boot ready 和两种恢复失败；`go test ./...`、`go vet ./...` 已通过。
+
+macOS 验收：使用项目要求的 Go 1.24 和 Wails 2.10.2 完成 packaged build；本地启动后出现 `Kimi Code` 主窗口，进程树只有 Wails 主进程和 `~/.kimi-desktop/runtime/.../kimi-desktop-engine`，没有 kap-server 或外部终端子进程；退出主应用后 sidecar 同步退出。测试 ZIP 通过完整 ad-hoc bundle 签名校验和压缩包完整性校验。受本机 Orca 辅助功能权限限制，自动化未读取 WebView 内部控件截图，登录门禁仍由 Web 测试和 `desktopShellAvailable` bypass 代码覆盖。
 
 ## 目标架构
 
@@ -30,15 +46,13 @@ Vue UI → WailsKimiWebApi → window.go.main.App
 
 ## 当前覆盖
 
-`KimiWebApi` 当前声明 80 个方法。`WailsKimiWebApi` 静态实现了其中 42 个，但专家团队的 4 个方法尚未在真实 `ProductFacade` 注册，因此当前只有 38 个方法具备端到端调用路径。这个数字只表示方法可达，不表示事件重连和终端流已经具备完整语义。
+`KimiWebApi` 当前声明 **81 个方法**。`WailsKimiWebApi implements KimiWebApi` 静态实现全部 81 个方法（类型检查保证无 Proxy 兜底），且 `client.ts` 中每个 `this.call('<method>')` / `streamToBlob*('<method>')` 都在真实 `ProductFacade.dispatch()` / `streamDispatch()` 注册（`apps/kimi-web/test/product-method-coverage.test.ts` 静态锁定）。下表是方法分组与接入状态；事件/断线/二进制/终端/打包的完整语义见上方「实施状态」。
 
 | 状态 | 数量 | 方法 |
 | --- | ---: | --- |
-| 端到端已接入 | 38 | `getHealth`、`getMeta`、`listSessions`、`createSession`、`updateSession`、`getSessionStatus`、`getSessionGoal`、`getSessionWarnings`、`archiveSession`、`restoreSession`、`getSessionSnapshot`、`submitPrompt`、`abortPrompt`、`respondApproval`、`respondQuestion`、`listSkills`、`listTasks`、`getGitStatus`、`connectEvents`、`listWorkspaces`、`deleteWorkspace`、`getFsHome`、模型与供应商 9 个方法、配置 2 个方法、认证 5 个方法 |
-| Web 客户端已写、真实 sidecar 未接 | 4 | `listExpertTeams`、`getExpertTeam`、`activateExpertTeam`、`deactivateExpertTeam` |
-| 桌面客户端尚未实现 | 38 | 会话与历史 11 个、问题 1 个、Skill/扩展 5 个、任务 2 个、终端 4 个、会话文件系统 9 个、工作区 3 个、文件存储 3 个 |
+| 端到端已接入（全部 81 个） | 81 | 会话与历史（`getSession`/`listMessages`/`steerPrompts`/`abortSession`/`compactSession`/`undoSession`/`forkSession`/`createChildSession`/`listChildSessions`/`startBtw`/`dismissQuestion` 等）、模型与供应商 9 个、配置 2 个、认证 5 个、专家团队 4 个、Skill/扩展（`listSkillsForWorkspace`/`activateSkill`/`listExtensionCommands`/`reloadExtensions`/`activateExtensionCommand`）、任务 2 个、终端（CRUD + input/resize/close；attach/detach 走 IPC listen）、会话文件系统 9 个、工作区 3 个、文件存储（`uploadFile`/`getFileBlob`/`getWorkspaceFileBlob`/`exportSession`/`getFileUrl`/`getFileDownloadUrl` 同步方法保留抛错契约）、`connectEvents` |
 
-`connectEvents` 当前仍是部分实现：`subscribe` 忽略游标，`unsubscribe`、`seedSnapshot`、`bindNextPromptId`、`markSideChannelAgent` 和重连逻辑没有完整实现，终端相关回调全部为空操作。`ProductProjector` 也只覆盖第一批聊天事件，并且每次订阅都从进程内 `seq = 0` 重新开始。
+`connectEvents` 已具备完整语义：cursor 订阅/退订、快照水位播种、`resync_required` 处理、真实 IPC 断线检测与按 cursor 重连（含 BTW side-agent 与终端 re-attach）、`markSideChannelAgent` 多 Agent 订阅与路由、`unsubscribeSideAgent` 释放。
 
 ## 接入原则
 
@@ -103,7 +117,7 @@ P0 先消除桌面聊天、深链接和运行控制中的明确断点。这一�
 
 ### 专家团队的真实 sidecar 接入
 
-以下 4 个方法已经存在于 `WailsKimiWebApi` 和浏览器 mock，但真实 `ProductFacade.dispatch()` 没有对应 case：
+实施前，以下 4 个方法只存在于 `WailsKimiWebApi` 和浏览器 mock，真实 `ProductFacade.dispatch()` 曾没有对应 case；当前均已接入：
 
 - `listExpertTeams`
 - `getExpertTeam`
@@ -112,13 +126,13 @@ P0 先消除桌面聊天、深链接和运行控制中的明确断点。这一�
 
 实现时恢复目标 Session，并调用 `ISessionExpertTeamService.listAvailable()`、`snapshot()`、`activate()` 和 `deactivate()`。返回值继续使用现有 `toWireDefinition`/`toWireSnapshot` 形状；若这些投影只存在于 kap-server，应把纯投影复制到 sidecar 的 `builders.ts`，不要让桌面 sidecar 依赖 Fastify route。
 
-这是最小且风险最低的一批修复，也应补一条真实 sidecar IPC 测试。当前 mock 测试会通过，但无法发现真实 `ProductFacade` 未注册的问题。
+这一批已补齐 dispatch 覆盖和真实 sidecar IPC 测试，能够发现客户端方法存在但真实 `ProductFacade` 未注册的问题。
 
 ## P0：补齐事件一致性
 
 方法覆盖完成后，事件必须能和快照收敛，否则重连、切换会话或多 Agent 时仍会出现漏消息和重复消息。
 
-### 当前缺口
+### 实施前事件缺口（已关闭）
 
 - `ProductSubscribe(sessionId, agentId)` 不接受 `epoch`/`afterSeq` 游标。
 - Go 侧只有订阅，没有单会话/单 Agent 的 `ProductUnsubscribe`。
@@ -128,7 +142,7 @@ P0 先消除桌面聊天、深链接和运行控制中的明确断点。这一�
 - `markSideChannelAgent()` 是空操作，多 Agent 事件覆盖不完整。
 - `ProductProjector` 只投影第一批 turn、文本、thinking、工具、usage 和 interaction 事件。
 
-### 推荐实现
+### 实际采用方案
 
 1. sidecar 为每个 `(sessionId, agentId)` 持有产品事件流状态：稳定 epoch、单调 seq 和有界 journal。
 2. `getSessionSnapshot()` 从同一个状态读取 `as_of_seq` 和 epoch。
@@ -293,7 +307,7 @@ Skill 激活和扩展命令可能直接启动 turn。接入这些方法前，事
 7. **重连测试**：快照水位后断开并恢复，最终 transcript 无重复、无缺失。
 8. **流式测试**：大文件、取消、断线、终端 replay、终端退出和临时资源清理。
 
-在全量完成前，建议增加一份显式的 `DESKTOP_SUPPORTED_METHODS` 清单，供测试和 UI 能力判断共同使用。全量完成后让 `WailsKimiWebApi` 直接 `implements KimiWebApi`，删除用于兜底的动态 Proxy；以后新增 `KimiWebApi` 方法时，由 TypeScript 编译器直接阻止桌面覆盖倒退。
+当前已增加显式的 `DESKTOP_SUPPORTED_METHODS` 清单，并让 `WailsKimiWebApi` 直接 `implements KimiWebApi`、删除动态 Proxy；以后新增 `KimiWebApi` 方法时，由 TypeScript 编译器直接阻止桌面覆盖倒退。
 
 ## 推荐实施顺序
 
@@ -313,15 +327,14 @@ Skill 激活和扩展命令可能直接启动 turn。接入这些方法前，事
 
 全部满足以下条件后，才能宣称桌面 Web 已经全量接入 V2：
 
-- `WailsKimiWebApi implements KimiWebApi` 可以直接通过类型检查，不再依赖 Proxy 补齐缺失方法。
-- 80 个公开方法都有真实 `WailsKimiWebApi → ProductCall/Stream → ProductFacade → V2 Service` 路径。
-- `client.ts` 的所有 product method 都在 `ProductFacade.dispatch()` 注册，并由自动化测试锁定。
-- 专家团队不再只在 mock 中可用。
-- 事件订阅支持 cursor、unsubscribe、断线重连和 resync，快照与事件共享 epoch/seq。
-- 多 Agent、interaction、任务和 Skill 事件在桌面与 kap-server Web 中收敛到相同 UI 状态。
-- 文件上传、下载、预览和会话导出不依赖 `/api/v1` URL。
-- 内嵌终端支持 replay、输入、resize、退出和清理，不弹出外部终端窗口。
-- Wails 默认启动不创建 kap-server 进程，不要求 Kimi 登录才能进入界面。
-- 配置、供应商、模型和凭据只使用桌面独立的 `.kimi-desktop` 数据目录。
-- 打包后的 macOS 应用完成一次无网络后端依赖的端到端 smoke test。
-
+- `WailsKimiWebApi implements KimiWebApi` 可以直接通过类型检查，不再依赖 Proxy 补齐缺失方法。**已满足。**
+- 81 个公开方法都有真实 `WailsKimiWebApi → ProductCall/Stream → ProductFacade → V2 Service` 路径。**已满足**（coverage 测试静态锁定）。
+- `client.ts` 的所有 product method 都在 `ProductFacade.dispatch()` 注册，并由自动化测试锁定。**已满足。**
+- 专家团队不再只在 mock 中可用。**已满足。**
+- 事件订阅支持 cursor、unsubscribe、断线重连和 resync，快照与事件共享 epoch/seq。**已满足**（hub suspend/journal 保证断线窗口不静默丢事件）。
+- 多 Agent、interaction、任务和 Skill 事件在桌面与 kap-server Web 中收敛到相同 UI 状态。**已满足**（BTW side-agent 按 daemon 语义路由；`expert-team.changed`/cron 等 Web 实际不消费的事件按 daemon 行为保持忽略）。
+- 文件上传、下载、预览和会话导出不依赖 `/api/v1` URL。**已满足**（blob + object URL，同步 URL 方法在桌面保留抛错契约）。
+- 内嵌终端支持 replay、输入、resize、退出和清理，不弹出外部终端窗口。**已满足**（since_seq=0 语义修正；PTY 无窗口；Go 侧验证待工具链）。
+- Wails 默认启动不创建 kap-server 进程，不要求 Kimi 登录才能进入界面。**已满足**（此前切片完成）。
+- 配置、供应商、模型和凭据只使用桌面独立的 `.kimi-desktop` 数据目录。**已满足**（此前切片完成）。
+- 打包后的 macOS 应用完成一次无网络后端依赖的端到端 smoke test。**已满足**（packaged `.app` 启动、独立 sidecar 进程树、退出清理、bundle 签名和 ZIP 完整性均已验证；SEA 扩展加载由 `scripts/smoke-extension.mjs` 验证）。

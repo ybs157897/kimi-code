@@ -880,3 +880,86 @@ describe('isPlayableMediaUrl', () => {
     expect(isPlayableMediaUrl('')).toBe(false);
   });
 });
+
+describe('messagesToTurns — desktop transports without synchronous file URLs', () => {
+  // The composables wrap the fileId → URL resolver with the transport's
+  // capability check: on desktop IPC `supportsSyncFileUrls()` is false, so the
+  // resolver returns '' and the attachment keeps its fileId (AuthMedia /
+  // openFileAttachment load the bytes via getFileBlob instead). The turn
+  // pipeline must never throw and must never fabricate /api/v1 URLs.
+  const desktopResolver = (): string => '';
+
+  it('renders file-backed images/videos as fileId attachments with an empty url', () => {
+    const turns = messagesToTurns(
+      [
+        message('u1', 'user', [
+          { type: 'text', text: 'look' },
+          { type: 'image', source: { kind: 'file', fileId: 'f_img' } },
+          { type: 'video', source: { kind: 'file', fileId: 'f_vid' } },
+          { type: 'file', fileId: 'f_doc', name: 'doc.pdf', mediaType: 'application/pdf', size: 42 },
+        ]),
+      ],
+      [],
+      desktopResolver,
+      false,
+    );
+
+    expect(turns).toHaveLength(1);
+    const attachments = turns[0]?.attachments ?? [];
+    expect(attachments).toHaveLength(3);
+    expect(attachments[0]).toMatchObject({ kind: 'image', fileId: 'f_img', url: '' });
+    expect(attachments[1]).toMatchObject({ kind: 'video', fileId: 'f_vid', url: '' });
+    expect(attachments[2]).toMatchObject({ kind: 'file', fileId: 'f_doc', name: 'doc.pdf', url: '' });
+    // No fabricated /api/v1 URL anywhere in the rendered turn.
+    expect(JSON.stringify(turns)).not.toContain('/api/v1');
+  });
+
+  it('keeps the attached-file notice chip addressable via its fileId', () => {
+    const turns = messagesToTurns(
+      [
+        message('u1', 'user', [
+          { type: 'text', text: 'Attached file "doc.pdf" (application/pdf, 42 bytes): /x/doc.pdf — open it with the Read tool' },
+        ]),
+      ],
+      [],
+      desktopResolver,
+      false,
+    );
+    const attachments = turns[0]?.attachments ?? [];
+    expect(attachments.some((a) => a.fileId === 'f_doc' || a.name === 'doc.pdf')).toBe(true);
+    expect(attachments.some((a) => a.url.startsWith('/api/'))).toBe(false);
+  });
+
+  it('resolves a <video path> tag to a fileId attachment without a sync URL', () => {
+    const turns = messagesToTurns(
+      [
+        // The server echoes uploaded videos as a <video path> tag whose path is
+        // the materialized cache copy (fileId in the filename).
+        message('u1', 'user', [
+          { type: 'text', text: '<video path="/cache/f_0123456789abcdefghijklmnop.mp4"></video>' },
+        ]),
+      ],
+      [],
+      desktopResolver,
+      false,
+    );
+    const attachments = turns[0]?.attachments ?? [];
+    const video = attachments.find((a) => a.kind === 'video');
+    expect(video).toBeDefined();
+    expect(video?.fileId).toBe('f_0123456789abcdefghijklmnop');
+    expect(video?.url).toBe('');
+  });
+
+  it('the browser resolver still produces real URLs (daemon unchanged)', () => {
+    const daemonResolver = (fileId: string): string => `/api/v1/files/${fileId}`;
+    const turns = messagesToTurns(
+      [
+        message('u1', 'user', [{ type: 'image', source: { kind: 'file', fileId: 'f_img' } }]),
+      ],
+      [],
+      daemonResolver,
+      false,
+    );
+    expect(turns[0]?.attachments?.[0]?.url).toBe('/api/v1/files/f_img');
+  });
+});

@@ -2734,7 +2734,22 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   function getFileDownloadUrl(path: string): string | null {
     const sid = rawState.activeSessionId;
     if (!sid) return null;
+    // Desktop transports cannot produce a fetchable URL — the caller falls
+    // back to getWorkspaceFileBlob + URL.createObjectURL.
+    if (!(getKimiWebApi().supportsSyncFileUrls?.() ?? true)) return null;
     return getKimiWebApi().getFileDownloadUrl(sid, path);
+  }
+
+  /** Fetch a workspace file's bytes (the blob counterpart of getFileDownloadUrl). */
+  async function getWorkspaceFileBlob(path: string): Promise<Blob | null> {
+    const sid = rawState.activeSessionId;
+    if (!sid) return null;
+    try {
+      return await getKimiWebApi().getWorkspaceFileBlob(sid, path);
+    } catch (err) {
+      pushOperationFailure('downloadFile', err, { sessionId: sid });
+      return null;
+    }
   }
 
   async function openWorkspaceFile(path: string, line?: number): Promise<boolean> {
@@ -2899,6 +2914,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     listDir,
     readFileContent,
     getFileDownloadUrl,
+    getWorkspaceFileBlob,
     openWorkspaceFile,
     openInApp,
     revealWorkspaceFile,

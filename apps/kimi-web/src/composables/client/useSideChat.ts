@@ -73,10 +73,15 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
     const target = activeSideChatTarget.value;
     if (!target) return [];
     const messages = rawState.sideChatMessagesByAgent[target.agentId] ?? [];
+    const api = getKimiWebApi();
+    // Desktop transports have no synchronous file URLs: empty url + fileId lets
+    // AuthMedia / openFileAttachment load the bytes via getFileBlob.
+    const syncFileUrl = (fileId: string): string =>
+      (api.supportsSyncFileUrls?.() ?? true) ? api.getFileUrl(fileId) : '';
     return messagesToTurns(
       messages,
       [],
-      (fileId) => getKimiWebApi().getFileUrl(fileId),
+      syncFileUrl,
       sideChatRunning.value,
     );
   });
@@ -249,6 +254,12 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
   function closeSideChat(): void {
     const sid = rawState.activeSessionId;
     if (!sid) return;
+    const target = sideChatTargetBySession.value[sid];
+    if (target) {
+      // Release the agent's real-time subscription (desktop detaches the
+      // product stream; the cursor survives for a cheap re-open).
+      getEventConn()?.unsubscribeSideAgent?.(target.agentId);
+    }
     const { [sid]: _removed, ...rest } = sideChatTargetBySession.value;
     void _removed;
     sideChatTargetBySession.value = rest;
@@ -267,7 +278,9 @@ export function useSideChat(rawState: ExtendedState, deps: UseSideChatDeps) {
   // When a session is deleted, drop its side-chat target so it cannot leak into a
   // later session that happens to reuse the same id.
   function clearSideChatForSession(sessionId: string): void {
-    if (!sideChatTargetBySession.value[sessionId]) return;
+    const target = sideChatTargetBySession.value[sessionId];
+    if (!target) return;
+    getEventConn()?.unsubscribeSideAgent?.(target.agentId);
     const { [sessionId]: _removed, ...rest } = sideChatTargetBySession.value;
     void _removed;
     sideChatTargetBySession.value = rest;

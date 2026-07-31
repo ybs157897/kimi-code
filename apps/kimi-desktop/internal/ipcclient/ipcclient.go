@@ -4,9 +4,11 @@
 // transports/ipc (codec.ts for the frame schema, channel.ts for the reference
 // client): the host sends `ready` on connect, the client answers
 // `hello{token}`, then `call` / `listen` / `unlisten` / `stream` /
-// `stream_cancel` frames are correlated by client-chosen ids. There is no
-// reconnect — a broken socket fails in-flight calls and closes subscription
-// and stream channels (the resumable-connection story lives elsewhere).
+// `stream_cancel` frames are correlated by client-chosen ids. The client is
+// single-connection and does NOT reconnect internally — a broken socket fails
+// in-flight calls and closes subscription and stream channels, and `Done`
+// fires so the owning shell can clean up and dial a fresh client (the
+// resumable-connection story lives in the Wails App layer).
 package ipcclient
 
 import (
@@ -378,6 +380,14 @@ func (c *Client) StreamCancel(id string) error {
 	}
 	c.send(frame{Type: "stream_cancel", ID: id})
 	return nil
+}
+
+// Done returns a channel that closes exactly once the connection is torn
+// down — socket EOF/read error, an explicit Close, or the handshake failing.
+// The owning shell selects on it to detect a broken IPC and start recovery
+// (clean up stale subscriptions and dial a fresh client).
+func (c *Client) Done() <-chan struct{} {
+	return c.dead
 }
 
 // Close tears down the connection: in-flight calls fail with ErrClosed and the

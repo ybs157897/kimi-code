@@ -26,6 +26,10 @@ const (
 	// eventChannel is the single Wails event name the webview subscribes to
 	// (contract C).
 	eventChannel = "kimi:event"
+	// connectionChannel carries real IPC connection state to the webview so
+	// `health()`/`onConnectionChange` reflect socket breaks, not just call
+	// failures.
+	connectionChannel = "kimi:connection"
 	// agentEventStream is the agent-scope event stream name (contract A/B).
 	agentEventStream = "events"
 	// callTimeout bounds a single klient procedure so a wedged sidecar cannot
@@ -34,20 +38,58 @@ const (
 	// startupWaitTimeout lets the first product calls wait for the embedded
 	// engine to finish booting instead of racing the background startup.
 	startupWaitTimeout = 45 * time.Second
+	// dialTimeout bounds one IPC dial attempt during recovery.
+	dialTimeout = 15 * time.Second
+	// reconnectBackoff bounds the wait between failed recovery attempts.
+	reconnectBackoff = 5 * time.Second
 )
+
+// ipcClient is the subset of *ipcclient.Client the App consumes, so the
+// connection/recovery logic is testable against a fake.
+type ipcClient interface {
+	Call(ctx context.Context, s ipcclient.Scope, service, method string, arg []any) (json.RawMessage, error)
+	Listen(ctx context.Context, s ipcclient.Scope, event string) (<-chan ipcclient.Event, error)
+	ListenWithCursor(ctx context.Context, s ipcclient.Scope, event string, arg []any) (<-chan ipcclient.Event, string, error)
+	Unlisten(id string) error
+	Stream(ctx context.Context, s ipcclient.Scope, service, method string, arg []any) (<-chan ipcclient.StreamEvent, string, error)
+	StreamCancel(id string) error
+	Close() error
+	Done() <-chan struct{}
+}
+
+// sidecarProcess is the child-process boundary owned by App. Keeping the
+// boundary narrow lets lifecycle tests substitute the external process while
+// production continues to use *sidecar.Sidecar.
+type sidecarProcess interface {
+	Start(ctx context.Context) error
+	Stop()
+	Endpoint() string
+	Token() string
+}
+
+type ipcDialer func(ctx context.Context, endpoint, token string) (ipcClient, error)
 
 // App is registered via `Bind: []any{app}` in main.go and surfaced to the
 // webview as window.go.main.App.
 type App struct {
-	sidecar *sidecar.Sidecar
+	sidecar sidecarProcess
+	dialIPC ipcDialer
 
 	ctx context.Context
 
 	mu     sync.Mutex
-	client *ipcclient.Client
+	client ipcClient
 	ready  chan struct{}
+	// readyOnce closes ready immediately after the first boot attempt, before
+	// the long-running connection manager starts.
+	readyOnce sync.Once
 	// startErr is populated before ready closes when startup fails.
 	startErr error
+	// shuttingDown guards the recovery loop against the shutdown path.
+	shuttingDown atomic.Bool
+	// recoveryMu serializes concurrent recovery attempts (the background
+	// connection manager and EnsureConnected) so two dials never race.
+	recoveryMu sync.Mutex
 	// subs cancels the forwarding goroutine for each active Phase 0 agent-event
 	// subscription, keyed by "sessionId/agentId".
 	subs map[string]context.CancelFunc
@@ -70,7 +112,10 @@ type App struct {
 // NewApp constructs the bound App and its sidecar manager.
 func NewApp() *App {
 	return &App{
-		sidecar:        sidecar.New(),
+		sidecar: sidecar.New(),
+		dialIPC: func(ctx context.Context, endpoint, token string) (ipcClient, error) {
+			return ipcclient.Dial(ctx, endpoint, token)
+		},
 		ready:          make(chan struct{}),
 		subs:           map[string]context.CancelFunc{},
 		productSubs:    map[string]productSub{},
@@ -87,34 +132,158 @@ func (a *App) startup(ctx context.Context) {
 	go a.connect()
 }
 
+// connect boots the sidecar + IPC client once, then runs the connection
+// manager: it watches for socket breaks, drops every stale subscription, and
+// re-dials — restarting the sidecar when the process died — until shutdown.
+// The ready channel closes after the first boot attempt (success or failure).
 func (a *App) connect() {
-	defer close(a.ready)
-	if err := a.sidecar.Start(a.ctx); err != nil {
+	if err := a.boot(); err != nil {
 		log.Printf("kimi-desktop: sidecar start failed: %v", err)
 		a.mu.Lock()
 		a.startErr = err
 		a.mu.Unlock()
-		return
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	// connectionManager normally lives until application shutdown. Signal the
+	// first boot result before entering it so a WebView call that raced startup
+	// can continue as soon as boot succeeds or fails.
+	a.readyOnce.Do(func() { close(a.ready) })
+	a.connectionManager()
+}
+
+// boot starts the sidecar (if not running) and dials its IPC endpoint once.
+func (a *App) boot() error {
+	if err := a.sidecar.Start(a.ctx); err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(a.ctx, dialTimeout)
 	defer cancel()
-	client, err := ipcclient.Dial(ctx, a.sidecar.Endpoint(), a.sidecar.Token())
+	client, err := a.dialIPC(ctx, a.sidecar.Endpoint(), a.sidecar.Token())
 	if err != nil {
-		log.Printf("kimi-desktop: ipc dial failed: %v", err)
-		a.mu.Lock()
-		a.startErr = err
-		a.mu.Unlock()
-		return
+		return err
 	}
 	a.mu.Lock()
 	a.client = client
+	a.startErr = nil
+	a.mu.Unlock()
+	return nil
+}
+
+// connectionManager owns the single recovery path. It blocks on the current
+// client's Done channel; when the IPC socket breaks (not during shutdown) it
+// cleans up every subscription bound to the dead client, reports the
+// disconnect to the webview, and re-dials with backoff — healing boot failures
+// too, since a nil client just enters the recovery loop.
+func (a *App) connectionManager() {
+	backoff := time.Second
+	for {
+		client := a.currentClient()
+		if client == nil {
+			if a.shuttingDown.Load() {
+				return
+			}
+			if err := a.recover(); err == nil {
+				backoff = time.Second
+				a.emitConnectionState("connected")
+				continue
+			} else {
+				log.Printf("kimi-desktop: ipc recovery failed: %v", err)
+			}
+			if a.shuttingDown.Load() {
+				return
+			}
+			select {
+			case <-time.After(backoff):
+			case <-a.ctx.Done():
+				return
+			}
+			if backoff < reconnectBackoff {
+				backoff *= 2
+			}
+			continue
+		}
+		select {
+		case <-client.Done():
+		case <-a.ctx.Done():
+			return
+		}
+		if a.shuttingDown.Load() {
+			return
+		}
+		a.handleDisconnect(client)
+	}
+}
+
+// handleDisconnect drops every subscription and stream the dead client owned
+// (so a later ProductSubscribe is a real re-subscribe, never a stale
+// "already exists" no-op), clears the client, and tells the webview.
+func (a *App) handleDisconnect(client ipcClient) {
+	a.mu.Lock()
+	if a.client != client {
+		// A newer client already took over (EnsureConnected raced us).
+		a.mu.Unlock()
+		return
+	}
+	a.clearSubscriptionsLocked()
+	a.client = nil
+	a.mu.Unlock()
+	_ = client.Close() // idempotent; guarantees the socket is down
+	log.Printf("kimi-desktop: ipc disconnected — recovering")
+	a.emitConnectionState("disconnected")
+}
+
+// recover re-establishes the IPC connection. It first tries a plain re-dial
+// against the running sidecar (the common socket-break case); when that fails
+// the sidecar process is presumed dead and is restarted under control before
+// dialing again. Serialized by recoveryMu so the background manager and
+// EnsureConnected never race. A nil error means a live client was installed;
+// every failed restart or dial remains an error and must never be reported as
+// "connected" to the WebView.
+func (a *App) recover() error {
+	a.recoveryMu.Lock()
+	defer a.recoveryMu.Unlock()
+	if a.shuttingDown.Load() {
+		return errors.New("desktop application is shutting down")
+	}
+	if a.currentLiveClient() != nil {
+		return nil
+	}
+	if client, err := a.dial(); err == nil {
+		a.installClient(client)
+		return nil
+	}
+	// Dial failed — the sidecar process is likely gone. Restart it and retry.
+	a.sidecar.Stop()
+	if err := a.sidecar.Start(a.ctx); err != nil {
+		return fmt.Errorf("sidecar restart: %w", err)
+	}
+	if client, err := a.dial(); err == nil {
+		a.installClient(client)
+		return nil
+	} else {
+		return fmt.Errorf("ipc dial after sidecar restart: %w", err)
+	}
+}
+
+func (a *App) dial() (ipcClient, error) {
+	ctx, cancel := context.WithTimeout(a.ctx, dialTimeout)
+	defer cancel()
+	return a.dialIPC(ctx, a.sidecar.Endpoint(), a.sidecar.Token())
+}
+
+func (a *App) installClient(client ipcClient) {
+	a.mu.Lock()
+	a.client = client
+	a.startErr = nil
 	a.mu.Unlock()
 }
 
-// shutdown is wired to wails OnShutdown: drop subscriptions, close the client,
-// then SIGTERM the sidecar. Unexported so Wails does not bind it.
-func (a *App) shutdown(_ context.Context) {
-	a.mu.Lock()
+func (a *App) emitConnectionState(state string) {
+	runtime.EventsEmit(a.ctx, connectionChannel, map[string]any{"state": state})
+}
+
+// clearSubscriptionsLocked cancels every active subscription/stream. Callers
+// hold a.mu. Shared by handleDisconnect and shutdown.
+func (a *App) clearSubscriptionsLocked() {
 	for _, cancel := range a.subs {
 		cancel()
 	}
@@ -124,7 +293,7 @@ func (a *App) shutdown(_ context.Context) {
 	}
 	a.productSubs = map[string]productSub{}
 	// Cancelling stops the stream forwarding goroutines; the host side aborts
-	// when the client closes the socket right below.
+	// them when the socket closes.
 	for _, stream := range a.productStreams {
 		stream.cancel()
 	}
@@ -133,6 +302,14 @@ func (a *App) shutdown(_ context.Context) {
 		sub.cancel()
 	}
 	a.terminalSubs = map[string]terminalSub{}
+}
+
+// shutdown is wired to wails OnShutdown: drop subscriptions, close the client,
+// then SIGTERM the sidecar. Unexported so Wails does not bind it.
+func (a *App) shutdown(_ context.Context) {
+	a.shuttingDown.Store(true)
+	a.mu.Lock()
+	a.clearSubscriptionsLocked()
 	client := a.client
 	a.client = nil
 	a.mu.Unlock()
@@ -147,7 +324,8 @@ func (a *App) shutdown(_ context.Context) {
 
 // Hello reports sidecar/IPC health as a JSON object. It probes the engine with
 // a cheap bootstrap read; a missing client is reported, not thrown, so the UI
-// can render a disconnected state.
+// can render a disconnected state. A client whose socket already broke (Done
+// fired) reports disconnected too, not a misleading "error".
 func (a *App) Hello() (string, error) {
 	status := map[string]any{}
 	status["sidecar"] = "down"
@@ -155,6 +333,11 @@ func (a *App) Hello() (string, error) {
 	client := a.currentClient()
 	if client == nil {
 		return marshal(status), nil
+	}
+	select {
+	case <-client.Done():
+		return marshal(status), nil
+	default:
 	}
 	ctx, cancel := a.callCtx()
 	defer cancel()
@@ -168,6 +351,25 @@ func (a *App) Hello() (string, error) {
 	status["ipc"] = "connected"
 	status["platform"] = json.RawMessage(raw)
 	return marshal(status), nil
+}
+
+// EnsureConnected reports the IPC state as JSON `{state: "connected" |
+// "disconnected"}`, forcing a bounded synchronous recovery when the connection
+// is currently broken. The webview's reconnect() calls this first so a
+// resubscribe never targets a dead client.
+func (a *App) EnsureConnected() (string, error) {
+	if a.currentLiveClient() != nil {
+		return marshal(map[string]string{"state": "connected"}), nil
+	}
+	if a.shuttingDown.Load() {
+		return marshal(map[string]string{"state": "disconnected"}), nil
+	}
+	if err := a.recover(); err != nil {
+		log.Printf("kimi-desktop: synchronous ipc recovery failed: %v", err)
+		return marshal(map[string]string{"state": "disconnected"}), nil
+	}
+	a.emitConnectionState("connected")
+	return marshal(map[string]string{"state": "connected"}), nil
 }
 
 // ListSessions returns the klient global session index page (sessionIndex.list).
@@ -318,14 +520,27 @@ func (a *App) emit(sessionId, agentId string, data json.RawMessage) {
 
 // ── helpers ─────────────────────────────────────────────────────────────────
 
-func (a *App) currentClient() *ipcclient.Client {
+func (a *App) currentClient() ipcClient {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.client
 }
 
-func (a *App) requireClient() (*ipcclient.Client, error) {
-	if c := a.currentClient(); c != nil {
+func (a *App) currentLiveClient() ipcClient {
+	client := a.currentClient()
+	if client == nil {
+		return nil
+	}
+	select {
+	case <-client.Done():
+		return nil
+	default:
+		return client
+	}
+}
+
+func (a *App) requireClient() (ipcClient, error) {
+	if c := a.currentLiveClient(); c != nil {
 		return c, nil
 	}
 
@@ -344,6 +559,11 @@ func (a *App) requireClient() (*ipcclient.Client, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.client != nil {
+		select {
+		case <-a.client.Done():
+			return nil, errors.New("desktop engine IPC not connected")
+		default:
+		}
 		return a.client, nil
 	}
 	if a.startErr != nil {

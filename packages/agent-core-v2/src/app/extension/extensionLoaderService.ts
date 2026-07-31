@@ -8,8 +8,10 @@
  */
 
 import path from 'node:path';
+import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
+import type { TransformOptions, TransformResult } from 'jiti';
 import { createJiti } from 'jiti';
 
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -146,6 +148,7 @@ export class ExtensionLoaderService implements IExtensionLoaderService {
         moduleCache: false,
         alias: this.aliases,
         interopDefault: true,
+        transform: lazyBabelTransform,
       });
       const module = (await jiti.import(extensionPath, { default: true })) as unknown;
       if (typeof module !== 'function') {
@@ -176,9 +179,58 @@ function isExtensionFile(name: string): boolean {
   return EXTENSION_FILE_SUFFIXES.some((suffix) => name.endsWith(suffix));
 }
 
+/**
+ * jiti's default transform lazily requires `jiti/dist/babel.cjs` relative to
+ * jiti's own file — a path that does not exist inside a single-file SEA. The
+ * desktop sidecar embeds that self-contained bundle as a SEA asset and points
+ * `KIMI_JITI_BABEL_PATH` at the materialized file; everywhere else the package
+ * layout resolves normally. Supplying the transform explicitly (instead of
+ * jiti's own lazy require) is what makes the SEA case work.
+ */
+// jiti's default transform lazily requires `jiti/dist/babel.cjs` relative to
+// jiti's own file — a path that does not exist inside a single-file SEA. The
+// desktop sidecar embeds that self-contained bundle as a SEA asset and points
+// `KIMI_JITI_BABEL_PATH` at the materialized file; everywhere else the package
+// layout resolves normally. Supplying the transform explicitly (instead of
+// jiti's own lazy require) is what makes the SEA case work.
+let babelTransform: ((opts: TransformOptions) => TransformResult) | undefined;
+function lazyBabelTransform(opts: TransformOptions): TransformResult {
+  if (babelTransform === undefined) {
+    const injected = process.env['KIMI_JITI_BABEL_PATH'];
+    // `jiti/dist/babel.cjs` is not covered by jiti's exports map, so resolve
+    // the package.json first and join the dist path manually.
+    const babelPath =
+      injected !== undefined && injected.length > 0
+        ? injected
+        : path.join(
+            path.dirname(createRequire(import.meta.url).resolve('jiti/package.json')),
+            'dist',
+            'babel.cjs',
+          );
+    babelTransform = createRequire(import.meta.url)(babelPath) as (
+      opts: TransformOptions,
+    ) => TransformResult;
+  }
+  return babelTransform(opts);
+}
+
+/**
+ * Resolve the extension host API module to a file path jiti can load. Priority:
+ *
+ *  1. `KIMI_EXTENSION_HOST_API` — an explicit path injected by a host that
+ *     cannot resolve the package from disk (the desktop SEA sidecar
+ *     materializes the bundled host API chunk and sets this).
+ *  2. `createRequire(import.meta.url).resolve(...)` — works in both ESM (tsx
+ *     dev) and CJS bundles, unlike `import.meta.resolve`, which bundlers
+ *     cannot polyfill in CJS output (tsdown emits a `{}.resolve` that always
+ *     throws).
+ *  3. A path relative to this module, as a last-resort fallback.
+ */
 function resolveExtensionHostApi(): string {
+  const injected = process.env['KIMI_EXTENSION_HOST_API'];
+  if (injected !== undefined && injected.length > 0) return injected;
   try {
-    return fileURLToPath(import.meta.resolve('@moonshot-ai/agent-core-v2/extension'));
+    return fileURLToPath(createRequire(import.meta.url).resolve('@moonshot-ai/agent-core-v2/extension'));
   } catch {
     return fileURLToPath(new URL('../../extension.ts', import.meta.url));
   }

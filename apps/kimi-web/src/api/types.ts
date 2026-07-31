@@ -578,9 +578,19 @@ export interface KimiEventConnection {
   /**
    * Mark an agent as a side-channel (e.g. BTW side chat). The client-side
    * projector will then emit its text/thinking deltas as agent-scoped events
-   * instead of dropping them like background subagents.
+   * instead of dropping them like background subagents. On transports without
+   * a client-side projector (desktop IPC) this establishes the agent's product
+   * subscription; `sessionId` may be passed explicitly, otherwise the
+   * transport's own agent → session mapping (recorded by `startBtw`) is used.
    */
-  markSideChannelAgent(agentId: string): void;
+  markSideChannelAgent(agentId: string, sessionId?: string): void;
+  /**
+   * Release a side-channel agent (desktop transports detach its product
+   * subscription; the cursor is kept so a quick re-open resumes from the
+   * journal). Optional: browser transports have no per-agent subscription to
+   * release.
+   */
+  unsubscribeSideAgent?(agentId: string): void;
   /**
    * Report the underlying socket's health. Used to detect a silent-half-open
    * connection after the tab was frozen in the background: the browser still
@@ -879,6 +889,14 @@ export interface KimiWebApi {
   getFileUrl(fileId: string): string;
   /** Fetch a file's bytes with auth — feed the resulting Blob to a blob URL for <video>/<img> src. */
   getFileBlob(fileId: string): Promise<Blob>;
+  /**
+   * Whether this transport can produce usable synchronous file URLs
+   * (`getFileUrl` / `getFileDownloadUrl`). Browser transports backed by
+   * `/api/v1` return true; desktop IPC transports return false — callers must
+   * route through the Blob methods (`getFileBlob` / `getWorkspaceFileBlob` +
+   * `URL.createObjectURL`) instead. Optional for test mocks (default true).
+   */
+  supportsSyncFileUrls?(): boolean;
 
   // Config — REAL endpoints
   getConfig(): Promise<AppConfig>;

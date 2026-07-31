@@ -1496,6 +1496,11 @@ export class DaemonKimiWebApi implements KimiWebApi {
     return buildRestUrl(this.config.serverHttpUrl, `/files/${encodeURIComponent(fileId)}`);
   }
 
+  /** The browser transport can produce real /api/v1 file URLs synchronously. */
+  supportsSyncFileUrls(): boolean {
+    return true;
+  }
+
   /** Fetch a file's bytes with the Bearer credential attached. Use this (not
    *  getFileUrl) when the bytes feed a <video>/<img> src: the browser loads
    *  those natively without the Authorization header, so the URL alone 401s. */
