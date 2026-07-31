@@ -1,11 +1,3 @@
-import type { Component, Focusable } from '@moonshot-ai/pi-tui';
-import type {
-  ApprovalRequest,
-  ApprovalResponse,
-  QuestionRequest,
-  QuestionResult,
-} from '@moonshot-ai/kimi-code-sdk';
-
 import { MoonLoader } from '../components/chrome/moon-loader';
 import { buildGoalMarker } from '../components/messages/goal-markers';
 import { StatusMessageComponent } from '../components/messages/status-message';
@@ -46,20 +38,44 @@ import type { ColorToken } from '#/tui/theme';
 import { errorReportHintLine } from '../constant/feedback';
 import { formatStepDebugTiming } from '#/utils/usage/debug-timing';
 import { nextTranscriptId } from '../utils/transcript-id';
-import type { BtwPanelController } from './btw-panel';
 import { isPluginMcpToolName, PluginUpdateNotifier } from './plugin-update-notifier';
-import type { StreamingUIController } from './streaming-ui';
-import type { TasksBrowserController } from './tasks-browser';
 import { SubAgentEventHandler } from './subagent-event-handler';
+import { sessionEventId } from './session-event-handler/session-event-id';
+import type {
+  AgentStatusUpdatedEvent,
+  AssistantDeltaEvent,
+  BackgroundTaskStartedEvent,
+  BackgroundTaskTerminatedEvent,
+  CompactionCancelledEvent,
+  CompactionCompletedEvent,
+  CompactionStartedEvent,
+  CronFiredEvent,
+  ErrorEvent,
+  GoalUpdatedEvent,
+  HookResultEvent,
+  NoticeEvent,
+  PluginCommandActivatedEvent,
+  SessionEventHost,
+  SkillActivatedEvent,
+  ThinkingDeltaEvent,
+  ToolCallDeltaEvent,
+  ToolCallStartedEvent,
+  ToolProgressEvent,
+  ToolResultEvent,
+  TurnEndedEvent,
+  TurnStartedEvent,
+  TurnStepCompletedEvent,
+  TurnStepInterruptedEvent,
+  TurnStepStartedEvent,
+  WarningEvent,
+} from './session-event-handler/types';
 import type {
   AppState,
-  LivePaneState,
   QueuedMessage,
   ToolCallBlockData,
   ToolResultBlockData,
   TranscriptEntry,
 } from '../types';
-import type { TUIState } from '../tui-state';
 import { createGoal as startGoalCommand } from '../commands/goal';
 import type {
   SessionScopedEventsPort,
@@ -70,71 +86,7 @@ import type {
 import type { UpcomingGoal } from '../runtime/session-goal-queue-port';
 import type { TUISessionRuntime } from '../runtime/tui-session-runtime';
 
-type AgentEventOf<T extends TUIAgentEvent['type']> = Extract<
-  TUIAgentEvent,
-  { readonly type: T }
->;
-type AgentStatusUpdatedEvent = AgentEventOf<'agent.status.updated'>;
-type AssistantDeltaEvent = AgentEventOf<'assistant.delta'>;
-type BackgroundTaskStartedEvent = AgentEventOf<'background.task.started'>;
-type BackgroundTaskTerminatedEvent = AgentEventOf<'background.task.terminated'>;
-type CompactionCancelledEvent = AgentEventOf<'compaction.cancelled'>;
-type CompactionCompletedEvent = AgentEventOf<'compaction.completed'>;
-type CompactionStartedEvent = AgentEventOf<'compaction.started'>;
-type CronFiredEvent = AgentEventOf<'cron.fired'>;
-type ErrorEvent = AgentEventOf<'error'>;
-type GoalUpdatedEvent = AgentEventOf<'goal.updated'>;
-type HookResultEvent = AgentEventOf<'hook.result'>;
-type NoticeEvent = AgentEventOf<'notice'>;
-type PluginCommandActivatedEvent = AgentEventOf<'plugin_command.activated'>;
-type SkillActivatedEvent = AgentEventOf<'skill.activated'>;
-type ThinkingDeltaEvent = AgentEventOf<'thinking.delta'>;
-type ToolCallDeltaEvent = AgentEventOf<'tool.call.delta'>;
-type ToolCallStartedEvent = AgentEventOf<'tool.call.started'>;
-type ToolProgressEvent = AgentEventOf<'tool.progress'>;
-type ToolResultEvent = AgentEventOf<'tool.result'>;
-type TurnEndedEvent = AgentEventOf<'turn.ended'>;
-type TurnStartedEvent = AgentEventOf<'turn.started'>;
-type TurnStepCompletedEvent = AgentEventOf<'turn.step.completed'>;
-type TurnStepInterruptedEvent = AgentEventOf<'turn.step.interrupted'>;
-type TurnStepStartedEvent = AgentEventOf<'turn.step.started'>;
-type WarningEvent = AgentEventOf<'warning'>;
-
-function sessionEventId(event: TUISessionScopedEvent): string {
-  return event.type === 'interaction.requested' ? event.interaction.sessionId : event.sessionId;
-}
-
-export interface SessionEventHost {
-  state: TUIState;
-  aborted: boolean;
-  runtimeEventUnsubscribe: (() => void) | undefined;
-  readonly streamingUI: StreamingUIController;
-
-  requireSessionRuntime(): TUISessionRuntime;
-  requestApprovalResponse(request: ApprovalRequest): Promise<ApprovalResponse>;
-  requestQuestionResponse(request: QuestionRequest): Promise<QuestionResult>;
-  recordApprovalResponse(request: ApprovalRequest, response: ApprovalResponse): void;
-  setAppState(patch: Partial<AppState>): void;
-  patchLivePane(patch: Partial<LivePaneState>): void;
-  resetLivePane(): void;
-  showError(msg: string): void;
-  showStatus(msg: string, color?: ColorToken): void;
-  showNotice(title: string, detail?: string): void;
-  updateActivityPane(): void;
-  track(event: string, props?: Record<string, unknown>): void;
-  mountEditorReplacement(panel: Component & Focusable): void;
-  restoreEditor(): void;
-  restoreInputText(text: string): void;
-  appendTranscriptEntry(entry: TranscriptEntry): void;
-  handleShellOutput(event: { commandId: string; update: { kind: string; text?: string } }): void;
-  handleShellStarted(event: { commandId: string; taskId: string }): void;
-  sendNormalUserInput(text: string): void;
-  updateTerminalTitle(): void;
-  sendQueuedMessage(item: QueuedMessage): void;
-  shiftQueuedMessage(): QueuedMessage | undefined;
-  readonly btwPanelController: BtwPanelController;
-  readonly tasksBrowserController: TasksBrowserController;
-}
+export type { SessionEventHost } from './session-event-handler/types';
 
 export class SessionEventHandler {
   readonly subAgentEventHandler: SubAgentEventHandler;
