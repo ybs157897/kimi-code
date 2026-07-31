@@ -30,6 +30,35 @@ import type {
 } from '../daemon/wire';
 import { base64FromBytes, bytesFromBase64 } from './base64';
 import { assembleStreamToBlob } from './bridge';
+import {
+  DELTA_CHUNK_CHARS,
+  DELTA_INTERVAL_MS,
+  MOCK_COMMAND,
+  MOCK_COMMAND_OUTPUT,
+  MOCK_EXPERT_TEAMS,
+  MOCK_JOURNAL_CAPACITY,
+  MOCK_OPEN_IN_APPS,
+  MOCK_REPLY_CLOSING,
+  MOCK_REPLY_OPENING,
+  MOCK_WORKSPACE_ID,
+} from './mockData';
+import {
+  MockEnvelopeError,
+  applyMockAgentConfig,
+  chunkText,
+  delay,
+  mockEnvelopeError,
+  mockProviderInput,
+  requireMockString,
+  terminalKey,
+  turnKey,
+} from './mockHelpers';
+import type {
+  ActiveTurn,
+  MockProductStream,
+  MockProviderInput,
+  MockProviderRecord,
+} from './mockTypes';
 import type {
   DesktopAgentEvent,
   DesktopBridge,
@@ -44,97 +73,6 @@ import type {
   ProductEventPayload,
   ProductStreamCursor,
 } from './types';
-
-const MOCK_WORKSPACE_ID = 'mock-workspace';
-const MOCK_COMMAND = 'echo "hello from the mock engine"';
-
-/** Whitelisted open-in app ids the mock accepts (mirrors the sidecar list). */
-const MOCK_OPEN_IN_APPS = ['finder', 'cursor', 'vscode', 'iterm', 'terminal'];
-
-/**
- * A coded product failure the dispatch wrapper serializes into a kap-server
- * error envelope (frozen contract E), so the desktop client's `call` surfaces
- * the same code/msg it would get from the real sidecar.
- */
-class MockEnvelopeError extends Error {
-  constructor(
-    readonly code: number,
-    readonly msg: string,
-  ) {
-    super(msg);
-    this.name = 'MockEnvelopeError';
-  }
-}
-
-function mockEnvelopeError(code: number, msg: string): MockEnvelopeError {
-  return new MockEnvelopeError(code, msg);
-}
-const MOCK_COMMAND_OUTPUT = 'hello from the mock engine\n';
-const MOCK_REPLY_OPENING = 'Sure — let me run a quick command to demonstrate the stream.\n\n';
-const MOCK_REPLY_CLOSING =
-  '\n\nThe command printed `hello from the mock engine`. This whole turn was ' +
-  'simulated by the browser dev mock — no engine is attached.';
-
-/** Canned expert-team catalog so Modes → 专家团 appears under ?desktop_transport=1. */
-const MOCK_EXPERT_TEAMS: WireExpertTeamDefinition[] = [
-  {
-    plugin_id: 'mock-experts',
-    display_name: 'Mock Expert Team',
-    description: 'Demo specialists for the desktop transport',
-    tags: ['demo'],
-    lead_agent_name: 'lead',
-    member_agent_names: ['researcher', 'reviewer'],
-    members: [
-      { agent: 'lead', role: 'lead', display_name: 'Lead' },
-      { agent: 'researcher', role: 'member', display_name: 'Researcher' },
-      { agent: 'reviewer', role: 'member', display_name: 'Reviewer' },
-    ],
-    quick_prompts: ['Review this change as a specialist team'],
-  },
-];
-
-/** Streaming cadence: one assistant.delta every DELTA_INTERVAL_MS per chunk. */
-const DELTA_CHUNK_CHARS = 8;
-const DELTA_INTERVAL_MS = 24;
-
-function delay(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function turnKey(sessionId: string, agentId: string): string {
-  return `${sessionId}::${agentId}`;
-}
-
-/** Slice 6 terminal attachment key (mirrors the Go shell's map key). */
-function terminalKey(sessionId: string, terminalId: string): string {
-  return `${sessionId}\u0000${terminalId}`;
-}
-
-function chunkText(text: string, size: number): string[] {
-  const chunks: string[] = [];
-  for (let i = 0; i < text.length; i += size) chunks.push(text.slice(i, i + size));
-  return chunks;
-}
-
-interface ActiveTurn {
-  turnId: number;
-  timers: ReturnType<typeof setTimeout>[];
-}
-
-/** Bounded retained-frame count per mock stream (mirrors the sidecar hub). */
-const MOCK_JOURNAL_CAPACITY = 1024;
-
-/** Per-session product stream state (epoch/seq/journal + subscription gate). */
-interface MockProductStream {
-  epoch: string;
-  seq: number;
-  journal: Array<{ seq: number; event: WireEvent }>;
-  subscribed: boolean;
-}
-
-interface MockProviderRecord extends WireProvider {
-  api_key?: string;
-}
 
 export class MockDesktopBridge implements DesktopBridge {
   readonly kind = 'mock' as const;
@@ -2098,86 +2036,5 @@ export class MockDesktopBridge implements DesktopBridge {
       updatedAt: now,
       archived: false,
     });
-  }
-}
-
-interface MockProviderModelInput {
-  model: string;
-  displayName?: string;
-  maxContextSize: number;
-}
-
-interface MockProviderInput {
-  id: string;
-  type: string;
-  apiKey?: string;
-  baseUrl?: string;
-  defaultModel?: string;
-  models: MockProviderModelInput[];
-}
-
-function mockProviderInput(raw: unknown, fallbackId?: string): MockProviderInput {
-  if (!isRecord(raw)) throw new Error('provider input must be an object');
-  const id = requireMockString(raw['new_id'] ?? raw['id'] ?? fallbackId, 'provider id');
-  const type = requireMockString(raw['type'], 'provider type');
-  if (!Array.isArray(raw['models']) || raw['models'].length === 0) {
-    throw new Error('provider must define at least one model');
-  }
-  return {
-    id,
-    type,
-    apiKey:
-      Object.prototype.hasOwnProperty.call(raw, 'api_key')
-        ? optionalMockString(raw['api_key'])
-        : undefined,
-    baseUrl: optionalMockString(raw['base_url']),
-    defaultModel: optionalMockString(raw['default_model']),
-    models: raw['models'].map((value) => {
-      if (!isRecord(value)) throw new Error('provider model must be an object');
-      const maxContextSize = value['max_context_size'];
-      if (typeof maxContextSize !== 'number' || !Number.isFinite(maxContextSize)) {
-        throw new Error('provider model context size must be a number');
-      }
-      return {
-        model: requireMockString(value['model'], 'model name'),
-        displayName: optionalMockString(value['display_name']),
-        maxContextSize,
-      };
-    }),
-  };
-}
-
-function requireMockString(value: unknown, name: string): string {
-  if (typeof value !== 'string' || value.length === 0) {
-    throw new Error(`missing ${name}`);
-  }
-  return value;
-}
-
-function optionalMockString(value: unknown): string | undefined {
-  return typeof value === 'string' && value.length > 0 ? value : undefined;
-}
-
-/** Mutate a session's agent_config from a POST /profile (or create) body. */
-function applyMockAgentConfig(
-  target: WireSession['agent_config'],
-  patch: Record<string, unknown>,
-): void {
-  if (typeof patch['model'] === 'string') target.model = patch['model'];
-  if (typeof patch['thinking'] === 'string') target.thinking = patch['thinking'];
-  if (typeof patch['permission_mode'] === 'string') {
-    target.permission_mode = patch['permission_mode'];
-  }
-  if (typeof patch['plan_mode'] === 'boolean') target.plan_mode = patch['plan_mode'];
-  if (typeof patch['swarm_mode'] === 'boolean') target.swarm_mode = patch['swarm_mode'];
-  if (typeof patch['goal_objective'] === 'string') {
-    target.goal_objective = patch['goal_objective'];
-  }
-  if (
-    patch['goal_control'] === 'pause' ||
-    patch['goal_control'] === 'resume' ||
-    patch['goal_control'] === 'cancel'
-  ) {
-    target.goal_control = patch['goal_control'];
   }
 }
