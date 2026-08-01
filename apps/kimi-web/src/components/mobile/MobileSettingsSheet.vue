@@ -6,7 +6,7 @@
 <!-- (theme / color scheme / language) and the sign-in/out entry, which previously -->
 <!-- had no mobile counterpart. -->
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue';
+import { computed, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { ConversationStatus, PermissionMode } from '../../types';
 import type { AppModel, AppSession, ThinkingLevel } from '../../api/types';
@@ -23,8 +23,12 @@ import BottomSheet from '../dialogs/BottomSheet.vue';
 import LanguageSwitcher from '../settings/LanguageSwitcher.vue';
 import { formatTokens } from '../../lib/formatTokens';
 import Button from '../ui/Button.vue';
+import EmptyState from '../ui/EmptyState.vue';
+import Icon from '../ui/Icon.vue';
 import Input from '../ui/Input.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
+import Skeleton from '../ui/Skeleton.vue';
+import Toast from '../ui/Toast.vue';
 
 const { t } = useI18n();
 
@@ -152,6 +156,10 @@ function onLogout(): void {
 const client = useKimiWebClient();
 type SheetView = 'main' | 'archived';
 const view = ref<SheetView>('main');
+/** Direction of the next main↔archived swap: forward drifts the incoming
+    archived view in from the right, back drifts the main view in from the
+    left, so the lateral navigation reads directionally. */
+const viewSwapName = ref<'view-fwd' | 'view-back'>('view-fwd');
 
 const archivedItems = ref<AppSession[]>([]);
 const archivedLoading = ref(false);
@@ -186,12 +194,14 @@ async function loadAllArchived(): Promise<void> {
 }
 
 function openArchived(): void {
+  viewSwapName.value = 'view-fwd';
   view.value = 'archived';
   archiveQuery.value = '';
   void loadAllArchived();
 }
 
 function backToMain(): void {
+  viewSwapName.value = 'view-back';
   view.value = 'main';
 }
 
@@ -210,9 +220,37 @@ const filteredArchived = computed<AppSession[]>(() => {
   return rows;
 });
 
+// Restore confirmation — the restored row simply leaves the list, so without
+// a toast the tap would read as a silent deletion. The toast auto-dismisses;
+// its timer is cleared on manual dismiss and on unmount.
+const restoreToast = ref<{ title: string } | null>(null);
+let restoreToastTimer: ReturnType<typeof setTimeout> | undefined;
+
+function showRestoreToast(title: string): void {
+  if (restoreToastTimer !== undefined) clearTimeout(restoreToastTimer);
+  restoreToast.value = { title };
+  restoreToastTimer = setTimeout(() => {
+    restoreToastTimer = undefined;
+    restoreToast.value = null;
+  }, 4000);
+}
+
+function dismissRestoreToast(): void {
+  if (restoreToastTimer !== undefined) clearTimeout(restoreToastTimer);
+  restoreToastTimer = undefined;
+  restoreToast.value = null;
+}
+
+onUnmounted(() => {
+  if (restoreToastTimer !== undefined) clearTimeout(restoreToastTimer);
+});
+
 async function onRestore(id: string): Promise<void> {
   const ok = await client.restoreSession(id);
-  if (ok) archivedItems.value = archivedItems.value.filter((s) => s.id !== id);
+  if (!ok) return;
+  const title = archivedItems.value.find((s) => s.id === id)?.title ?? '';
+  archivedItems.value = archivedItems.value.filter((s) => s.id !== id);
+  showRestoreToast(title);
 }
 
 function archiveTime(iso: string): string {
@@ -227,7 +265,10 @@ function archiveTime(iso: string): string {
 watch(
   () => props.modelValue,
   (open) => {
-    if (!open) view.value = 'main';
+    if (!open) {
+      viewSwapName.value = 'view-back';
+      view.value = 'main';
+    }
   },
 );
 </script>
@@ -238,7 +279,8 @@ watch(
     :title="t('mobile.settingsTitle')"
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <template v-if="view === 'main'">
+    <Transition :name="viewSwapName" mode="out-in">
+    <div v-if="view === 'main'" key="main" class="sheet-view">
     <div class="group-title">{{ t('mobile.groupSession') }}</div>
 
     <!-- Model → opens ModelPicker -->
@@ -395,9 +437,9 @@ watch(
       </span>
       <span class="srow-val dim">{{ serverVersion }}</span>
     </div>
-    </template>
+    </div>
 
-    <template v-else>
+    <div v-else key="archived" class="sheet-view">
       <!-- Archived sessions sub-view -->
       <div class="arch-subhead">
         <button type="button" class="arch-back" @click="backToMain">
@@ -426,7 +468,22 @@ watch(
         />
       </div>
 
-      <div v-if="archivedLoading" class="arch-empty">{{ t('settings.archivedLoadingAll') }}</div>
+      <!-- Skeleton rows in the exact .arch-row geometry while the full set
+           pages in (the loading text lives on as the status aria-label). -->
+      <div
+        v-if="archivedLoading"
+        class="arch-skeletons"
+        role="status"
+        :aria-label="t('settings.archivedLoadingAll')"
+      >
+        <div v-for="n in 4" :key="n" class="arch-row arch-skel">
+          <div class="arch-meta">
+            <Skeleton :width="`${46 + n * 8}%`" height="14px" />
+            <Skeleton width="40%" height="10px" />
+          </div>
+          <Skeleton width="64px" height="26px" />
+        </div>
+      </div>
 
       <template v-else-if="filteredArchived.length > 0">
         <div v-for="s in filteredArchived" :key="s.id" class="arch-row">
@@ -438,10 +495,29 @@ watch(
         </div>
       </template>
 
-      <div v-else class="arch-empty">
-        {{ archivedItems.length === 0 ? t('settings.archivedEmpty') : t('settings.archivedNoMatch') }}
+      <EmptyState
+        v-else
+        :title="archivedItems.length === 0 ? t('settings.archivedEmpty') : t('settings.archivedNoMatch')"
+      >
+        <template #icon><Icon name="archive" size="lg" /></template>
+      </EmptyState>
+    </div>
+    </Transition>
+
+    <!-- Restore confirmation — floats above the sheet (z-toast sits above
+         z-overlay), centered at the bottom; the wrapper ignores taps so the
+         sheet underneath stays interactive. -->
+    <Transition name="restore-toast">
+      <div v-if="restoreToast" class="restore-toast" role="status" aria-live="polite">
+        <Toast
+          variant="success"
+          :title="t('settings.archivedRestore')"
+          :message="restoreToast.title"
+          :dismiss-label="t('warnings.dismiss')"
+          @dismiss="dismissRestoreToast"
+        />
       </div>
-    </template>
+    </Transition>
   </BottomSheet>
 </template>
 
@@ -591,6 +667,8 @@ watch(
   display: block;
   height: 100%;
   background: var(--color-accent);
+  /* Ease the fill as context grows instead of jumping between widths. */
+  transition: width var(--duration-base) var(--ease-out);
 }
 
 @media (max-width: 640px) {
@@ -694,11 +772,43 @@ watch(
   font-size: var(--text-xs);
   color: var(--color-text-faint);
 }
-.arch-empty {
-  padding: var(--space-6) var(--space-4);
-  text-align: center;
-  font-family: var(--font-ui);
-  font-size: var(--text-sm);
-  color: var(--color-text-faint);
+/* Main ↔ archived swap: ±16px horizontal drift so the navigation reads
+   directionally — forward slides the archived view in from the right, back
+   slides the main view in from the left, at the shared base tempo. */
+.view-fwd-enter-active,
+.view-fwd-leave-active,
+.view-back-enter-active,
+.view-back-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+.view-fwd-enter-from { opacity: 0; transform: translateX(16px); }
+.view-fwd-leave-to { opacity: 0; transform: translateX(-16px); }
+.view-back-enter-from { opacity: 0; transform: translateX(-16px); }
+.view-back-leave-to { opacity: 0; transform: translateX(16px); }
+
+/* Restore confirmation toast — fixed above the sheet (z-toast > z-overlay),
+   centered at the bottom. Motion is owned here (the Toast stays in its
+   static branch): enter reuses the shared kimi-card-in rise, leave fades
+   and settles 4px down, same tempo as Toast's own animated branch. */
+.restore-toast {
+  position: fixed;
+  left: 12px;
+  right: 12px;
+  bottom: calc(max(16px, var(--safe-bottom)) + 12px);
+  z-index: var(--z-toast);
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+.restore-toast .ui-toast { pointer-events: auto; }
+.restore-toast-enter-active { animation: kimi-card-in var(--duration-base) var(--ease-out); }
+.restore-toast-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+.restore-toast-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
 }
 </style>
