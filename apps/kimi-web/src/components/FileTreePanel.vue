@@ -10,6 +10,7 @@ import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
 import Button from './ui/Button.vue';
 import EmptyState from './ui/EmptyState.vue';
+import Spinner from './ui/Spinner.vue';
 import FileTreeNode, {
   type FileTreeBadgeKind,
   type FileTreeNodeModel,
@@ -33,6 +34,7 @@ const roots = ref<FileTreeNodeModel[]>([]);
 const loading = ref(false);
 const error = ref<string | null>(null);
 const search = ref('');
+const bodyEl = ref<HTMLDivElement | null>(null);
 let loadVersion = 0;
 
 function badgeKind(status: string | undefined): FileTreeBadgeKind | null {
@@ -144,6 +146,20 @@ watch(
   },
 );
 
+// Reveal the selected row when a file is opened from chat: without this the
+// highlight can land silently off-screen inside the scrollable body.
+// `flush: 'post'` runs after the DOM update so the row already exists.
+watch(
+  () => props.selectedPath,
+  (path) => {
+    if (!path) return;
+    bodyEl.value
+      ?.querySelector('[aria-selected="true"]')
+      ?.scrollIntoView({ block: 'nearest' });
+  },
+  { flush: 'post' },
+);
+
 onMounted(() => {
   void loadRoot();
 });
@@ -163,7 +179,12 @@ onMounted(() => {
         :disabled="loading"
         @click="loadRoot"
       >
-        <Icon name="refresh" size="sm" />
+        <Icon
+          name="refresh"
+          size="sm"
+          class="file-tree-panel__refresh"
+          :class="{ 'is-spinning': loading }"
+        />
       </IconButton>
     </PanelHeader>
 
@@ -179,9 +200,14 @@ onMounted(() => {
       </label>
     </div>
 
-    <div class="file-tree-panel__body">
-      <div v-if="loading && roots.length === 0" class="file-tree-panel__state">
-        {{ t('fileTree.loading') }}
+    <div ref="bodyEl" class="file-tree-panel__body">
+      <div
+        v-if="loading && roots.length === 0"
+        class="file-tree-panel__state"
+        role="status"
+      >
+        <span aria-hidden="true"><Spinner size="sm" /></span>
+        <span>{{ t('fileTree.loading') }}</span>
       </div>
       <EmptyState
         v-else-if="error"
@@ -259,10 +285,22 @@ onMounted(() => {
   overflow: auto;
 }
 .file-tree-panel__state {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
   padding: var(--space-4);
   color: var(--color-text-muted);
   font: var(--text-sm) var(--font-ui);
   text-align: center;
+}
+/* Refresh glyph spins while the root listing is in flight — the button stays
+   disabled, the spin is the progress cue. Same period as the ui Spinner. */
+.file-tree-panel__refresh.is-spinning {
+  animation: file-tree-refresh-spin 0.85s linear infinite;
+}
+@keyframes file-tree-refresh-spin {
+  to { transform: rotate(360deg); }
 }
 .file-tree {
   margin: 0;
