@@ -15,6 +15,7 @@ import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
 import PanelHeader from './ui/PanelHeader.vue';
 import Tooltip from './ui/Tooltip.vue';
+import EmptyState from './ui/EmptyState.vue';
 
 const { t } = useI18n();
 const isDark = useIsDark();
@@ -315,6 +316,15 @@ function lineClass(lineNo: number): Record<string, boolean> {
   };
 }
 
+// Landing-pulse re-key: the target row's `:key` embeds `path:line`, so every
+// jump-to-line remounts exactly that row and replays the one-shot pulse
+// (fp-target-land); non-target rows keep their stable numeric key.
+const targetPulseKey = computed<string>(() => `${props.file?.path ?? ''}:${props.line ?? 0}`);
+
+function lineRowKey(lineNo: number): string | number {
+  return props.line === lineNo ? `${lineNo}#${targetPulseKey.value}` : lineNo;
+}
+
 // ---------------------------------------------------------------------------
 // Size formatter
 // ---------------------------------------------------------------------------
@@ -509,9 +519,9 @@ function truncatePath(path: string, maxLen = 55): string {
       </Button>
     </div>
 
-    <div v-else-if="!file && !loading" class="fp-empty">
-      {{ t('filePreview.empty') }}
-    </div>
+    <EmptyState v-else-if="!file && !loading" class="fp-empty-state" :title="t('filePreview.empty')">
+      <template #icon><Icon name="file-text" size="lg" /></template>
+    </EmptyState>
 
     <!-- Loading state -->
     <div v-else-if="loading" class="fp-loading">
@@ -644,7 +654,7 @@ function truncatePath(path: string, maxLen = 55): string {
             <div class="fp-line-table">
               <div
                 v-for="(line, idx) in lines"
-                :key="idx"
+                :key="lineRowKey(idx + 1)"
                 class="fp-line-row"
                 :class="lineClass(idx + 1)"
                 :data-line="idx + 1"
@@ -661,7 +671,7 @@ function truncatePath(path: string, maxLen = 55): string {
           <div class="fp-line-table">
             <div
               v-for="(line, idx) in lines"
-              :key="idx"
+              :key="lineRowKey(idx + 1)"
               class="fp-line-row"
               :class="lineClass(idx + 1)"
               :data-line="idx + 1"
@@ -685,7 +695,7 @@ function truncatePath(path: string, maxLen = 55): string {
             <div class="fp-line-table">
               <div
                 v-for="(line, idx) in lines"
-                :key="idx"
+                :key="lineRowKey(idx + 1)"
                 class="fp-line-row"
                 :class="lineClass(idx + 1)"
                 :data-line="idx + 1"
@@ -709,7 +719,7 @@ function truncatePath(path: string, maxLen = 55): string {
         <div v-else-if="contentKind === 'csv'" :key="file.path" class="fp-body fp-table-wrap">
           <table class="fp-table">
             <tbody>
-              <tr v-for="(row, ri) in csvRows" :key="ri" :class="lineClass(ri + 1)" :data-line="ri + 1">
+              <tr v-for="(row, ri) in csvRows" :key="lineRowKey(ri + 1)" :class="lineClass(ri + 1)" :data-line="ri + 1">
                 <th>{{ ri + 1 }}</th>
                 <td v-for="(cell, ci) in row" :key="ci">{{ cell }}</td>
               </tr>
@@ -753,7 +763,7 @@ function truncatePath(path: string, maxLen = 55): string {
           <div class="fp-line-table">
             <div
               v-for="(line, idx) in lines"
-              :key="idx"
+              :key="lineRowKey(idx + 1)"
               class="fp-line-row"
               :class="lineClass(idx + 1)"
               :data-line="idx + 1"
@@ -803,6 +813,13 @@ function truncatePath(path: string, maxLen = 55): string {
   gap: 10px;
   color: var(--muted);
   font-size: var(--ui-font-size);
+}
+
+/* Empty state (ui/EmptyState): fill the pane like .fp-empty did; sans
+   overrides the mono inherited from .file-preview. */
+.fp-empty-state {
+  flex: 1;
+  font-family: var(--sans);
 }
 
 /* ---- Header ----
@@ -904,9 +921,12 @@ function truncatePath(path: string, maxLen = 55): string {
   height: var(--p-ic-sm);
 }
 
-/* "Copied" confirmation: tint the check glyph green. */
+/* "Copied" confirmation: tint the check glyph green and pop it in with the
+   shared kimi-check-in scale-pop as it swaps in for the copy/link icon. */
 .fp-check {
   color: var(--color-success);
+  transform-origin: center;
+  animation: kimi-check-in var(--duration-slow) var(--ease-out);
 }
 
 /* ---- Body ---- */
@@ -986,6 +1006,13 @@ function truncatePath(path: string, maxLen = 55): string {
 .fp-table tr.target th,
 .fp-table tr.target td {
   background: var(--color-accent-soft);
+  /* One-shot landing pulse: the row is re-keyed by path:line (lineRowKey),
+     so every jump-to-line remounts it and replays the decay from a stronger
+     accent tint down to the steady highlight above. */
+  animation: fp-target-land 1.2s var(--ease-out);
+}
+@keyframes fp-target-land {
+  from { background-color: color-mix(in srgb, var(--color-accent) 22%, var(--bg)); }
 }
 
 .fp-gutter {
