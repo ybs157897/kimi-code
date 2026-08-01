@@ -1,7 +1,12 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted } from 'vue';
+import { onMounted, onUnmounted, ref } from 'vue';
 import { ICON_GROUPS } from '../lib/icons';
 import Icon from '../components/ui/Icon.vue';
+import Menu from '../components/ui/Menu.vue';
+import MenuItem from '../components/ui/MenuItem.vue';
+import SegmentedControl from '../components/ui/SegmentedControl.vue';
+import Sheet from '../components/ui/Sheet.vue';
+import Tabs from '../components/ui/Tabs.vue';
 
 const emit = defineEmits<{ close: [] }>();
 
@@ -9,10 +14,71 @@ function close(): void {
   emit('close');
 }
 
+// Live §03 demos — the Menu / SegmentedControl / Tabs / Sheet stages mount the
+// real primitives (local state only, no app-wide side effects) so the showcase
+// demonstrates actual behavior: open/close motion, sliding indicators, roving
+// tabindex keyboard nav, Esc dismissal, and background scroll lock.
+const demoMenuOpen = ref(false);
+const demoMenuTrigger = ref<HTMLButtonElement | null>(null);
+const demoMenu = ref<InstanceType<typeof Menu> | null>(null);
+
+const demoSeg = ref('light');
+const demoSegOptions = [
+  { value: 'light', label: 'Light' },
+  { value: 'dark', label: 'Dark' },
+  { value: 'system', label: 'Follow system' },
+];
+
+const demoTab = ref('general');
+const demoTabOptions = [
+  { value: 'general', label: 'General' },
+  { value: 'agent', label: 'Agent' },
+  { value: 'advanced', label: 'Advanced' },
+];
+const demoTabPanels: Record<string, string> = {
+  general: 'General panel — workspace defaults, appearance, and language.',
+  agent: 'Agent panel — model, permission mode, and tool allowlist.',
+  advanced: 'Advanced panel — telemetry, experiments, and the local daemon.',
+};
+
+const demoSheetOpen = ref(false);
+
+function closeDemoMenu(): void {
+  if (!demoMenuOpen.value) return;
+  demoMenuOpen.value = false;
+  document.removeEventListener('mousedown', onDemoMenuOutside);
+}
+
+function onDemoMenuOutside(event: MouseEvent): void {
+  const target = event.target as Node;
+  if (demoMenu.value?.el?.contains(target)) return;
+  if (demoMenuTrigger.value?.contains(target)) return;
+  closeDemoMenu();
+}
+
+function toggleDemoMenu(): void {
+  if (demoMenuOpen.value) {
+    closeDemoMenu();
+    return;
+  }
+  demoMenuOpen.value = true;
+  document.addEventListener('mousedown', onDemoMenuOutside);
+}
+
 let io: IntersectionObserver | null = null;
 
 function onKeydown(event: KeyboardEvent): void {
-  if (event.key === 'Escape') close();
+  if (event.key !== 'Escape') return;
+  // Esc layers like the app chrome: an open demo Sheet owns Escape (its own
+  // document listener closes it), an open demo menu closes next (focus may
+  // have tabbed out of it, past the menu's own Esc handler), and only then
+  // does Escape close this page.
+  if (demoSheetOpen.value) return;
+  if (demoMenuOpen.value) {
+    closeDemoMenu();
+    return;
+  }
+  close();
 }
 
 onMounted(() => {
@@ -47,6 +113,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   document.removeEventListener('keydown', onKeydown);
+  closeDemoMenu();
   if (io) {
     io.disconnect();
     io = null;
@@ -804,45 +871,46 @@ onUnmounted(() => {
 
             <!-- ===== Menu / Dropdown ===== -->
             <h3 class="sub">Menu / Dropdown</h3>
-            <p>Dropdown menu panel: raised surface + border + light shadow (<code>--shadow-sm</code>, flat-leaning). Menu items support icons, the current (active) state, the danger state, and the disabled state, with separators grouping items. On touch / mobile, use <code>lg</code> (≥44px row height) for menu items.</p>
+            <p>Dropdown menu panel: raised surface + border + light shadow (<code>--shadow-sm</code>, flat-leaning). Menu items support icons, the current (active) state, the danger state, and the disabled state, with separators grouping items. On touch / mobile, use <code>lg</code> (≥44px row height) for menu items. The live panel below opens from its trigger: ↑/↓ roves the items (with wrap), ↵ / Space activates, Esc closes and returns focus to the trigger, and typing a letter jumps to the matching item.</p>
             <div class="stage-wrap">
-              <div class="stage-bar"><span class="st">Menu · dropdown menu</span></div>
+              <div class="stage-bar"><span class="st">Menu · dropdown menu (live)</span></div>
               <div class="stage p col" style="align-items:flex-start">
-                <div class="p-menu">
-                  <div class="p-menu-item"><svg class="p-ic" viewBox="0 0 24 24" fill="currentColor"><path fill="currentColor" d="M9 2.003V2h10.998C20.55 2 21 2.455 21 2.992v18.016a.993.993 0 0 1-.993.992H3.993A1 1 0 0 1 3 20.993V8zM5.83 8H9V4.83zM11 4v5a1 1 0 0 1-1 1H5v10h14V4z"/></svg>Open file</div>
-                  <div class="p-menu-item active"><svg class="p-ic" viewBox="0 0 24 24" fill="currentColor"><path fill="currentColor" d="m10 15.17l9.192-9.191l1.414 1.414L10 17.999l-6.364-6.364l1.414-1.414z"/></svg>Selected item</div>
-                  <div class="p-menu-item disabled"><svg class="p-ic" viewBox="0 0 24 24" fill="currentColor"><path fill="currentColor" d="M12 22C6.477 22 2 17.523 2 12S6.477 2 12 2s10 4.477 10 10s-4.477 10-10 10m0-2a8 8 0 1 0 0-16a8 8 0 0 0 0 16M8.523 7.109l8.368 8.368a6 6 0 0 1-1.414 1.414L7.109 8.523A6 6 0 0 1 8.523 7.11"/></svg>Disabled item</div>
-                  <div class="p-menu-sep"></div>
-                  <div class="p-menu-item danger"><svg class="p-ic" viewBox="0 0 24 24" fill="currentColor"><path fill="currentColor" d="m12 10.587l4.95-4.95l1.414 1.414l-4.95 4.95l4.95 4.95l-1.415 1.414l-4.95-4.95l-4.949 4.95l-1.414-1.415l4.95-4.95l-4.95-4.95L7.05 5.638z"/></svg>Delete chat</div>
-                </div>
+                <button
+                  ref="demoMenuTrigger"
+                  type="button"
+                  class="p-btn secondary"
+                  aria-haspopup="menu"
+                  :aria-expanded="demoMenuOpen"
+                  @click="toggleDemoMenu"
+                >Open menu</button>
+                <Menu ref="demoMenu" :open="demoMenuOpen" origin="top-left" @close="closeDemoMenu">
+                  <MenuItem @click="closeDemoMenu"><Icon name="file" size="sm" />Open file</MenuItem>
+                  <MenuItem active @click="closeDemoMenu"><Icon name="check" size="sm" />Selected item</MenuItem>
+                  <MenuItem disabled><Icon name="file-off" size="sm" />Disabled item</MenuItem>
+                  <MenuItem separator />
+                  <MenuItem danger @click="closeDemoMenu"><Icon name="close" size="sm" />Delete chat</MenuItem>
+                </Menu>
               </div>
             </div>
 
             <!-- ===== SegmentedControl ===== -->
             <h3 class="sub">SegmentedControl</h3>
-            <p>Mutually exclusive short option groups, commonly used for 2–4 option switches such as "light / dark / follow system". The current item is highlighted with a raised surface + subtle shadow.</p>
+            <p>Mutually exclusive short option groups, commonly used for 2–4 option switches such as "light / dark / follow system". The current item is highlighted with a raised surface + subtle shadow; the pill slides between segments, and ←/→ + Home/End move the selection via roving tabindex.</p>
             <div class="stage-wrap">
-              <div class="stage-bar"><span class="st">SegmentedControl</span></div>
-              <div class="stage p col">
-                <div class="p-seg">
-                  <span class="p-seg-item on">Light</span>
-                  <span class="p-seg-item">Dark</span>
-                  <span class="p-seg-item">Follow system</span>
-                </div>
+              <div class="stage-bar"><span class="st">SegmentedControl (live)</span></div>
+              <div class="stage p col" style="align-items:flex-start">
+                <SegmentedControl v-model="demoSeg" :options="demoSegOptions" />
               </div>
             </div>
 
             <!-- ===== Tabs ===== -->
             <h3 class="sub">Tabs</h3>
-            <p>Tabs with a bottom hairline, used for grouping and switching sibling content. The current tab is marked with accent text + an accent underline.</p>
+            <p>Tabs with a bottom hairline, used for grouping and switching sibling content. The current tab is marked with accent text + an accent underline that slides between tabs; ←/→ + Home/End move and activate tabs via roving tabindex.</p>
             <div class="stage-wrap">
-              <div class="stage-bar"><span class="st">Tabs</span></div>
-              <div class="stage p col">
-                <div class="p-tabs">
-                  <span class="p-tab on">General</span>
-                  <span class="p-tab">Agent</span>
-                  <span class="p-tab">Advanced</span>
-                </div>
+              <div class="stage-bar"><span class="st">Tabs (live)</span></div>
+              <div class="stage p col" style="align-items:flex-start">
+                <Tabs v-model="demoTab" :options="demoTabOptions" />
+                <div class="ds-demo-panel">{{ demoTabPanels[demoTab] }}</div>
               </div>
             </div>
 
@@ -938,16 +1006,17 @@ onUnmounted(() => {
 
             <!-- ===== Sheet / BottomSheet ===== -->
             <h3 class="sub">Sheet / BottomSheet</h3>
-            <p>A mobile bottom slide-up panel: xl top radius + drag handle, xl shadow. At ≤640px, dialogs become bottom-anchored Sheets.</p>
+            <p>A mobile bottom slide-up panel: xl top radius + drag handle, xl shadow. At ≤640px, dialogs become bottom-anchored Sheets. The live instance teleports to the body and enters with the slide-up / scrim-fade transition; Esc or the scrim closes it, and background scroll is locked while it is open.</p>
             <div class="stage-wrap">
-              <div class="stage-bar"><span class="st">BottomSheet</span></div>
+              <div class="stage-bar"><span class="st">BottomSheet (live)</span></div>
               <div class="stage p col" style="align-items:center">
-                <div class="p-sheet" style="width:100%;max-width:360px">
-                  <div class="p-sheet-handle"></div>
-                  <div style="font-size:var(--p-font-size-base);font-weight:700;color:var(--p-text);margin-bottom:8px">Choose a model</div>
-                  <div class="p-menu-item" style="padding:8px 10px">kimi-k2 · thinking</div>
-                  <div class="p-menu-item" style="padding:8px 10px">kimi-k2 · instant</div>
-                </div>
+                <button type="button" class="p-btn secondary" @click="demoSheetOpen = true">Open sheet</button>
+                <Sheet v-model:open="demoSheetOpen" title="Choose a model">
+                  <div class="ds-sheet-list">
+                    <MenuItem size="lg" @click="demoSheetOpen = false">kimi-k2 · thinking</MenuItem>
+                    <MenuItem size="lg" @click="demoSheetOpen = false">kimi-k2 · instant</MenuItem>
+                  </div>
+                </Sheet>
               </div>
             </div>
 
@@ -2143,56 +2212,9 @@ onUnmounted(() => {
   .p-link.muted:hover { color: var(--p-text); }
   .p-link .p-ic { width: var(--p-ic-sm); height: var(--p-ic-sm); vertical-align: -2px; }
 
-  /* ===== Menu / Dropdown ===== */
-  .p-menu {
-    background: var(--p-surface-raised); border: 1px solid var(--p-line);
-    border-radius: var(--p-r-lg); box-shadow: var(--p-sh-sm);
-    padding: var(--p-sp-1); min-width: 180px;
-    font-family: var(--p-font-sans); color: var(--p-text);
-  }
-  .p-menu-item {
-    display: flex; align-items: center; gap: 8px; padding: 6px 10px;
-    border-radius: var(--p-r-sm); font-size: var(--p-font-size-sm); color: var(--p-text);
-    cursor: pointer; transition: background var(--p-dur) var(--p-ease), color var(--p-dur) var(--p-ease);
-  }
-  .p-menu-item:hover { background: var(--p-surface-sunken); color: var(--p-text); }
-  .p-menu-item.active { background: var(--p-accent-soft); color: var(--p-accent-hover); }
-  .p-menu-item.active:hover { background: var(--p-accent-soft); color: var(--p-accent-hover); }
-  .p-menu-item.danger { color: var(--p-danger); }
-  .p-menu-item.danger:hover { background: var(--p-danger-soft); color: var(--p-danger); }
-  .p-menu-item.disabled { opacity: .5; cursor: not-allowed; }
-  .p-menu-item.disabled:hover { background: transparent; color: var(--p-text); }
-  .p-menu-item .p-ic { width: var(--p-ic-sm); height: var(--p-ic-sm); }
-  .p-menu-item.lg { min-height: 44px; padding: 12px 14px; font-size: var(--p-font-size-base); }
-  .p-menu-sep { height: 1px; background: var(--p-line); margin: 4px 0; }
-
-  /* ===== SegmentedControl ===== */
-  .p-seg {
-    display: inline-flex; gap: 2px; padding: 2px;
-    background: var(--p-surface-sunken); border: 1px solid var(--p-line);
-    border-radius: var(--p-r-md); font-family: var(--p-font-sans);
-  }
-  .p-seg-item {
-    padding: 5px 12px; border-radius: var(--p-r-sm); font-size: var(--p-font-size-sm);
-    font-weight: 500; color: var(--p-text); cursor: pointer; white-space: nowrap;
-    transition: background var(--p-dur) var(--p-ease), color var(--p-dur) var(--p-ease), box-shadow var(--p-dur) var(--p-ease);
-  }
-  .p-seg-item:hover { color: var(--p-text); }
-  .p-seg-item.on { background: var(--p-surface-raised); color: var(--p-text); box-shadow: var(--p-sh-xs); }
-
-  /* ===== Tabs ===== */
-  .p-tabs {
-    display: flex; align-items: center; gap: 0;
-    border-bottom: 1px solid var(--p-line); font-family: var(--p-font-sans);
-  }
-  .p-tab {
-    padding: 8px 14px; font-size: var(--p-font-size-sm); font-weight: 500;
-    color: var(--p-text-muted); cursor: pointer; white-space: nowrap;
-    border-bottom: 2px solid transparent; margin-bottom: -1px;
-    transition: color var(--p-dur) var(--p-ease), border-color var(--p-dur) var(--p-ease);
-  }
-  .p-tab:hover { color: var(--p-text); }
-  .p-tab.on { color: var(--p-accent); border-bottom-color: var(--p-accent); }
+  /* Menu / SegmentedControl / Tabs: the stages now mount the real primitives
+     (components/ui/Menu.vue, SegmentedControl.vue, Tabs.vue), which carry
+     their own scoped styles — no spec mockup CSS here anymore. */
 
   /* ===== Switch ===== */
   .p-switch {
@@ -2269,16 +2291,12 @@ onUnmounted(() => {
   .p-banner.danger { background: var(--p-danger-soft); border-color: var(--p-danger-bd); }
   .p-banner.danger .bn-ic { color: var(--p-danger); }
 
-  /* ===== Sheet / BottomSheet ===== */
-  .p-sheet {
-    background: var(--p-surface-raised); border: 1px solid var(--p-line);
-    border-radius: var(--p-r-xl) var(--p-r-xl) 0 0; box-shadow: var(--p-sh-xl);
-    padding: 8px 16px 20px;
-  }
-  .p-sheet-handle {
-    width: 36px; height: 4px; border-radius: var(--p-r-full);
-    background: var(--p-line-strong); margin: 0 auto 8px;
-  }
+  /* ===== Live primitive demos (Sheet / Tabs stages) =====
+     The Sheet itself is the real primitive (components/ui/Sheet.vue, teleported
+     to the body with its own scoped styles); these helpers only lay out the
+     demo content placed inside it and the Tabs stage's switching panel. */
+  .ds-sheet-list { display: flex; flex-direction: column; gap: var(--space-1); width: 100%; }
+  .ds-demo-panel { font-size: var(--text-sm); color: var(--color-text-muted); }
 
   /* ===== Skeleton ===== */
   .p-skeleton {
