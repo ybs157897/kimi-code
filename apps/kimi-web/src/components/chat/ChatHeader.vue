@@ -450,7 +450,10 @@ function startArchive(): void {
   max-width: none;
   min-width: 0;
   cursor: pointer;
+  transition: transform var(--duration-fast) var(--ease-out);
 }
+/* Press feedback mirrors Button.vue — the whole group dips as one unit. */
+.ch-git:active { transform: scale(0.98); }
 .ch-git:hover .ch-branch { color: var(--color-text); }
 /* The pills pick up the button hover too, so the whole group reacts as one
    (the diff pill keeps its success tint, just lifted against the strong line). */
@@ -509,7 +512,8 @@ function startArchive(): void {
   font-weight: 500;
   cursor: pointer;
   transition: border-color var(--duration-fast) var(--ease-out),
-    background-color var(--duration-fast) var(--ease-out);
+    background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
 .ch-pr svg { flex: none; }
 .ch-pr.pr-open { color: var(--color-success); border-color: var(--color-success-bd); background: var(--color-success-soft); }
@@ -518,6 +522,7 @@ function startArchive(): void {
 .ch-pr.pr-draft { color: var(--color-text-muted); border-color: var(--color-line-strong); background: var(--color-surface-sunken); }
 .ch-pr.pr-unknown { color: var(--color-text-muted); border-color: var(--color-line-strong); background: var(--color-surface-sunken); }
 .ch-pr:hover { border-color: var(--color-line-strong); }
+.ch-pr:active { transform: scale(0.98); }
 
 /* Fixed more-menu, anchored to the kebab trigger. Surface / items come from
    the Menu + MenuItem primitives; only positioning stays here. */

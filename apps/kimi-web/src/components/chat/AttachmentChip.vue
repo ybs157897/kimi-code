@@ -100,8 +100,12 @@ const title = computed(() => {
         <Icon v-else :name="fileIcon" size="sm" />
       </span>
       <span class="att-name">{{ displayName }}</span>
-      <Spinner v-if="uploading" size="sm" :label="t('composer.uploading')" />
-      <span v-else-if="error" class="att-err"><Icon name="info" size="sm" /></span>
+      <!-- Upload status slot: spinner ↔ error icon swap through a short out-in
+           crossfade so an upload resolving to a plain chip doesn't flicker. -->
+      <Transition name="att-status" mode="out-in">
+        <Spinner v-if="uploading" key="uploading" size="sm" :label="t('composer.uploading')" />
+        <span v-else-if="error" key="error" class="att-err"><Icon name="info" size="sm" /></span>
+      </Transition>
     </button>
     <Tooltip v-if="removable" :text="removeLabel ?? t('composer.remove')">
       <button type="button" class="att-rm" :aria-label="removeLabel ?? t('composer.remove')" @click="emit('remove')">
@@ -192,6 +196,8 @@ const title = computed(() => {
   background: transparent;
   color: var(--color-text-faint);
   cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 .att-rm:hover {
   background: var(--color-hover);
@@ -200,5 +206,16 @@ const title = computed(() => {
 .att-rm:focus-visible {
   outline: none;
   box-shadow: var(--p-focus-ring);
+}
+
+/* Upload status slot crossfade (see the <Transition> in the template):
+   opacity-only, so the spinner settling out reads as quiet resolution. */
+.att-status-enter-active,
+.att-status-leave-active {
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.att-status-enter-from,
+.att-status-leave-to {
+  opacity: 0;
 }
 </style>
