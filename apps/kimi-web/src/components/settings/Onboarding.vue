@@ -132,11 +132,23 @@ function skip(): void {
 .ob-title { color: var(--color-text); font-size: var(--text-xl); font-weight: var(--weight-medium); }
 .ob-sub { color: var(--color-text-muted); font-size: var(--text-base); margin-top: 1px; }
 
-.ob-sec { margin-bottom: var(--space-4); }
+.ob-sec {
+  margin-bottom: var(--space-4);
+  animation: kimi-card-in var(--duration-slow) var(--ease-out) both;
+}
 .ob-label { color: var(--color-text); font-size: var(--text-sm); font-weight: var(--weight-medium); margin-bottom: var(--space-2); }
 
+/* Gentle cascade so the first-run screen assembles rather than slams in
+   (the global reduced-motion kill-switch in style.css zeroes these delays). */
+.ob-sec:nth-child(2) { animation-delay: 40ms; }
+.ob-sec:nth-child(3) { animation-delay: 80ms; }
+
 /* full-width primary CTA */
-.ob-start { width: 100%; }
+.ob-start {
+  width: 100%;
+  animation: kimi-card-in var(--duration-slow) var(--ease-out) both;
+  animation-delay: 120ms;
+}
 
 /* Onboarding logo: faster eye animations than the sidebar (6s look, 4s blink). */
 .ob-eyes {

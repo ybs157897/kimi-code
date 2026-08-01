@@ -244,17 +244,19 @@ function startArchive(): void {
     <div class="ch-id">
       <span v-if="workspaceName" class="ch-ws">{{ workspaceName }}</span>
       <span v-if="workspaceName && sessionTitle" class="ch-sep">/</span>
-      <input
-        v-if="renaming"
-        ref="renameInputRef"
-        v-model="renameValue"
-        class="ch-rename"
-        type="text"
-        @keydown.enter.stop="commitRename"
-        @keydown.esc.stop="cancelRename"
-        @blur="commitRename"
-        @click.stop
-      />
+      <Transition name="ch-rename">
+        <input
+          v-if="renaming"
+          ref="renameInputRef"
+          v-model="renameValue"
+          class="ch-rename"
+          type="text"
+          @keydown.enter.stop="commitRename"
+          @keydown.esc.stop="cancelRename"
+          @blur="commitRename"
+          @click.stop
+        />
+      </Transition>
       <Tooltip v-else-if="sessionTitle" :text="sessionTitle">
         <span class="ch-ses">{{ sessionTitle }}</span>
       </Tooltip>
@@ -429,6 +431,10 @@ function startArchive(): void {
   padding: 2px 5px;
   outline: none;
 }
+/* Rename input fades in when `renaming` flips (Vue <Transition> above);
+   exit stays instant so the title span replaces it without a gap. */
+.ch-rename-enter-from { opacity: 0; }
+.ch-rename-enter-active { transition: opacity var(--duration-base) var(--ease-out); }
 
 .ch-git {
   display: flex;
@@ -446,6 +452,10 @@ function startArchive(): void {
   cursor: pointer;
 }
 .ch-git:hover .ch-branch { color: var(--color-text); }
+/* The pills pick up the button hover too, so the whole group reacts as one
+   (the diff pill keeps its success tint, just lifted against the strong line). */
+.ch-git:hover .ch-sync-pill { border-color: var(--color-line-strong); }
+.ch-git:hover .ch-diff-pill { border-color: color-mix(in srgb, var(--color-success) 20%, var(--color-line-strong)); }
 .ch-branch {
   color: var(--dim);
   min-width: 0;
@@ -453,6 +463,7 @@ function startArchive(): void {
   text-overflow: ellipsis;
   white-space: nowrap;
   margin-right: 4px;
+  transition: color var(--duration-fast) var(--ease-out);
 }
 .ch-detached { color: var(--muted); font-style: italic; }
 .ch-pill {
@@ -464,6 +475,8 @@ function startArchive(): void {
   background: var(--panel);
   border: 1px solid var(--line);
   font-size: calc(var(--ui-font-size) - 3px);
+  transition: border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
 }
 .ch-sync-pill { border-color: var(--line); }
 .ch-diff-pill { border-color: color-mix(in srgb, var(--color-success) 20%, var(--line)); }
@@ -495,6 +508,8 @@ function startArchive(): void {
   font-size: var(--text-xs);
   font-weight: 500;
   cursor: pointer;
+  transition: border-color var(--duration-fast) var(--ease-out),
+    background-color var(--duration-fast) var(--ease-out);
 }
 .ch-pr svg { flex: none; }
 .ch-pr.pr-open { color: var(--color-success); border-color: var(--color-success-bd); background: var(--color-success-soft); }
