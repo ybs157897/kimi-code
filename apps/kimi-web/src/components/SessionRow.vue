@@ -215,41 +215,48 @@ defineExpose({ closeMenu });
            permission request is waiting. The list-level interaction fact is
            the fallback for sessions whose detailed pending lists aren't loaded. -->
       <Tooltip :text="t('workspace.awaitingAnswerTitle')">
-        <Badge
-          v-if="!renaming && (questionCount > 0 || session.pendingInteraction === 'question')"
-          variant="info"
-          size="sm"
-        >
-          {{ t('workspace.awaitingAnswer') }}
-        </Badge>
+        <Transition name="se-pill">
+          <Badge
+            v-if="!renaming && (questionCount > 0 || session.pendingInteraction === 'question')"
+            variant="info"
+            size="sm"
+          >
+            {{ t('workspace.awaitingAnswer') }}
+          </Badge>
+        </Transition>
       </Tooltip>
       <Tooltip :text="t('workspace.awaitingPermissionTitle')">
-        <Badge
-          v-if="!renaming && (approvalCount > 0 || session.pendingInteraction === 'approval')"
-          variant="warning"
-          size="sm"
-        >
-          {{ t('workspace.awaitingPermission') }}
-        </Badge>
+        <Transition name="se-pill">
+          <Badge
+            v-if="!renaming && (approvalCount > 0 || session.pendingInteraction === 'approval')"
+            variant="warning"
+            size="sm"
+          >
+            {{ t('workspace.awaitingPermission') }}
+          </Badge>
+        </Transition>
       </Tooltip>
       <!-- Aborted: a distinct, low-key error tag — the session is quiet and
            its last main turn was cancelled or failed. Hidden while input is
            pending (the awaiting pills own the row then, exactly like the
            retired awaiting_* lifecycle status superseded `aborted`). -->
       <Tooltip :text="t('workspace.abortedTitle')">
-        <Badge
-          v-if="!renaming && !session.busy && session.pendingInteraction !== 'question' && session.pendingInteraction !== 'approval' && questionCount === 0 && approvalCount === 0 && (session.lastTurnReason === 'cancelled' || session.lastTurnReason === 'failed')"
-          variant="danger"
-          size="sm"
-        >
-          {{ t('workspace.aborted') }}
-        </Badge>
+        <Transition name="se-pill">
+          <Badge
+            v-if="!renaming && !session.busy && session.pendingInteraction !== 'question' && session.pendingInteraction !== 'approval' && questionCount === 0 && approvalCount === 0 && (session.lastTurnReason === 'cancelled' || session.lastTurnReason === 'failed')"
+            variant="danger"
+            size="sm"
+          >
+            {{ t('workspace.aborted') }}
+          </Badge>
+        </Transition>
       </Tooltip>
 
       <!-- Trailing action slot: the relative time and the kebab share one grid
-           cell and swap via `visibility` (never display:none), so the slot
-           width is identical in hover and rest. The badges and title therefore
-           don't reflow on hover — see design-system §07 "Session row". -->
+           cell and crossfade via opacity (`visibility` still flips, never
+           display:none), so the slot width is identical in hover and rest. The
+           badges and title therefore don't reflow on hover — see design-system
+           §07 "Session row". -->
       <span class="act">
         <span class="ts">{{ session.time }}</span>
         <IconButton
@@ -327,6 +334,8 @@ defineExpose({ closeMenu });
   color: var(--color-text);
   cursor: pointer;
   position: relative;
+  /* Hover/selection fill fades in instead of snapping. */
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 .se:hover { background: var(--sb-hover, var(--color-surface-sunken)); color: var(--color-text); }
 /* Selected: neutral fill (NOT accent-tinted — selection reads as "where I
@@ -390,12 +399,32 @@ defineExpose({ closeMenu });
   line-height: var(--leading-tight);
   font-variant-numeric: tabular-nums;
   text-align: right;
+  /* Matched crossfade with the kebab (see below): opacity animates both ways;
+     visibility flips instantly on re-show (base rule lists no visibility
+     transition) so focus/a11y restore without waiting for the fade. */
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+
+/* Pending pills (Answer / Approve / Aborted) pop in and out with a small
+   scale + fade instead of a v-if snap. Transition renders no wrapper, so the
+   Badge stays the Tooltip's direct slotted element. */
+.se-pill-enter-active,
+.se-pill-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+.se-pill-enter-from,
+.se-pill-leave-to {
+  opacity: 0;
+  transform: scale(0.9);
 }
 
 /* Trailing action slot: the relative time (in flow) sets the slot size; the
-   kebab is absolutely positioned over it and swapped via `visibility`, so it
-   contributes neither height (the row stays font-driven) nor width changes
-   (min-width reserves the kebab's footprint, the title doesn't reflow). */
+   kebab is absolutely positioned over it and crossfaded in its place
+   (`visibility` still flips — never display:none — so the slot width is
+   identical in hover and rest), so it contributes neither height (the row
+   stays font-driven) nor width changes (min-width reserves the kebab's
+   footprint, the title doesn't reflow). */
 .act {
   position: relative;
   flex: none;
@@ -412,11 +441,27 @@ defineExpose({ closeMenu });
   top: 50%;
   transform: translateY(-50%);
   visibility: hidden;
+  opacity: 0;
+  /* Hidden is the destination of un-hover: fade out, then flip visibility
+     only once the fade is done (keeps it out of the a11y tree at rest). */
+  transition: opacity var(--duration-fast) var(--ease-out),
+    visibility 0s linear var(--duration-fast);
 }
 .se:hover .act .kebab,
-.act:has(.kebab.open) .kebab { visibility: visible; }
+.act:has(.kebab.open) .kebab {
+  visibility: visible;
+  opacity: 1;
+  /* Shown is the destination of hover: visibility flips instantly (focusable
+     right away), opacity fades in over the same span the time fades out. */
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
 .se:hover .act .ts,
-.act:has(.kebab.open) .ts { visibility: hidden; }
+.act:has(.kebab.open) .ts {
+  visibility: hidden;
+  opacity: 0;
+  transition: opacity var(--duration-fast) var(--ease-out),
+    visibility 0s linear var(--duration-fast);
+}
 .kebab.open { color: var(--color-text); background: var(--sb-hover, var(--color-surface-sunken)); }
 
 /* Fixed + anchored to the ⋯ button via inline style (see positionMenu); the menu
