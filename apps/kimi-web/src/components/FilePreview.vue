@@ -1,7 +1,7 @@
 <!-- apps/kimi-web/src/components/FilePreview.vue -->
 <!-- File preview pane: renders text/markdown/json/image/binary by mime and encoding. -->
 <script setup lang="ts">
-import { computed, inject, nextTick, provide, ref, watch } from 'vue';
+import { computed, inject, nextTick, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import Markdown from './chat/Markdown.vue';
 import type { FileData, FilePreviewRequest } from '../types';
@@ -216,6 +216,15 @@ watch(searchQuery, () => {
   activeMatch.value = 0;
 });
 
+const searchInputRef = ref<HTMLInputElement | null>(null);
+
+/** `active/total` match counter (e.g. `2/17`) — a bare `0` when nothing
+    matches, keeping the "no hits" signal without implying an active hit. */
+const searchCountLabel = computed<string>(() => {
+  const total = searchMatches.value.length;
+  return total === 0 ? '0' : `${activeMatch.value + 1}/${total}`;
+});
+
 function scrollToLine(line: number | undefined, reset = false): void {
   if (!line) return;
   void nextTick(() => {
@@ -241,11 +250,60 @@ watch(
   { immediate: true },
 );
 
+// With an out-in swap the new file's body mounts only after the old one has
+// left — past the point where the watcher above ran against the stale DOM —
+// so re-run the jump-to-line scroll once the incoming body has entered.
+function onBodySwapEnter(): void {
+  scrollToLine(props.line, true);
+}
+
 function nextMatch(delta: number): void {
   const matches = searchMatches.value;
   if (matches.length === 0) return;
   activeMatch.value = (activeMatch.value + delta + matches.length) % matches.length;
   scrollToLine(matches[activeMatch.value]);
+}
+
+// Enter / Shift+Enter cycle the matches, mirroring the ↑/↓ icon buttons.
+function onSearchKeydown(e: KeyboardEvent): void {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  nextMatch(e.shiftKey ? -1 : 1);
+}
+
+// Escape clears the search and blurs the input. App.vue closes this whole
+// side panel on Escape via a capture-phase `keydown` listener on `document`,
+// so the only way to claim Escape while the search input is focused is a
+// capture listener on `window` — it runs earlier in the capture path and
+// stops propagation for exactly that case. A second Escape (input already
+// blurred) closes the panel as before.
+function onSearchEscape(e: KeyboardEvent): void {
+  if (e.key !== 'Escape') return;
+  const input = searchInputRef.value;
+  if (!input || document.activeElement !== input) return;
+  e.stopPropagation();
+  e.preventDefault();
+  searchQuery.value = '';
+  input.blur();
+}
+onMounted(() => {
+  window.addEventListener('keydown', onSearchEscape, true);
+});
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onSearchEscape, true);
+});
+
+// ⌘/Ctrl+F focuses the in-preview search instead of the browser find bar —
+// only for content kinds that render the search box (input ref absent
+// otherwise, and the browser's own find stays available there).
+function onRootKeydown(e: KeyboardEvent): void {
+  if (!(e.metaKey || e.ctrlKey) || e.shiftKey || e.altKey) return;
+  if (e.key.toLowerCase() !== 'f') return;
+  const input = searchInputRef.value;
+  if (!input) return;
+  e.preventDefault();
+  input.focus();
+  input.select();
 }
 
 function lineClass(lineNo: number): Record<string, boolean> {
@@ -437,7 +495,12 @@ function truncatePath(path: string, maxLen = 55): string {
 </script>
 
 <template>
-  <div ref="rootRef" class="file-preview">
+  <div
+    ref="rootRef"
+    class="file-preview"
+    :class="{ 'fp-hl-ready': highlightedLines !== null }"
+    @keydown="onRootKeydown"
+  >
     <!-- Empty state: nothing selected -->
     <div v-if="error && !loading" class="fp-empty fp-error">
       <span>{{ error }}</span>
@@ -505,13 +568,15 @@ function truncatePath(path: string, maxLen = 55): string {
         />
         <div v-if="contentKind === 'text' || contentKind === 'json' || contentKind === 'html' || contentKind === 'csv'" class="fp-search">
           <input
+            ref="searchInputRef"
             v-model="searchQuery"
             class="fp-search-input"
             type="search"
             :placeholder="t('filePreview.search')"
+            @keydown="onSearchKeydown"
           />
           <span v-if="searchQuery.trim()" class="fp-search-count">
-            {{ searchMatches.length }}
+            {{ searchCountLabel }}
           </span>
           <IconButton size="sm" :disabled="searchMatches.length === 0" :label="t('filePreview.prevMatch')" @click="nextMatch(-1)">
             <Icon name="arrow-up" size="md" />
@@ -564,148 +629,153 @@ function truncatePath(path: string, maxLen = 55): string {
         </IconButton>
       </PanelHeader>
 
-      <!-- Body: Markdown -->
-      <div v-if="contentKind === 'markdown'" class="fp-body" :class="{ 'fp-markdown': markdownMode === 'preview' }">
-        <Markdown
-          v-if="markdownMode === 'preview'"
-          :text="decodedContent"
-          :open-file="props.openFile ? handleMarkdownOpenFile : undefined"
-        />
-        <div v-else class="fp-code">
-          <div class="fp-line-table">
-            <div
-              v-for="(line, idx) in lines"
-              :key="idx"
-              class="fp-line-row"
-              :class="lineClass(idx + 1)"
-              :data-line="idx + 1"
-            >
-              <span class="fp-gutter">{{ idx + 1 }}</span>
-              <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Body: JSON -->
-      <div v-else-if="contentKind === 'json'" class="fp-body fp-code">
-        <div class="fp-line-table">
-          <div
-            v-for="(line, idx) in lines"
-            :key="idx"
-            class="fp-line-row"
-            :class="lineClass(idx + 1)"
-            :data-line="idx + 1"
-          >
-            <span class="fp-gutter">{{ idx + 1 }}</span>
-            <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Body: HTML (sandboxed preview + source mode) -->
-      <div v-else-if="contentKind === 'html'" class="fp-body">
-        <iframe
-          v-if="htmlMode === 'preview'"
-          class="fp-html-frame"
-          sandbox=""
-          :srcdoc="htmlSrcdoc"
-          :title="file.path"
-        ></iframe>
-        <div v-else class="fp-code">
-          <div class="fp-line-table">
-            <div
-              v-for="(line, idx) in lines"
-              :key="idx"
-              class="fp-line-row"
-              :class="lineClass(idx + 1)"
-              :data-line="idx + 1"
-            >
-              <span class="fp-gutter">{{ idx + 1 }}</span>
-              <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Body: PDF -->
-      <div v-else-if="contentKind === 'pdf'" class="fp-body fp-pdf-wrap">
-        <iframe v-if="pdfSrc" class="fp-pdf-frame" :src="pdfSrc" :title="file.path"></iframe>
-        <div v-else class="fp-binary-card">
-          <span class="fp-binary-label">{{ t('filePreview.pdfNoPreview') }}</span>
-        </div>
-      </div>
-
-      <!-- Body: CSV -->
-      <div v-else-if="contentKind === 'csv'" class="fp-body fp-table-wrap">
-        <table class="fp-table">
-          <tbody>
-            <tr v-for="(row, ri) in csvRows" :key="ri" :class="lineClass(ri + 1)" :data-line="ri + 1">
-              <th>{{ ri + 1 }}</th>
-              <td v-for="(cell, ci) in row" :key="ci">{{ cell }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-
-      <!-- Body: Image (base64) -->
-      <div v-else-if="contentKind === 'image'" class="fp-body fp-image-wrap">
-        <template v-if="imageSrc">
-          <img
-            :src="imageSrc"
-            :alt="file.path"
-            class="fp-image"
-            :class="{ actual: imageFit === 'actual' }"
+      <!-- Bodies are keyed on the file path so switching files reads as
+           navigation: a direct file→file replacement crossfades out-in, and a
+           body mounting out of the loading state fades in via `appear`. -->
+      <Transition name="fp-swap" mode="out-in" appear @enter="onBodySwapEnter">
+        <!-- Body: Markdown -->
+        <div v-if="contentKind === 'markdown'" :key="file.path" class="fp-body" :class="{ 'fp-markdown': markdownMode === 'preview' }">
+          <Markdown
+            v-if="markdownMode === 'preview'"
+            :text="decodedContent"
+            :open-file="props.openFile ? handleMarkdownOpenFile : undefined"
           />
-        </template>
-        <div v-else class="fp-binary-card">
-          <span class="fp-binary-icon">
-            <Icon name="image-off" size="lg" />
-          </span>
-          <span class="fp-binary-label">{{ t('filePreview.imageNoPreview', { mime: file.mime, size: formatSize(file.size) }) }}</span>
-        </div>
-      </div>
-
-      <!-- Body: Video -->
-      <div v-else-if="contentKind === 'video'" class="fp-body fp-image-wrap">
-        <template v-if="videoSrc">
-          <video :src="videoSrc" class="fp-image" controls playsinline preload="metadata" />
-        </template>
-        <div v-else class="fp-binary-card">
-          <span class="fp-binary-icon">
-            <Icon name="image-off" size="lg" />
-          </span>
-          <span class="fp-binary-label">{{ t('filePreview.videoNoPreview', { mime: file.mime, size: formatSize(file.size) }) }}</span>
-        </div>
-      </div>
-
-      <!-- Body: Text/Code (with line numbers) -->
-      <div v-else-if="contentKind === 'text'" class="fp-body fp-code">
-        <div class="fp-line-table">
-          <div
-            v-for="(line, idx) in lines"
-            :key="idx"
-            class="fp-line-row"
-            :class="lineClass(idx + 1)"
-            :data-line="idx + 1"
-          >
-            <span class="fp-gutter">{{ idx + 1 }}</span>
-            <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
+          <div v-else class="fp-code">
+            <div class="fp-line-table">
+              <div
+                v-for="(line, idx) in lines"
+                :key="idx"
+                class="fp-line-row"
+                :class="lineClass(idx + 1)"
+                :data-line="idx + 1"
+              >
+                <span class="fp-gutter">{{ idx + 1 }}</span>
+                <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
+              </div>
+            </div>
           </div>
         </div>
-      </div>
 
-      <!-- Body: Binary / unknown -->
-      <div v-else class="fp-body fp-binary-wrap">
-        <div class="fp-binary-card">
-          <span class="fp-binary-icon">
-            <Icon name="file-off" size="lg" />
-          </span>
-          <span class="fp-binary-label">
-            {{ t('filePreview.binaryNoPreview', { mime: file.mime || t('filePreview.unknownType'), size: formatSize(file.size) }) }}
-          </span>
+        <!-- Body: JSON -->
+        <div v-else-if="contentKind === 'json'" :key="file.path" class="fp-body fp-code">
+          <div class="fp-line-table">
+            <div
+              v-for="(line, idx) in lines"
+              :key="idx"
+              class="fp-line-row"
+              :class="lineClass(idx + 1)"
+              :data-line="idx + 1"
+            >
+              <span class="fp-gutter">{{ idx + 1 }}</span>
+              <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
+            </div>
+          </div>
         </div>
-      </div>
+
+        <!-- Body: HTML (sandboxed preview + source mode) -->
+        <div v-else-if="contentKind === 'html'" :key="file.path" class="fp-body">
+          <iframe
+            v-if="htmlMode === 'preview'"
+            class="fp-html-frame"
+            sandbox=""
+            :srcdoc="htmlSrcdoc"
+            :title="file.path"
+          ></iframe>
+          <div v-else class="fp-code">
+            <div class="fp-line-table">
+              <div
+                v-for="(line, idx) in lines"
+                :key="idx"
+                class="fp-line-row"
+                :class="lineClass(idx + 1)"
+                :data-line="idx + 1"
+              >
+                <span class="fp-gutter">{{ idx + 1 }}</span>
+                <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Body: PDF -->
+        <div v-else-if="contentKind === 'pdf'" :key="file.path" class="fp-body fp-pdf-wrap">
+          <iframe v-if="pdfSrc" class="fp-pdf-frame" :src="pdfSrc" :title="file.path"></iframe>
+          <div v-else class="fp-binary-card">
+            <span class="fp-binary-label">{{ t('filePreview.pdfNoPreview') }}</span>
+          </div>
+        </div>
+
+        <!-- Body: CSV -->
+        <div v-else-if="contentKind === 'csv'" :key="file.path" class="fp-body fp-table-wrap">
+          <table class="fp-table">
+            <tbody>
+              <tr v-for="(row, ri) in csvRows" :key="ri" :class="lineClass(ri + 1)" :data-line="ri + 1">
+                <th>{{ ri + 1 }}</th>
+                <td v-for="(cell, ci) in row" :key="ci">{{ cell }}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <!-- Body: Image (base64) -->
+        <div v-else-if="contentKind === 'image'" :key="file.path" class="fp-body fp-image-wrap">
+          <template v-if="imageSrc">
+            <img
+              :src="imageSrc"
+              :alt="file.path"
+              class="fp-image"
+              :class="{ actual: imageFit === 'actual' }"
+            />
+          </template>
+          <div v-else class="fp-binary-card">
+            <span class="fp-binary-icon">
+              <Icon name="image-off" size="lg" />
+            </span>
+            <span class="fp-binary-label">{{ t('filePreview.imageNoPreview', { mime: file.mime, size: formatSize(file.size) }) }}</span>
+          </div>
+        </div>
+
+        <!-- Body: Video -->
+        <div v-else-if="contentKind === 'video'" :key="file.path" class="fp-body fp-image-wrap">
+          <template v-if="videoSrc">
+            <video :src="videoSrc" class="fp-image" controls playsinline preload="metadata" />
+          </template>
+          <div v-else class="fp-binary-card">
+            <span class="fp-binary-icon">
+              <Icon name="image-off" size="lg" />
+            </span>
+            <span class="fp-binary-label">{{ t('filePreview.videoNoPreview', { mime: file.mime, size: formatSize(file.size) }) }}</span>
+          </div>
+        </div>
+
+        <!-- Body: Text/Code (with line numbers) -->
+        <div v-else-if="contentKind === 'text'" :key="file.path" class="fp-body fp-code">
+          <div class="fp-line-table">
+            <div
+              v-for="(line, idx) in lines"
+              :key="idx"
+              class="fp-line-row"
+              :class="lineClass(idx + 1)"
+              :data-line="idx + 1"
+            >
+              <span class="fp-gutter">{{ idx + 1 }}</span>
+              <span class="fp-line-text" v-html="highlightLine(line, idx)"></span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Body: Binary / unknown -->
+        <div v-else :key="file.path" class="fp-body fp-binary-wrap">
+          <div class="fp-binary-card">
+            <span class="fp-binary-icon">
+              <Icon name="file-off" size="lg" />
+            </span>
+            <span class="fp-binary-label">
+              {{ t('filePreview.binaryNoPreview', { mime: file.mime || t('filePreview.unknownType'), size: formatSize(file.size) }) }}
+            </span>
+          </div>
+        </div>
+      </Transition>
     </template>
   </div>
 </template>
@@ -804,7 +874,9 @@ function truncatePath(path: string, maxLen = 55): string {
 .fp-search-count {
   color: var(--muted);
   font-size: max(9px, calc(var(--ui-font-size) - 3.5px));
-  min-width: 18px;
+  /* `active/total` (e.g. 2/17) is wider than the old bare total — the bigger
+     min-width keeps single-digit counts from jittering the layout. */
+  min-width: 26px;
   text-align: right;
 }
 
@@ -849,6 +921,35 @@ function truncatePath(path: string, maxLen = 55): string {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+/* File switch: bodies are keyed on the file path — a direct file→file
+   replacement crossfades out-in, and a body mounting out of the loading
+   state fades in via `appear`. Quiet ease-out, and the enter rises a touch
+   per the house motion spec. */
+.fp-swap-enter-active,
+.fp-swap-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+.fp-swap-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.fp-swap-leave-to {
+  opacity: 0;
+  transform: translateY(-4px);
+}
+
+/* Shiki resolves asynchronously: lines first render as plain escaped text,
+   then swap to highlighted HTML when the promise lands. The root flips
+   `fp-hl-ready` at that moment, and the one-shot fade-in makes the
+   monochrome→colored swap read as the code settling instead of flashing. */
+.fp-hl-ready .fp-line-table {
+  animation: fp-hl-in var(--duration-base) var(--ease-out);
+}
+@keyframes fp-hl-in {
+  from { opacity: 0; }
 }
 
 /* ---- Markdown ---- */
