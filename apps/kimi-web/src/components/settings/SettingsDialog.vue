@@ -225,6 +225,26 @@ function setTab(tab: SettingsTab): void {
   activeTab.value = tab;
 }
 
+// Roving-tabindex keyboard nav for the side nav (house pattern — see
+// SearchSessionsDialog): only the active tab is in the tab order, and ↑/↓ plus
+// Home/End move focus to the neighbor and activate it.
+const tabRefs = ref<HTMLButtonElement[]>([]);
+
+function onTabsKeydown(e: KeyboardEvent): void {
+  const index = tabs.findIndex((tb) => tb.id === activeTab.value);
+  let next = index;
+  if (e.key === 'ArrowDown') next = Math.min(index + 1, tabs.length - 1);
+  else if (e.key === 'ArrowUp') next = Math.max(index - 1, 0);
+  else if (e.key === 'Home') next = 0;
+  else if (e.key === 'End') next = tabs.length - 1;
+  else return;
+  e.preventDefault();
+  const target = tabs[next];
+  if (!target || next === index) return;
+  setTab(target.id);
+  tabRefs.value[next]?.focus();
+}
+
 // ---------------------------------------------------------------------------
 // Archived-sessions tab — its own list state (server-side `archived_only`
 // filter), kept separate from the per-workspace active list. Search, workspace
@@ -330,14 +350,18 @@ function archiveTime(iso: string): string {
 <template>
   <Dialog :open="true" :close-on-esc="false" :title="t('settings.title')" size="xl" height="fixed" :padded="false" @close="emit('close')">
     <div ref="dialogRef" class="sd">
-      <nav class="settings-tabs" role="tablist" :aria-label="t('settings.title')">
+      <nav class="settings-tabs" role="tablist" :aria-label="t('settings.title')" @keydown="onTabsKeydown">
         <button
           v-for="tb in tabs"
           :key="tb.id"
+          ref="tabRefs"
           type="button"
           class="tab"
           role="tab"
+          :id="`settings-tab-${tb.id}`"
           :aria-selected="activeTab === tb.id"
+          :aria-controls="`settings-panel-${tb.id}`"
+          :tabindex="activeTab === tb.id ? 0 : -1"
           :class="{ on: activeTab === tb.id }"
           @click="setTab(tb.id)"
         >
@@ -346,8 +370,16 @@ function archiveTime(iso: string): string {
       </nav>
 
       <div class="body">
+        <Transition name="panel-swap" mode="out-in">
         <!-- General: Appearance + Notifications -->
-        <section v-show="activeTab === 'general'" class="panel">
+        <section
+          v-if="activeTab === 'general'"
+          key="general"
+          class="panel"
+          role="tabpanel"
+          id="settings-panel-general"
+          aria-labelledby="settings-tab-general"
+        >
           <section class="sec">
             <h3 class="sec-title">{{ t('settings.appearance') }}</h3>
             <div class="row">
@@ -456,7 +488,14 @@ function archiveTime(iso: string): string {
         </section>
 
         <!-- Models: Reasonix-style usage + access entry point. -->
-        <section v-show="activeTab === 'models'" class="panel model-settings">
+        <section
+          v-else-if="activeTab === 'models'"
+          key="models"
+          class="panel model-settings"
+          role="tabpanel"
+          id="settings-panel-models"
+          aria-labelledby="settings-tab-models"
+        >
           <div class="panel-head">
             <div class="panel-kicker">{{ t('settings.modelsKicker') }}</div>
             <h4 class="panel-title">{{ t('settings.modelsTitle') }}</h4>
@@ -557,7 +596,14 @@ function archiveTime(iso: string): string {
         </section>
 
         <!-- Account -->
-        <section v-show="activeTab === 'account'" class="panel">
+        <section
+          v-else-if="activeTab === 'account'"
+          key="account"
+          class="panel"
+          role="tabpanel"
+          id="settings-panel-account"
+          aria-labelledby="settings-tab-account"
+        >
           <section class="sec">
             <h3 class="sec-title">{{ t('settings.account') }}</h3>
             <div class="row">
@@ -575,7 +621,14 @@ function archiveTime(iso: string): string {
         </section>
 
         <!-- Agent defaults -->
-        <section v-show="activeTab === 'agent'" class="panel">
+        <section
+          v-else-if="activeTab === 'agent'"
+          key="agent"
+          class="panel"
+          role="tabpanel"
+          id="settings-panel-agent"
+          aria-labelledby="settings-tab-agent"
+        >
           <section class="sec">
             <div class="sec-head">
               <h3 class="sec-title">{{ t('settings.agentDefaults') }}</h3>
@@ -642,7 +695,14 @@ function archiveTime(iso: string): string {
         </section>
 
         <!-- Advanced: diagnostics + data/privacy -->
-        <section v-show="activeTab === 'advanced'" class="panel">
+        <section
+          v-else-if="activeTab === 'advanced'"
+          key="advanced"
+          class="panel"
+          role="tabpanel"
+          id="settings-panel-advanced"
+          aria-labelledby="settings-tab-advanced"
+        >
           <section class="sec">
             <h3 class="sec-title">{{ t('settings.advanced') }}</h3>
             <div class="row">
@@ -681,7 +741,14 @@ function archiveTime(iso: string): string {
         </section>
 
         <!-- Archived sessions -->
-        <section v-show="activeTab === 'archived'" class="panel">
+        <section
+          v-else-if="activeTab === 'archived'"
+          key="archived"
+          class="panel"
+          role="tabpanel"
+          id="settings-panel-archived"
+          aria-labelledby="settings-tab-archived"
+        >
           <div class="panel-head">
             <div class="panel-kicker">Archived sessions</div>
             <h4 class="panel-title">{{ t('settings.archivedTitle') }}</h4>
@@ -742,7 +809,7 @@ function archiveTime(iso: string): string {
             </div>
           </template>
         </section>
-
+        </Transition>
       </div>
     </div>
   </Dialog>
@@ -778,6 +845,13 @@ function archiveTime(iso: string): string {
 
 .body { display: flex; flex-direction: column; overflow-y: auto; padding: var(--space-2) var(--space-5) var(--space-5) var(--space-6); flex: 1; min-width: 0; }
 .panel { display: block; }
+/* Section switch: quiet fade + a few-px rise, out-in keyed on the active tab. */
+.panel-swap-enter-active,
+.panel-swap-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out), transform var(--duration-base) var(--ease-out);
+}
+.panel-swap-enter-from { opacity: 0; transform: translateY(6px); }
+.panel-swap-leave-to { opacity: 0; transform: translateY(-4px); }
 .sec { padding: var(--space-4) 0; border-bottom: 1px solid var(--color-line); }
 .sec:last-child { border-bottom: none; }
 .sec-head {
