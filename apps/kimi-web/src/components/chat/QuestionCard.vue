@@ -410,8 +410,13 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
 </template>
 
 <style scoped>
+/* One-shot mount entrance: the card rises in when a new question arrives
+   (ChatDock keys it by questionId, so each question mounts fresh). Step
+   navigation, option picks and busy state are in-place patches — the root
+   element persists and the CSS animation does not replay. */
 .qcard {
   margin: var(--space-2) 0;
+  animation: kimi-card-in var(--duration-slow) var(--ease-out);
 }
 /* Accent attention-card head band layered on top of the shared flat Card
    primitive (Card supplies the border, radius and surface; no shadow). */

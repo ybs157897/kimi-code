@@ -335,8 +335,13 @@ onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
 </template>
 
 <style scoped>
+/* One-shot mount entrance: the card rises in when a new approval arrives
+   (ChatDock keys it by approvalId, so each approval mounts fresh). Busy /
+   minimize / feedback updates are in-place patches — the root element persists
+   and the CSS animation does not replay. */
 .appr {
   margin: var(--space-2) 0;
+  animation: kimi-card-in var(--duration-slow) var(--ease-out);
 }
 /* Warning attention-card head band layered on top of the shared flat Card
    primitive (Card supplies the border, radius and surface; no shadow). */

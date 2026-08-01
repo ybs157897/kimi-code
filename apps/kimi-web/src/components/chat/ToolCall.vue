@@ -27,6 +27,7 @@ const Renderer = computed(() => resolveToolRenderer(props.tool));
 <template>
   <component
     :is="Renderer"
+    class="tool-call"
     :tool="tool"
     :mobile="mobile"
     :stack-position="stackPosition"
@@ -38,3 +39,15 @@ const Renderer = computed(() => resolveToolRenderer(props.tool));
     @open-agent="emit('openAgent', $event)"
   />
 </template>
+
+<style scoped>
+/* One-shot mount entrance: the call rises in when it first appears mid-stream.
+   The class falls through to the renderer's single root; keyed ToolCalls are
+   patched in place on status / progress / streamed-input updates, and a CSS
+   animation never replays on an in-place patch — so it fires once per call.
+   (The renderer itself only swaps when a media tool completes, which mounts a
+   genuinely new root.) */
+.tool-call {
+  animation: kimi-card-in var(--duration-slow) var(--ease-out);
+}
+</style>

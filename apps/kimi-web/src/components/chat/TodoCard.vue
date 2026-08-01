@@ -38,11 +38,15 @@ function glyphStatus(status: TodoView['status']): StatusGlyphStatus {
 </template>
 
 <style scoped>
+/* One-shot mount entrance: the card rises in when the panel appears. Row
+   updates stream through as in-place patches (the root element persists), so
+   the CSS animation fires once per mount and never replays. */
 .todo-card {
   display: flex;
   flex-direction: column;
   gap: 1px;
   font-size: var(--text-base);
+  animation: kimi-card-in var(--duration-slow) var(--ease-out);
 }
 
 .tc-row {
