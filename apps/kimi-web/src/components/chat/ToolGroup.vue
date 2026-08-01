@@ -112,6 +112,8 @@ function onHeadClick(): void {
   text-align: left;
   cursor: pointer;
   user-select: none;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 .tool-group-head:hover {
   background: var(--color-surface-sunken);

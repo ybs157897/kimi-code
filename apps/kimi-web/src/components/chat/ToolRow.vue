@@ -63,10 +63,16 @@ function onHeadClick(): void {
       </span>
       <span class="rt">
         <span class="status" :class="status" role="status" :aria-label="status">
-          <Icon v-if="status === 'ok'" name="check" size="sm" />
-          <Icon v-else-if="status === 'error'" name="close" size="sm" />
-          <StatusDot v-else-if="status === 'suspended'" status="suspended" />
-          <StatusDot v-else status="running" />
+          <!-- Keyed on the status branch so a flip (running→ok/error) swaps the
+               glyph through a quick out-in settle instead of a hard element
+               swap — "tool finished" resolves visibly. Same idiom as
+               StatusGlyph's flip. -->
+          <Transition name="status-flip" mode="out-in">
+            <Icon v-if="status === 'ok'" name="check" size="sm" />
+            <Icon v-else-if="status === 'error'" name="close" size="sm" />
+            <StatusDot v-else-if="status === 'suspended'" status="suspended" />
+            <StatusDot v-else status="running" />
+          </Transition>
         </span>
         <slot name="trailing" />
         <span v-if="time" class="tm">{{ time }}</span>
@@ -117,6 +123,7 @@ function onHeadClick(): void {
   cursor: pointer;
   font: var(--text-sm) var(--font-mono);
   color: var(--color-text);
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 .box.open .bh,
 .bh:hover {
@@ -187,6 +194,21 @@ function onHeadClick(): void {
 }
 .status.error {
   color: var(--color-danger);
+}
+
+/* Status flip: the outgoing glyph steps aside and the incoming one settles
+   with a micro-scale — quiet, easeOut-only, no bounce. Children of `.status`
+   are flex items, so the transform applies. No `appear`, so the initial
+   mount renders exactly as it did before. */
+.status-flip-enter-active,
+.status-flip-leave-active {
+  transition: opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+.status-flip-enter-from,
+.status-flip-leave-to {
+  opacity: 0;
+  transform: scale(0.5);
 }
 
 /* Expanded detail: sunken panel under the row. Opens downward / collapses upward

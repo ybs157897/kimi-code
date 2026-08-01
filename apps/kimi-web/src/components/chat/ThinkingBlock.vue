@@ -123,6 +123,7 @@ watch(
   white-space: pre-wrap;
   word-break: break-word;
   display: block;
+  transition: color var(--duration-fast) var(--ease-out);
 }
 
 .tc {
@@ -134,6 +135,7 @@ watch(
   margin: 0;
   max-height: calc(var(--leading-relaxed) * 1em * 5);
   overflow-y: auto;
+  transition: color var(--duration-fast) var(--ease-out);
 }
 
 /* ---- Mobile tweaks ---- */
