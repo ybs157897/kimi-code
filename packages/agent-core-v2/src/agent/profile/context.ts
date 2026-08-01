@@ -18,6 +18,7 @@
 
 import { dirname, join, normalize } from 'pathe';
 
+import { resolveProjectConfigDirName } from '#/app/bootstrap/bootstrap';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
 import type { SystemPromptContext } from './profile';
@@ -30,6 +31,7 @@ export const LIST_DIR_CHILD_WIDTH = 10;
 interface ProfileContextDeps {
   readonly fs: IHostFileSystem;
   readonly homeDir: string;
+  readonly projectConfigDirName?: string;
 }
 
 export interface PreparedSystemPromptContext extends SystemPromptContext {
@@ -117,7 +119,7 @@ async function loadAgentsMdForRoots(
     const dirs = dirsRootToLeaf(rootWorkDir, projectRoot);
 
     for (const dir of dirs) {
-      await collect(join(dir, '.kimi-code', 'AGENTS.md'));
+      await collect(join(dir, resolveProjectConfigDirName(deps.projectConfigDirName), 'AGENTS.md'));
       for (const fileName of ['AGENTS.md', 'agents.md']) {
         if (await collect(join(dir, fileName))) break;
       }

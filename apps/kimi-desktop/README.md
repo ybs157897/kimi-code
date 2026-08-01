@@ -14,9 +14,12 @@ Kimi Code web UI (`apps/kimi-web`) and the TypeScript agent engine.
   authenticated loopback NDJSON channel. It does not use an HTTP proxy.
 - **Process behavior**: the engine helper is launched without a console
   window on Windows and is stopped with the application.
-- **Home and auth**: desktop config, sessions, logs, and OAuth credentials
-  live under `~/.kimi-desktop` (override with `KIMI_DESKTOP_HOME`). The
-  desktop application never reads `KIMI_CODE_HOME` or `~/.kimi-code`.
+- **Home and auth**: desktop config, sessions, logs, OAuth credentials, and
+  the project-level config directory inside the user's workspace
+  (`.kimi-desktop/{mcp.json,local.toml,agents,skills,experts,extensions,AGENTS.md}`)
+  all live under the `.kimi-desktop` namespace (user-level home override via
+  `KIMI_DESKTOP_HOME`). The desktop application never reads or writes
+  `.kimi-code` at the user level or inside the user's workspace.
 
 ## Prerequisites
 

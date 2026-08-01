@@ -3,25 +3,26 @@
  *
  * Resolves the ordered `SkillRoot` list a discovery backend should scan for the
  * user (home) and project (workspace) skill locations. Brand directories are
- * preferred over generic ones (`.kimi-code/skills` before `.agents/skills`),
- * and the project root is found by walking up to `.git`. Plugin roots are no
- * longer folded in here — plugins are a separate `ISkillSource`. These helpers
- * are exported so the edge can compose a workspace's skills without a Session.
- * Pure path/fs probes; no scoped state.
+ * preferred over generic ones (`<projectConfigDirName>/skills` before
+ * `.agents/skills`), and the project root is found by walking up to `.git`.
+ * Plugin roots are no longer folded in here — plugins are a separate
+ * `ISkillSource`. These helpers are exported so the edge can compose a
+ * workspace's skills without a Session. Pure path/fs probes; no scoped state.
  */
 
 import { promises as fs } from 'node:fs';
 import path from 'pathe';
 
+import { resolveProjectConfigDirName } from '#/app/bootstrap/bootstrap';
 import type { SkillRoot, SkillSource } from './types';
 
 const USER_BRAND_DIRS = ['skills'] as const;
 const USER_GENERIC_DIRS = ['.agents/skills'] as const;
-const PROJECT_BRAND_DIRS = ['.kimi-code/skills'] as const;
 const PROJECT_GENERIC_DIRS = ['.agents/skills'] as const;
 
 export interface SkillRootsOptions {
   readonly mergeAllAvailableSkills?: boolean;
+  readonly projectConfigDirName?: string;
 }
 
 export async function userRoots(
@@ -43,7 +44,10 @@ export async function projectRoots(
   const projectRoot = await findProjectRoot(workDir);
   const roots: SkillRoot[] = [];
   const mergeAllAvailableSkills = options.mergeAllAvailableSkills ?? true;
-  await pushBrandGroup(roots, PROJECT_BRAND_DIRS, projectRoot, 'project', mergeAllAvailableSkills);
+  const projectBrandDirs = [
+    `${resolveProjectConfigDirName(options.projectConfigDirName)}/skills`,
+  ] as const;
+  await pushBrandGroup(roots, projectBrandDirs, projectRoot, 'project', mergeAllAvailableSkills);
   await pushFirstExisting(roots, PROJECT_GENERIC_DIRS, projectRoot, 'project');
   return roots;
 }

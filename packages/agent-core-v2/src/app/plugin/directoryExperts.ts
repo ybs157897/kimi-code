@@ -1,8 +1,8 @@
 /**
  * `plugin` domain (L3) — drop-in expert package discovery.
  *
- * Scans `experts/` directories (project `.kimi-code/experts/<team>/`, user
- * `<kimiHome>/experts/<team>/`) for packages in the same layout as an expert
+ * Scans `experts/` directories (project `<projectConfigDirName>/experts/<team>/`,
+ * user `<kimiHome>/experts/<team>/`) for packages in the same layout as an expert
  * plugin — a manifest with `expertType` plus agent .md files — so teams work
  * without a plugin install step. Pure functions over `parseManifest`; callers
  * merge the result with `IPluginService.enabledExperts()`.
@@ -11,6 +11,7 @@
 import { readdir, stat } from 'node:fs/promises';
 import path from 'node:path';
 
+import { resolveProjectConfigDirName } from '#/app/bootstrap/bootstrap';
 import { parseManifest } from './manifest';
 import { normalizePluginId, type EnabledPluginExpert } from './types';
 
@@ -28,9 +29,13 @@ export interface DirectoryExpertDiscovery {
 }
 
 /** The `experts/` roots a session scans, ordered project first (it wins collisions). */
-export function sessionExpertRoots(workDir: string, kimiHomeDir: string): readonly string[] {
+export function sessionExpertRoots(
+  workDir: string,
+  kimiHomeDir: string,
+  projectConfigDirName?: string,
+): readonly string[] {
   return [
-    path.join(workDir, '.kimi-code', EXPERT_TEAMS_DIR_NAME),
+    path.join(workDir, resolveProjectConfigDirName(projectConfigDirName), EXPERT_TEAMS_DIR_NAME),
     path.join(kimiHomeDir, EXPERT_TEAMS_DIR_NAME),
   ];
 }

@@ -40,6 +40,12 @@ const ENDPOINT_ENV = 'KIMI_DESKTOP_IPC_ENDPOINT';
 const TOKEN_ENV = 'KIMI_DESKTOP_IPC_TOKEN';
 /** Desktop-only home override. KIMI_CODE_HOME is intentionally ignored. */
 const HOME_ENV = 'KIMI_DESKTOP_HOME';
+/**
+ * Project-level local config directory name inside the user's workspace,
+ * keeping desktop sessions fully independent from the CLI's `.kimi-code`
+ * project directory.
+ */
+const PROJECT_CONFIG_DIR_NAME = '.kimi-desktop';
 /** Env var the extension loader reads for its host API module path. */
 const HOST_API_ENV = 'KIMI_EXTENSION_HOST_API';
 /** Name of the SEA asset that carries the bundled extension host API chunk. */
@@ -136,12 +142,15 @@ async function main(): Promise<void> {
   }
 
   const logging = resolveLoggingConfig({ homeDir: kimiHome, env: process.env });
-  const { app } = bootstrap({ homeDir: kimiHome }, [
-    ...logSeed(logging),
-    ...hostRequestHeadersSeed({}),
-    ...skillCatalogRuntimeOptionsSeed(undefined),
-    ...agentCatalogRuntimeOptionsSeed(undefined),
-  ]);
+  const { app } = bootstrap(
+    { homeDir: kimiHome, projectConfigDirName: PROJECT_CONFIG_DIR_NAME },
+    [
+      ...logSeed(logging),
+      ...hostRequestHeadersSeed({}),
+      ...skillCatalogRuntimeOptionsSeed(undefined),
+      ...agentCatalogRuntimeOptionsSeed(undefined),
+    ],
+  );
 
   try {
     await app.accessor.get(IConfigService).ready;

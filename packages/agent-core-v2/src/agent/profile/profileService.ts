@@ -873,7 +873,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   ): Promise<SystemPromptContext> {
     const effectiveCwd = cwd ?? this.sessionContext.cwd;
     const base = await prepareSystemPromptContext(
-      { fs: this.fs, homeDir: this.env.homeDir },
+      {
+        fs: this.fs,
+        homeDir: this.env.homeDir,
+        projectConfigDirName: this.bootstrap.projectConfigDirName,
+      },
       effectiveCwd,
       this.bootstrap.homeDir,
       { additionalDirs: options?.additionalDirs ?? this.workspace.additionalDirs },

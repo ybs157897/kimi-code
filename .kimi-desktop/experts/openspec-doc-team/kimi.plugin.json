@@ -1,0 +1,67 @@
+{
+  "name": "openspec-doc-team",
+  "version": "1.1.0",
+  "description": "专业长文档生成专家团：总编辑 + 检索 + 生成 + 审核，六阶段工作流产出企业级长文。",
+  "license": "MIT",
+  "keywords": [
+    "document-generation",
+    "long-document",
+    "enterprise-docs",
+    "spec-writing",
+    "compliance-audit",
+    "agent-team"
+  ],
+  "expertType": "team",
+  "agentName": "doc-team-lead",
+  "agents": [
+    "./agents/doc-team-lead.md",
+    "./agents/doc-researcher.md",
+    "./agents/doc-generator.md",
+    "./agents/doc-auditor.md"
+  ],
+  "teamInfo": {
+    "leadAgent": "doc-team-lead",
+    "memberAgents": ["doc-researcher", "doc-generator", "doc-auditor"]
+  },
+  "displayName": "专业文档生成团",
+  "profession": "专业文档生成团",
+  "displayDescription": "四角色协作六阶段（需求分析、检索、生成、审核闭环、汇编、交付），产出合规长文档：建施图说明、技术方案、投标文件、运维手册、API/系统文档等。",
+  "tags": ["文档生成", "长文档", "企业文档"],
+  "categoryId": "10-ProjectQuality",
+  "defaultInitPrompt": "帮我生成一份建筑施工图设计说明书",
+  "quickPrompts": [
+    "帮我生成一份建筑施工图设计说明书",
+    "起草一份基于微服务的电商后台技术方案",
+    "根据我的 OpenAPI 规范产出 API 参考文档"
+  ],
+  "members": [
+    {
+      "agent": "doc-team-lead",
+      "role": "lead",
+      "name": { "en": "Zhang", "zh": "章成文" },
+      "profession": { "en": "Editor-in-Chief", "zh": "总编辑" },
+      "avatar": "avatars/doc-team-lead.png"
+    },
+    {
+      "agent": "doc-researcher",
+      "role": "member",
+      "name": { "en": "Su", "zh": "苏寻源" },
+      "profession": { "en": "Document Researcher", "zh": "文献检索员" },
+      "avatar": "avatars/doc-researcher.png"
+    },
+    {
+      "agent": "doc-generator",
+      "role": "member",
+      "name": { "en": "Zhi", "zh": "支笔生" },
+      "profession": { "en": "Content Generator", "zh": "内容生成员" },
+      "avatar": "avatars/doc-generator.png"
+    },
+    {
+      "agent": "doc-auditor",
+      "role": "member",
+      "name": { "en": "Yan", "zh": "严审之" },
+      "profession": { "en": "Quality Auditor", "zh": "质量审核员" },
+      "avatar": "avatars/doc-auditor.png"
+    }
+  ]
+}

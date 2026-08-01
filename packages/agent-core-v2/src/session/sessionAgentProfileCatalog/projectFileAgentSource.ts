@@ -10,6 +10,7 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { ILogService } from '#/_base/log/log';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { discoverAgentFiles } from '#/app/agentFileCatalog/agentFileDiscovery';
 import {
   AGENT_PROFILE_SOURCE_PRIORITY,
@@ -40,6 +41,7 @@ export class ProjectFileAgentSource implements IProjectFileAgentSource {
     @IHostFileSystem private readonly fs: IHostFileSystem,
     @ILogService private readonly log: ILogService,
     @IUserFileAgentSource private readonly user: IUserFileAgentSource,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
   ) {}
 
   async load(): Promise<AgentProfileContribution> {
@@ -49,6 +51,7 @@ export class ProjectFileAgentSource implements IProjectFileAgentSource {
       (message, error) => {
         this.log.warn(message, error);
       },
+      this.bootstrap.projectConfigDirName,
     );
     return profilesFromDiscovery(
       await discoverAgentFiles(this.fs, roots, (message) => this.log.warn(message)),

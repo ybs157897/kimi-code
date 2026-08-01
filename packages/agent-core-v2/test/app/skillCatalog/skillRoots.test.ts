@@ -68,6 +68,30 @@ describe('skillRoots', () => {
       expect(brandIdx).toBeGreaterThanOrEqual(0);
       expect(genericIdx).toBeGreaterThan(brandIdx);
     });
+
+    it('resolves the brand directory from the configured project config dir name', async () => {
+      await markGitRoot();
+      await mkdir(join(root, '.kimi-desktop/skills/commit'), { recursive: true });
+
+      const roots = await projectRoots(root, { projectConfigDirName: '.kimi-desktop' });
+
+      expect(
+        roots.some((r) => r.path.endsWith('.kimi-desktop/skills') && r.source === 'project'),
+      ).toBe(true);
+    });
+
+    it('ignores the configured brand dir when the default project config dir name is in use', async () => {
+      await markGitRoot();
+      await mkdir(join(root, '.kimi-desktop/skills/commit'), { recursive: true });
+      await mkdir(join(root, '.agents/skills/review'), { recursive: true });
+
+      const roots = await projectRoots(root);
+
+      expect(roots.some((r) => r.path.endsWith('.kimi-desktop/skills'))).toBe(false);
+      expect(roots.some((r) => r.path.endsWith('.agents/skills') && r.source === 'project')).toBe(
+        true,
+      );
+    });
   });
 
   describe('userRoots', () => {

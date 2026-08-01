@@ -171,6 +171,39 @@ describe('loadAgentsMd nested project hierarchy', () => {
     expect(result.indexOf('root instructions')).toBeLessThan(result.indexOf('packages instructions'));
     expect(result.indexOf('packages instructions')).toBeLessThan(result.indexOf('leaf instructions'));
   });
+
+  it('loads .kimi-desktop/AGENTS.md from project dirs when configured', async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), 'kimi-agents-project-'));
+    extraDirs.push(projectRoot);
+    const leaf = join(projectRoot, 'packages', 'app');
+    await mkdir(leaf, { recursive: true });
+    await mkdir(join(projectRoot, '.git'));
+    await mkdir(join(leaf, '.kimi-desktop'), { recursive: true });
+    await writeFile(join(leaf, '.kimi-desktop', 'AGENTS.md'), 'desktop project instructions', 'utf-8');
+
+    const result = await loadAgentsMd(
+      { fs, homeDir, projectConfigDirName: '.kimi-desktop' },
+      leaf,
+    );
+
+    expect(result).toContain('desktop project instructions');
+  });
+
+  it('ignores .kimi-desktop/AGENTS.md when the default project config dir name is in use', async () => {
+    const projectRoot = await mkdtemp(join(tmpdir(), 'kimi-agents-project-'));
+    extraDirs.push(projectRoot);
+    const leaf = join(projectRoot, 'packages', 'app');
+    await mkdir(leaf, { recursive: true });
+    await mkdir(join(projectRoot, '.git'));
+    await mkdir(join(leaf, '.kimi-desktop'), { recursive: true });
+    await writeFile(join(leaf, '.kimi-desktop', 'AGENTS.md'), 'desktop-only instructions', 'utf-8');
+    await writeFile(join(leaf, 'AGENTS.md'), 'plain project instructions', 'utf-8');
+
+    const result = await loadAgentsMd({ fs, homeDir }, leaf);
+
+    expect(result).toContain('plain project instructions');
+    expect(result).not.toContain('desktop-only instructions');
+  });
 });
 
 describe('loadAgentsMd oversized content', () => {

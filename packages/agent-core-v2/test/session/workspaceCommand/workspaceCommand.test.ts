@@ -197,11 +197,12 @@ function agentsStub(): AgentsStub {
   };
 }
 
-function bootstrapStub(): IBootstrapService {
+function bootstrapStub(projectConfigDirName = '.kimi-code'): IBootstrapService {
   return {
     _serviceBrand: undefined,
     homeDir: '/home/test',
     osHomeDir: '/users/test',
+    projectConfigDirName,
   } as IBootstrapService;
 }
 
@@ -243,6 +244,7 @@ describe('SessionWorkspaceCommandService', () => {
     mainPresent: boolean,
     workDir = WORK_DIR,
     gitDir = `${workDir}/.git`,
+    projectConfigDirName = '.kimi-code',
   ): Harness {
     const fs = new MemoryHostFs([gitDir, workDir, ...seedDirs]);
     const agents = agentsStub();
@@ -253,7 +255,7 @@ describe('SessionWorkspaceCommandService', () => {
         registerStateServices(reg);
         reg.defineInstance(ISessionContext, ctx);
         reg.define(ISessionWorkspaceContext, SessionWorkspaceContextService);
-        reg.defineInstance(IBootstrapService, bootstrapStub());
+        reg.defineInstance(IBootstrapService, bootstrapStub(projectConfigDirName));
         reg.defineInstance(IHostFileSystem, fs);
         reg.define(IProjectLocalConfigService, FileProjectLocalConfigService);
         reg.defineInstance(IAgentLifecycleService, agents);
@@ -292,6 +294,16 @@ describe('SessionWorkspaceCommandService', () => {
       kind: 'injection',
       variant: 'local-command-stdout',
     });
+  });
+
+  it('persists local.toml under the configured project config dir name', async () => {
+    const { svc, fs } = build([EXTRA_DIR], true, WORK_DIR, `${WORK_DIR}/.git`, '.kimi-desktop');
+
+    const result = await svc.addAdditionalDir({ path: 'extra', persist: true });
+
+    expect(result.persisted).toBe(true);
+    expect(result.configPath).toBe(`${WORK_DIR}/.kimi-desktop/local.toml`);
+    expect(fs.files.has(`${WORK_DIR}/.kimi-desktop/local.toml`)).toBe(true);
   });
 
   it('does not persist and injects a session-only message when persist is false', async () => {

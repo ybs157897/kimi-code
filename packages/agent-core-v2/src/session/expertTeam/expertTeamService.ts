@@ -96,7 +96,11 @@ export class SessionExpertTeamService
   /** Installed plugin experts merged with drop-in `experts/` directory packages. */
   private async enabledExperts(): Promise<readonly EnabledPluginExpert[]> {
     const directory = await discoverDirectoryExperts(
-      sessionExpertRoots(this.workspace.workDir, this.bootstrap.homeDir),
+      sessionExpertRoots(
+        this.workspace.workDir,
+        this.bootstrap.homeDir,
+        this.bootstrap.projectConfigDirName,
+      ),
     );
     for (const issue of directory.issues) {
       this.log.warn(`Skipping directory expert package at ${issue.dir}: ${issue.message}`);

@@ -85,6 +85,30 @@ describe('ExtensionLoaderService', () => {
     expect(result.extensions[1]?.commands.has('hello')).toBe(true);
   });
 
+  it('loads project extensions from the configured project config dir', async () => {
+    const projectDir = path.join(cwd, '.kimi-desktop', 'extensions');
+    await mkdir(projectDir, { recursive: true });
+    await writeFile(
+      path.join(projectDir, 'desktop.ts'),
+      "export default (api) => api.registerCommand('desktop', { description: 'desktop' });",
+      'utf8',
+    );
+
+    const desktopIx = createServices(disposables, {
+      strict: true,
+      additionalServices: (reg) => {
+        reg.defineInstance(IBootstrapService, stubBootstrap(homeDir, {}, '.kimi-desktop'));
+        reg.define(IHostFileSystem, HostFileSystem);
+        reg.define(IExtensionLoaderService, ExtensionLoaderService);
+      },
+    });
+
+    const result = await desktopIx.get(IExtensionLoaderService).load({ cwd });
+
+    expect(result.errors).toEqual([]);
+    expect(result.extensions.map((extension) => extension.id)).toEqual(['desktop']);
+  });
+
   it('keeps a valid sibling active when another extension fails to load', async () => {
     const projectDir = path.join(cwd, '.kimi-code', 'extensions');
     await mkdir(projectDir, { recursive: true });

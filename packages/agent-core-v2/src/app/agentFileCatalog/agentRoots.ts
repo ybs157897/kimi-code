@@ -7,6 +7,7 @@
 
 import { dirname, join, resolve } from 'pathe';
 
+import { resolveProjectConfigDirName } from '#/app/bootstrap/bootstrap';
 import { errorMessage } from '#/_base/errors/errorMessage';
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { HostFsError, OsFsErrors } from '#/os/interface/hostFsErrors';
@@ -20,7 +21,6 @@ export interface AgentRootWarn {
 
 const USER_BRAND_DIRS = ['agents'] as const;
 const USER_GENERIC_DIRS = ['.agents/agents'] as const;
-const PROJECT_BRAND_DIRS = ['.kimi-code/agents'] as const;
 const PROJECT_GENERIC_DIRS = ['.agents/agents'] as const;
 
 export async function userAgentRoots(
@@ -39,10 +39,14 @@ export async function projectAgentRoots(
   fs: IHostFileSystem,
   workDir: string,
   warn?: AgentRootWarn,
+  projectConfigDirName?: string,
 ): Promise<readonly AgentFileRoot[]> {
   const projectRoot = await findProjectRoot(fs, workDir, warn);
   const roots: AgentFileRoot[] = [];
-  await pushFirstExisting(fs, roots, PROJECT_BRAND_DIRS, projectRoot, 'project', warn);
+  const projectBrandDirs = [
+    `${resolveProjectConfigDirName(projectConfigDirName)}/agents`,
+  ] as const;
+  await pushFirstExisting(fs, roots, projectBrandDirs, projectRoot, 'project', warn);
   await pushFirstExisting(fs, roots, PROJECT_GENERIC_DIRS, projectRoot, 'project', warn);
   return roots;
 }

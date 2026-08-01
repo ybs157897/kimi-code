@@ -84,6 +84,30 @@ describe('agentRoots', () => {
       expect(brandIdx).toBeGreaterThanOrEqual(0);
       expect(genericIdx).toBeGreaterThan(brandIdx);
     });
+
+    it('resolves the brand directory from the configured project config dir name', async () => {
+      await markGitRoot();
+      await mkdir(join(root, '.kimi-desktop/agents'), { recursive: true });
+
+      const roots = await projectAgentRoots(hostFs, root, undefined, '.kimi-desktop');
+
+      expect(
+        roots.some((r) => r.path.endsWith('.kimi-desktop/agents') && r.source === 'project'),
+      ).toBe(true);
+    });
+
+    it('ignores the configured brand dir when the default project config dir name is in use', async () => {
+      await markGitRoot();
+      await mkdir(join(root, '.kimi-desktop/agents'), { recursive: true });
+      await mkdir(join(root, '.agents/agents'), { recursive: true });
+
+      const roots = await projectAgentRoots(hostFs, root);
+
+      expect(roots.some((r) => r.path.endsWith('.kimi-desktop/agents'))).toBe(false);
+      expect(roots.some((r) => r.path.endsWith('.agents/agents') && r.source === 'project')).toBe(
+        true,
+      );
+    });
   });
 
   describe('userRoots', () => {

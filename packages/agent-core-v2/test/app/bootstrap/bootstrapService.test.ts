@@ -31,6 +31,16 @@ describe('BootstrapService (scoped)', () => {
     expect(svc.homeDir).toBe('/tmp/kimi-home');
     expect(svc.configPath).toBe('/tmp/kimi-home/config.toml');
     expect(svc.sessionsDir).toBe('/tmp/kimi-home/sessions');
+    expect(svc.projectConfigDirName).toBe('.kimi-code');
+    host.dispose();
+  });
+
+  it('exposes the seeded projectConfigDirName', () => {
+    const host = createScopedTestHost(
+      bootstrapSeed({ homeDir: '/tmp/kimi-home', projectConfigDirName: '.kimi-desktop' }),
+    );
+    const svc = host.app.accessor.get(IBootstrapService);
+    expect(svc.projectConfigDirName).toBe('.kimi-desktop');
     host.dispose();
   });
 
@@ -48,6 +58,13 @@ describe('resolveBootstrapOptions', () => {
     expect(resolveBootstrapOptions({ homeDir: '/a', osHomeDir: '/b', env: {} }).homeDir).toBe('/a');
     expect(resolveBootstrapOptions({ osHomeDir: '/b', env: { KIMI_CODE_HOME: '/c' } }).homeDir).toBe('/c');
     expect(resolveBootstrapOptions({ osHomeDir: '/b', env: {} }).homeDir).toBe('/b/.kimi-code');
+  });
+
+  it('defaults projectConfigDirName to .kimi-code and honors an explicit value', () => {
+    expect(resolveBootstrapOptions({}).projectConfigDirName).toBe('.kimi-code');
+    expect(resolveBootstrapOptions({ projectConfigDirName: '.kimi-desktop' }).projectConfigDirName).toBe(
+      '.kimi-desktop',
+    );
   });
 });
 

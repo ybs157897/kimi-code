@@ -98,7 +98,11 @@ export class SessionMcpService extends Disposable implements ISessionMcpService 
     callerServers?: Readonly<Record<string, McpServerConfig>>,
   ): Promise<void> {
     const [base, pluginServers] = await Promise.all([
-      resolveSessionMcpConfig({ cwd: this.workspace.workDir, homeDir: this.bootstrap.homeDir }),
+      resolveSessionMcpConfig({
+        cwd: this.workspace.workDir,
+        homeDir: this.bootstrap.homeDir,
+        projectConfigDirName: this.bootstrap.projectConfigDirName,
+      }),
       this.plugins.enabledMcpServers(),
     ]);
     const withCaller = mergeCallerMcpServers(base, callerServers);

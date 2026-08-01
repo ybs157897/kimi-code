@@ -82,7 +82,11 @@ export class PluginExpertAgentSource implements IPluginExpertAgentSource {
       return { profiles: [], skipped: [], scannedRoots: [] };
     }
     const directory = await discoverDirectoryExperts(
-      sessionExpertRoots(this.workspace.workDir, this.bootstrap.homeDir),
+      sessionExpertRoots(
+        this.workspace.workDir,
+        this.bootstrap.homeDir,
+        this.bootstrap.projectConfigDirName,
+      ),
     );
     const skipped: Array<{ path: string; reason: string }> = [];
     for (const issue of directory.issues) {

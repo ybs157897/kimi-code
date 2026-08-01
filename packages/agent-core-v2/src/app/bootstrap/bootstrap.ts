@@ -4,7 +4,8 @@
  * Defines the `IBootstrapService`, the snapshot of the world the process runs
  * in, resolved once at startup and frozen for the process: observed host facts
  * (`platform`, `arch`, `cwd`, `osHomeDir`, `getEnv`, `clientVersion`) and the
- * app path layout (`homeDir`, `configPath`, …). `resolveBootstrapOptions` is
+ * app path layout (`homeDir`, `configPath`, `projectConfigDirName`, …).
+ * `resolveBootstrapOptions` is
  * the single place that reads `process.env` / `os.homedir()` / invocation
  * input to resolve the snapshot; everything downstream reads from
  * `IBootstrapService` instead of touching `process` directly. Bound at App
@@ -37,6 +38,7 @@ export interface IBootstrapOptions {
   readonly cwd: string;
   readonly env: NodeJS.ProcessEnv;
   readonly clientVersion: string;
+  readonly projectConfigDirName: string;
 }
 
 export const IBootstrapOptions: ServiceIdentifier<IBootstrapOptions> =
@@ -62,6 +64,7 @@ export interface IBootstrapService {
   readonly homeDir: string;
   readonly configPath: string;
   readonly clientVersion: string;
+  readonly projectConfigDirName: string;
   readonly sessionsDir: string;
   readonly blobsDir: string;
   readonly storeDir: string;
@@ -88,6 +91,7 @@ export interface BootstrapInput {
   readonly arch?: string;
   readonly cwd?: string;
   readonly clientVersion?: string;
+  readonly projectConfigDirName?: string;
 }
 
 export function resolveBootstrapOptions(input: BootstrapInput = {}): IBootstrapOptions {
@@ -104,6 +108,7 @@ export function resolveBootstrapOptions(input: BootstrapInput = {}): IBootstrapO
     cwd: input.cwd ?? process.cwd(),
     env,
     clientVersion: input.clientVersion ?? 'unknown',
+    projectConfigDirName: resolveProjectConfigDirName(input.projectConfigDirName),
   };
 }
 
@@ -153,6 +158,14 @@ export function resolveConfigPath(input: {
   readonly configPath?: string;
 }): string {
   return input.configPath ?? join(resolveKimiHome(input.homeDir), 'config.toml');
+}
+
+/** Default name of the project-level config directory inside a workspace. */
+export const DEFAULT_PROJECT_CONFIG_DIR_NAME = '.kimi-code';
+
+/** Resolves the project config directory name, defaulting to `.kimi-code`. */
+export function resolveProjectConfigDirName(name?: string): string {
+  return name ?? DEFAULT_PROJECT_CONFIG_DIR_NAME;
 }
 
 export function ensureKimiHome(homeDir: string): void {

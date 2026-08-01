@@ -131,7 +131,7 @@ async function main() {
   const home = join(tmpRoot, 'home');
   const socketPath = join(tmpRoot, 'ipc.sock');
   const workDir = join(tmpRoot, 'work');
-  const extensionsDir = join(workDir, '.kimi-code', 'extensions');
+  const extensionsDir = join(workDir, '.kimi-desktop', 'extensions');
   await mkdir(extensionsDir, { recursive: true });
   await mkdir(home, { recursive: true });
   await mkdir(workDir, { recursive: true });

@@ -1,7 +1,7 @@
 import { readFile, stat } from 'node:fs/promises';
 import { dirname, isAbsolute, join, normalize, resolve } from 'pathe';
 
-import { resolveKimiHome } from '#/app/bootstrap/bootstrap';
+import { resolveKimiHome, resolveProjectConfigDirName } from '#/app/bootstrap/bootstrap';
 import { McpServerConfigSchema, type McpServerConfig } from '#/agent/mcp/config-schema';
 import { ErrorCodes, Error2 } from '#/errors';
 import { z } from 'zod';
@@ -19,6 +19,7 @@ export interface McpJsonPaths {
 export interface ResolveMcpJsonPathsInput {
   readonly cwd: string;
   readonly homeDir?: string;
+  readonly projectConfigDirName?: string;
 }
 
 export async function resolveMcpJsonPaths(input: ResolveMcpJsonPathsInput): Promise<McpJsonPaths> {
@@ -27,19 +28,24 @@ export async function resolveMcpJsonPaths(input: ResolveMcpJsonPathsInput): Prom
   return {
     user: join(resolveKimiHome(input.homeDir), 'mcp.json'),
     projectRoot: join(projectRoot, '.mcp.json'),
-    project: join(input.cwd, '.kimi-code', 'mcp.json'),
+    project: join(input.cwd, resolveProjectConfigDirName(input.projectConfigDirName), 'mcp.json'),
   };
 }
 
 export interface LoadMcpServersInput {
   readonly cwd: string;
   readonly homeDir?: string;
+  readonly projectConfigDirName?: string;
 }
 
 export async function loadMcpServers(
   input: LoadMcpServersInput,
 ): Promise<Record<string, McpServerConfig>> {
-  const paths = await resolveMcpJsonPaths({ cwd: input.cwd, homeDir: input.homeDir });
+  const paths = await resolveMcpJsonPaths({
+    cwd: input.cwd,
+    homeDir: input.homeDir,
+    projectConfigDirName: input.projectConfigDirName,
+  });
   const [user, projectRoot, project] = await Promise.all([
     readMcpJson(paths.user),
     readMcpJson(paths.projectRoot, { stdioCwdBase: dirname(paths.projectRoot) }),

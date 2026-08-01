@@ -31,7 +31,6 @@ import type {
 } from './extension.types';
 import { IExtensionLoaderService, type LoadExtensionsInput } from './extensionLoader';
 
-const CONFIG_DIR_NAME = '.kimi-code';
 const EXTENSION_FILE_SUFFIXES = ['.ts', '.js', '.mjs'] as const;
 
 interface RegistrationAPI {
@@ -73,7 +72,9 @@ export class ExtensionLoaderService implements IExtensionLoaderService {
 
   private async discover(cwd: string): Promise<readonly string[]> {
     const candidates = [
-      ...(await this.discoverDirectory(path.join(cwd, CONFIG_DIR_NAME, 'extensions'))),
+      ...(await this.discoverDirectory(
+        path.join(cwd, this.bootstrap.projectConfigDirName, 'extensions'),
+      )),
       ...(await this.discoverDirectory(path.join(this.bootstrap.homeDir, 'extensions'))),
     ];
     return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];

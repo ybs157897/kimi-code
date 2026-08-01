@@ -11,6 +11,7 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import { Disposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import {
   MERGE_ALL_AVAILABLE_SKILLS_SECTION,
@@ -42,6 +43,7 @@ export class WorkspaceFileSkillSource extends Disposable implements IWorkspaceFi
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @IConfigService private readonly config: IConfigService,
     @ISkillCatalogRuntimeOptions private readonly runtimeOptions: ISkillCatalogRuntimeOptions,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
   ) {
     super();
     this._register(
@@ -58,7 +60,12 @@ export class WorkspaceFileSkillSource extends Disposable implements IWorkspaceFi
     await this.config.ready;
     const mergeAllAvailableSkills =
       this.config.get<MergeAllAvailableSkillsConfig>(MERGE_ALL_AVAILABLE_SKILLS_SECTION) ?? true;
-    return this.discovery.discover(await projectRoots(this.workspace.workDir, { mergeAllAvailableSkills }));
+    return this.discovery.discover(
+      await projectRoots(this.workspace.workDir, {
+        mergeAllAvailableSkills,
+        projectConfigDirName: this.bootstrap.projectConfigDirName,
+      }),
+    );
   }
 }
 

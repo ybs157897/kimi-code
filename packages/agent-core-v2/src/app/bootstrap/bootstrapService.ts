@@ -33,6 +33,7 @@ export class BootstrapService implements IBootstrapService {
   readonly homeDir: string;
   readonly configPath: string;
   readonly clientVersion: string;
+  readonly projectConfigDirName: string;
   readonly sessionsDir: string;
   readonly blobsDir: string;
   readonly storeDir: string;
@@ -52,6 +53,7 @@ export class BootstrapService implements IBootstrapService {
     this.homeDir = options.homeDir;
     this.configPath = options.configPath;
     this.clientVersion = options.clientVersion;
+    this.projectConfigDirName = options.projectConfigDirName;
     this.sessionsDir = join(options.homeDir, 'sessions');
     this.blobsDir = join(options.homeDir, 'blobs');
     this.storeDir = join(options.homeDir, 'store');

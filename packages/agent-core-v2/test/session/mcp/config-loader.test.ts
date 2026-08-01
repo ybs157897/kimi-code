@@ -47,6 +47,21 @@ describe('resolveMcpJsonPaths', () => {
     expect(paths.projectRoot).toBe(join(repoRoot, '.mcp.json'));
     expect(paths.project).toBe(join(cwd, '.kimi-code', 'mcp.json'));
   });
+
+  it('uses the configured project config dir name for the project-local path', async () => {
+    const repoRoot = makeTempDir();
+    const cwd = join(repoRoot, 'packages', 'agent-core');
+    await mkdir(join(repoRoot, '.git'), { recursive: true });
+    await mkdir(cwd, { recursive: true });
+
+    const paths = await resolveMcpJsonPaths({
+      cwd,
+      homeDir: '/home/user/.kimi-desktop',
+      projectConfigDirName: '.kimi-desktop',
+    });
+
+    expect(paths.project).toBe(join(cwd, '.kimi-desktop', 'mcp.json'));
+  });
 });
 
 describe('loadMcpServers', () => {
@@ -93,6 +108,29 @@ describe('loadMcpServers', () => {
       transport: 'stdio',
       command: 'user-only',
     });
+    expect(servers['local']).toEqual({
+      transport: 'http',
+      url: 'http://localhost:8080/mcp',
+    });
+  });
+
+  it('loads project-local mcp.json from the configured project config dir', async () => {
+    const home = makeTempDir();
+    const cwd = makeTempDir();
+
+    await writeJson(join(cwd, '.kimi-desktop', 'mcp.json'), {
+      mcpServers: {
+        local: { transport: 'http', url: 'http://localhost:8080/mcp' },
+      },
+    });
+
+    const servers = await loadMcpServers({
+      cwd,
+      homeDir: home,
+      projectConfigDirName: '.kimi-desktop',
+    });
+
+    expect(Object.keys(servers)).toEqual(['local']);
     expect(servers['local']).toEqual({
       transport: 'http',
       url: 'http://localhost:8080/mcp',

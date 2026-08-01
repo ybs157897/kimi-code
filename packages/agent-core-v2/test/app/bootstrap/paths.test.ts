@@ -4,7 +4,13 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { ensureKimiHome, resolveConfigPath, resolveKimiHome } from '#/app/bootstrap/bootstrap';
+import {
+  DEFAULT_PROJECT_CONFIG_DIR_NAME,
+  ensureKimiHome,
+  resolveConfigPath,
+  resolveKimiHome,
+  resolveProjectConfigDirName,
+} from '#/app/bootstrap/bootstrap';
 
 describe('bootstrap path helpers', () => {
   describe('resolveKimiHome', () => {
@@ -31,6 +37,18 @@ describe('bootstrap path helpers', () => {
 
     it('joins homeDir with config.toml', () => {
       expect(resolveConfigPath({ homeDir: '/tmp/kimi' })).toBe('/tmp/kimi/config.toml');
+    });
+  });
+
+  describe('resolveProjectConfigDirName', () => {
+    it('defaults to the CLI `.kimi-code` directory name', () => {
+      expect(DEFAULT_PROJECT_CONFIG_DIR_NAME).toBe('.kimi-code');
+      expect(resolveProjectConfigDirName()).toBe('.kimi-code');
+      expect(resolveProjectConfigDirName(undefined)).toBe('.kimi-code');
+    });
+
+    it('honors an explicit project config directory name', () => {
+      expect(resolveProjectConfigDirName('.kimi-desktop')).toBe('.kimi-desktop');
     });
   });
 

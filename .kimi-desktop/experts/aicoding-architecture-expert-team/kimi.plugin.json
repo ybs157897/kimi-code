@@ -1,0 +1,109 @@
+{
+  "name": "aicoding-architecture-expert-team",
+  "version": "1.0.0",
+  "description": "多角色架构专家团：把项目输入沉淀为分阶段的 AICoding 架构交付物。",
+  "expertType": "team",
+  "agentName": "aicoding-architecture-expert-team-lead",
+  "agents": [
+    "./agents/aicoding-architecture-expert-team-lead.md",
+    "./agents/business-architect.md",
+    "./agents/system-architect.md",
+    "./agents/platform-architect.md",
+    "./agents/security-architect.md",
+    "./agents/product-story-designer.md",
+    "./agents/knowledge-ingest-engineer.md",
+    "./agents/research-analyst.md"
+  ],
+  "skills": [
+    "./skills/aicoding-team-bootstrap",
+    "./skills/CloudQ",
+    "./skills/tcloud-arch-diagram",
+    "./skills/diagrams-generator",
+    "./skills/tech-research-advisor",
+    "./skills/docx",
+    "./skills/pdf",
+    "./skills/pptx",
+    "./skills/xlsx"
+  ],
+  "teamInfo": {
+    "leadAgent": "aicoding-architecture-expert-team-lead",
+    "memberAgents": [
+      "business-architect",
+      "system-architect",
+      "platform-architect",
+      "security-architect",
+      "product-story-designer",
+      "knowledge-ingest-engineer",
+      "research-analyst"
+    ]
+  },
+  "displayName": "AICoding 架构专家团",
+  "profession": "AICoding 架构专家团",
+  "displayDescription": "统筹需求摄入、调研、业务/系统/部署/安全架构与故事设计，交付完整架构包。",
+  "tags": ["架构设计", "文档交付", "专家协作"],
+  "categoryId": "02-Engineering",
+  "defaultInitPrompt": "启动 AICoding 架构专家团，根据我的项目背景与材料生成完整架构交付包。",
+  "quickPrompts": [
+    "启动 AICoding 架构专家团，根据我的项目背景与材料生成完整架构交付包。",
+    "先解析我提供的材料，再给出分阶段的架构交付计划。",
+    "针对当前系统产出高层架构、系统设计、部署设计、安全设计与 UserStory。"
+  ],
+  "members": [
+    {
+      "agent": "aicoding-architecture-expert-team-lead",
+      "role": "lead",
+      "name": { "en": "Qi", "zh": "齐构成" },
+      "profession": { "en": "Architecture Delivery Director", "zh": "架构交付总监" },
+      "avatar": "avatars/aicoding-architecture-expert-team-lead.jpg"
+    },
+    {
+      "agent": "business-architect",
+      "role": "member",
+      "name": { "en": "Xu", "zh": "许边界" },
+      "profession": { "en": "Business Architect", "zh": "业务架构师" },
+      "avatar": "avatars/business-architect.jpg"
+    },
+    {
+      "agent": "system-architect",
+      "role": "member",
+      "name": { "en": "Gao", "zh": "高见远" },
+      "profession": { "en": "System Architect", "zh": "系统架构师" },
+      "avatar": "avatars/system-architect.jpg"
+    },
+    {
+      "agent": "platform-architect",
+      "role": "member",
+      "name": { "en": "Bi", "zh": "毕落地" },
+      "profession": { "en": "Platform Architect", "zh": "部署架构师" },
+      "avatar": "avatars/platform-architect.jpg"
+    },
+    {
+      "agent": "security-architect",
+      "role": "member",
+      "name": { "en": "Yan", "zh": "严守正" },
+      "profession": { "en": "Security Architect", "zh": "安全架构师" },
+      "avatar": "avatars/security-architect.jpg"
+    },
+    {
+      "agent": "product-story-designer",
+      "role": "member",
+      "name": { "en": "Gu", "zh": "顾全景" },
+      "profession": { "en": "Product Story Designer", "zh": "产品故事师" },
+      "avatar": "avatars/product-story-designer.jpg"
+    },
+    {
+      "agent": "knowledge-ingest-engineer",
+      "role": "member",
+      "name": { "en": "Wen", "zh": "闻资料" },
+      "profession": { "en": "Knowledge Ingestion Engineer", "zh": "知识摄入工程师" },
+      "avatar": "avatars/knowledge-ingest-engineer.jpg"
+    },
+    {
+      "agent": "research-analyst",
+      "role": "member",
+      "name": { "en": "Cha", "zh": "查有据" },
+      "profession": { "en": "Research Analyst", "zh": "研究分析师" },
+      "avatar": "avatars/research-analyst.jpg"
+    }
+  ]
+}

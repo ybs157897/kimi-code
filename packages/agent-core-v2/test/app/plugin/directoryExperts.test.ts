@@ -133,4 +133,11 @@ describe('sessionExpertRoots', () => {
       join('/home/user/.kimi-code', 'experts'),
     ]);
   });
+
+  it('uses the configured project config dir name for the project root', () => {
+    expect(sessionExpertRoots('/work', '/home/user/.kimi-desktop', '.kimi-desktop')).toEqual([
+      join('/work', '.kimi-desktop', 'experts'),
+      join('/home/user/.kimi-desktop', 'experts'),
+    ]);
+  });
 });

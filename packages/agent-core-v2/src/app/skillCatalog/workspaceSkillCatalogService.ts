@@ -55,7 +55,10 @@ export class WorkspaceSkillCatalogService implements IWorkspaceSkillCatalogServi
       this.config.get<MergeAllAvailableSkillsConfig>(
         MERGE_ALL_AVAILABLE_SKILLS_SECTION,
       ) ?? true;
-    const rootsOptions = { mergeAllAvailableSkills };
+    const rootsOptions = {
+      mergeAllAvailableSkills,
+      projectConfigDirName: this.bootstrap.projectConfigDirName,
+    };
 
     const [
       builtin,
