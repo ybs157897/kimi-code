@@ -29,6 +29,7 @@ import Skeleton from '../ui/Skeleton.vue';
 import Spinner from '../ui/Spinner.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
+import Banner from '../ui/Banner.vue';
 
 const { t } = useI18n();
 
@@ -668,11 +669,13 @@ onUnmounted(() => {
       </div>
 
       <!-- Degraded: the daemon can't browse — the box above is the only way. -->
-      <div v-else class="degraded-hint">{{ t('workspace.degradedHint') }}</div>
+      <Banner v-else variant="warning" class="degraded-hint">{{ t('workspace.degradedHint') }}</Banner>
 
       <!-- Inline error from a failed add attempt. Shown inside the dialog so it
-           is visible above the backdrop and persists until the next attempt. -->
-      <div v-if="error" class="add-error" role="alert">{{ error }}</div>
+           is visible above the backdrop and persists until the next attempt.
+           `role="alert"` falls through onto Banner's root (overriding its
+           default polite `status`) so add failures announce assertively. -->
+      <Banner v-if="error" variant="danger" class="add-error" role="alert">{{ error }}</Banner>
 
       <!-- Actions -->
       <div class="actions">
@@ -836,25 +839,21 @@ onUnmounted(() => {
 }
 .skel-row :deep(.ui-skeleton:first-child) { flex: none; }
 
-/* Degraded mode (daemon can't browse): compact hint under the input box. */
+/* Degraded mode (daemon can't browse): a warning Banner under the input box.
+   The horizontal inset matches the section padding (--space-5) so the banner
+   aligns with the filterbar above; the actions row's own top padding supplies
+   the gap below. */
 .degraded-hint {
-  padding: var(--space-6) var(--space-5);
-  text-align: center;
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
+  margin: var(--space-4) var(--space-5) 0;
+}
+
+/* Inline add-failure Banner (danger variant): same section inset as the
+   degraded hint so both stack evenly when they appear together. */
+.add-error {
+  margin: var(--space-4) var(--space-5) 0;
 }
 
 /* Actions */
-.add-error {
-  margin: 0 14px 8px;
-  padding: 6px 10px;
-  font-family: var(--mono);
-  font-size: var(--ui-font-size-xs);
-  color: #b3261e;
-  background: rgba(179, 38, 30, 0.08);
-  border: 1px solid rgba(179, 38, 30, 0.25);
-  border-radius: 3px;
-}
 .actions {
   display: flex;
   justify-content: flex-end;
