@@ -132,6 +132,24 @@ function onLoadMore(id: string): void {
   emit('loadMore', id);
 }
 
+// Session-row cascade — mirrors the desktop WorkspaceGroup pattern: rows
+// inserted into the group's TransitionGroup (show-more / show-all) enter with
+// a 20ms stagger. All before-enter calls of one batch run synchronously in the
+// same flush, so a running slot counter yields the cascade; it's capped so a
+// large page load never trails past ~160ms. after-enter clears the inline
+// delay so it can't leak into the row's hover transitions, and resets the
+// counter for the next batch. Leave is deliberately classless — rows unmount
+// instantly so the group fold (v-show) and the show-less trim never fight a
+// leave animation.
+let rowEnterSlot = 0;
+function onRowBeforeEnter(el: Element): void {
+  (el as HTMLElement).style.transitionDelay = `${Math.min(rowEnterSlot++, 8) * 20}ms`;
+}
+function onRowAfterEnter(el: Element): void {
+  (el as HTMLElement).style.transitionDelay = '';
+  rowEnterSlot = 0;
+}
+
 function wsAttention(id: string): number {
   return props.attentionByWorkspace[id] ?? 0;
 }
@@ -310,6 +328,18 @@ onBeforeUnmount(detachSheetScroll);
 
           <div v-show="!isCollapsed(g.workspace.id)">
             <div v-if="g.sessions.length === 0" class="mempty small">{{ t('sidebar.noSessions') }}</div>
+            <!-- Enter-only TransitionGroup (mirrors the desktop WorkspaceGroup
+                 .group-rows pattern): newly revealed rows cascade in with a
+                 small rise via the stagger hooks above. No leave classes on
+                 purpose — the group fold and the show-less trim unmount rows
+                 instantly so they never fight a leave animation. -->
+            <TransitionGroup
+              tag="div"
+              class="mrows"
+              name="mrows"
+              @before-enter="onRowBeforeEnter"
+              @after-enter="onRowAfterEnter"
+            >
             <div
               v-for="s in visibleSessions(g)"
               :key="s.id"
@@ -350,6 +380,7 @@ onBeforeUnmount(detachSheetScroll);
                 <MenuItem size="lg" danger @click="onArchive(s.id)">{{ t('sidebar.archive') }}</MenuItem>
               </Menu>
             </div>
+            </TransitionGroup>
             <button
               v-if="g.hasMore || g.loadingMore"
               type="button"
@@ -472,6 +503,20 @@ onBeforeUnmount(detachSheetScroll);
 /* Workspace "…" menu trigger */
 .mgh-more { margin: -10px -8px; }
 .mgh-more:active { color: var(--color-text); background: var(--color-surface-sunken); }
+
+/* ---- Session-row cascade (TransitionGroup in the template) — mirrors the
+   desktop WorkspaceGroup .group-rows pattern: newly revealed rows fade in
+   with a small rise; the 20ms per-row stagger comes from the before-enter
+   hook. Enter-only by design — no leave classes, so the group fold and the
+   show-less trim unmount rows instantly. ---- */
+.mrows-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.mrows-enter-active {
+  transition: opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
 
 /* ---- Session rows ---- */
 .srow {

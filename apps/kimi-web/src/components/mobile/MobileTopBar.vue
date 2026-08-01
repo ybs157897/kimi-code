@@ -116,7 +116,9 @@ const statusText = computed<string>(() =>
   font-size: var(--ui-font-size-sm);
 }
 
-/* Middle tappable zone */
+/* Middle tappable zone. The negative margin / matching padding give the
+   press fill a little breathing room left and right without moving the
+   path / status text off its resting position. */
 .tb-mid {
   flex: 1;
   min-width: 0;
@@ -127,10 +129,14 @@ const statusText = computed<string>(() =>
   gap: 1px;
   background: none;
   border: none;
-  padding: 0;
+  margin: 0 -6px;
+  padding: 0 6px;
+  border-radius: var(--radius-md);
   cursor: pointer;
   text-align: left;
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
+.tb-mid:active { background: var(--color-surface-sunken); }
 
 .tb-path {
   display: flex;
@@ -169,7 +175,16 @@ const statusText = computed<string>(() =>
   border-radius: var(--radius-full);
   background: var(--color-text-faint);
 }
-.tb-sub .rd.on { background: var(--color-success); }
+/* Running: the dot pulses with the same rhythm as the switcher sheet's
+   running indicator (mRunPulse there), so "running" reads at a glance. */
+.tb-sub .rd.on {
+  background: var(--color-success);
+  animation: mRunPulse 1.4s ease-in-out infinite;
+}
+@keyframes mRunPulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
 
 .topbar .tb-path { font-family: var(--sans); }
 </style>
