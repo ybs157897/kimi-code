@@ -102,6 +102,23 @@ function onHeaderDragStart(event: DragEvent): void {
   event.dataTransfer.setData('text/plain', props.group.workspace.id);
   emit('wsDragstart', props.group.workspace.id);
 }
+
+// Show-more cascade: rows inserted into the group's TransitionGroup enter with
+// a 20ms stagger. All before-enter calls of one batch run synchronously in the
+// same flush, so a running slot counter yields the cascade; it's capped so a
+// large page load never trails past ~160ms. after-enter clears the inline
+// delay so it can't leak into the row's own hover transitions, and resets the
+// counter for the next batch. Leave is deliberately classless — rows unmount
+// instantly so the .group-sessions interpolate-size height collapse and the
+// show-less trim never fight a leave animation.
+let rowEnterSlot = 0;
+function onRowBeforeEnter(el: Element): void {
+  (el as HTMLElement).style.transitionDelay = `${Math.min(rowEnterSlot++, 8) * 20}ms`;
+}
+function onRowAfterEnter(el: Element): void {
+  (el as HTMLElement).style.transitionDelay = '';
+  rowEnterSlot = 0;
+}
 </script>
 
 <template>
@@ -116,9 +133,12 @@ function onHeaderDragStart(event: DragEvent): void {
       @dragend="emit('wsDragend')"
     >
       <div class="gh-top">
-        <!-- Folder icon -->
-        <Icon v-if="isCollapsed(group.workspace.id)" class="gh-folder" name="folder-closed" />
-        <Icon v-else class="gh-folder" name="folder" />
+        <!-- Folder icon — both glyphs stacked in one grid cell and crossfaded
+             on collapse/expand instead of a v-if/v-else snap. -->
+        <span class="gh-folder" :class="{ collapsed: isCollapsed(group.workspace.id) }">
+          <Icon class="gh-folder-icon gh-folder-icon--open" name="folder" />
+          <Icon class="gh-folder-icon gh-folder-icon--closed" name="folder-closed" />
+        </span>
 
         <!-- Workspace name — hover reveals the full root path -->
         <Tooltip v-if="renamingId !== group.workspace.id" :text="group.workspace.root">
@@ -172,20 +192,32 @@ function onHeaderDragStart(event: DragEvent): void {
       :class="{ collapsed: isCollapsed(group.workspace.id) }"
       :inert="isCollapsed(group.workspace.id)"
     >
-      <SessionRow
-        v-for="s in visibleSessions"
-        :key="s.id"
-        :session="s"
-        :active="s.id === activeId"
-        :approval-count="pendingBySession[s.id]?.approvals ?? 0"
-        :question-count="pendingBySession[s.id]?.questions ?? 0"
-        :unread="unreadBySession[s.id] ?? false"
-        @select="emit('selectSession', $event)"
-        @rename="(id, title) => emit('renameSession', id, title)"
-        @archive="emit('archiveSession', $event)"
-        @fork="emit('forkSession', $event)"
-        @export="emit('exportSession', $event)"
-      />
+      <!-- Enter-only TransitionGroup: newly loaded rows (show-more / show-all)
+           cascade in with a small rise (scoped .group-rows-* transitions + the
+           stagger hooks above). No leave classes on purpose — trimming unmounts
+           rows instantly so it never fights the height collapse below. -->
+      <TransitionGroup
+        tag="div"
+        class="group-rows"
+        name="group-rows"
+        @before-enter="onRowBeforeEnter"
+        @after-enter="onRowAfterEnter"
+      >
+        <SessionRow
+          v-for="s in visibleSessions"
+          :key="s.id"
+          :session="s"
+          :active="s.id === activeId"
+          :approval-count="pendingBySession[s.id]?.approvals ?? 0"
+          :question-count="pendingBySession[s.id]?.questions ?? 0"
+          :unread="unreadBySession[s.id] ?? false"
+          @select="emit('selectSession', $event)"
+          @rename="(id, title) => emit('renameSession', id, title)"
+          @archive="emit('archiveSession', $event)"
+          @fork="emit('forkSession', $event)"
+          @export="emit('exportSession', $event)"
+        />
+      </TransitionGroup>
       <button
         v-if="group.hasMore || group.loadingMore"
         class="show-more"
@@ -233,6 +265,22 @@ function onHeaderDragStart(event: DragEvent): void {
   height: 0;
 }
 
+/* Session row cascade (TransitionGroup in the template): newly loaded rows
+   fade in with a small rise; the 20ms per-row stagger comes from the
+   before-enter hook above. Enter-only by design — no leave classes, so
+   show-less trimming and the collapse unmount rows instantly. */
+.group-rows-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+/* Doubled selector: the transition classes land on SessionRow's root, which
+   carries its own scoped `transition` (hover fill). The extra class outranks
+   it regardless of style injection order, so the fade always wins. */
+.group-rows .group-rows-enter-active {
+  transition: opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
+}
+
 /* Workspace header — an inset rounded row that mirrors the session-row inset
    (container --sb-inset + row padding), so the folder icon lands at --sb-pad-x
    and the name lines up with the session titles below. Hover washes the whole
@@ -262,10 +310,21 @@ function onHeaderDragStart(event: DragEvent): void {
      .gh padding ≈ 26px. The floating .gh-actions never contribute to height. */
 }
 
+/* Folder glyph crossfade: both icons share one grid cell (the stack sizes
+   itself to the glyphs — no hardcoded px) and swap opacity on collapse /
+   expand instead of snapping. */
 .gh-folder {
   flex: none;
+  display: grid;
   color: var(--color-text-muted);
 }
+.gh-folder-icon {
+  grid-area: 1 / 1;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.gh-folder-icon--closed { opacity: 0; }
+.gh-folder.collapsed .gh-folder-icon--open { opacity: 0; }
+.gh-folder.collapsed .gh-folder-icon--closed { opacity: 1; }
 
 /* Group title — quiet by design: regular weight (no bold), muted color (one
    step lighter than the session titles), so group heads read as grouping
