@@ -1711,6 +1711,18 @@ const compaction = computed<CompactionStatus | null>(() => {
 
 const connection = computed<ConnectionState>(() => rawState.connection);
 
+/** User-initiated recovery of the realtime channel (the connection banner's
+ *  Reconnect action): force a clean socket rebuild — or establish the channel
+ *  when it was never created (the banner can show before the first session
+ *  select wires it up). */
+function reconnectEvents(): void {
+  if (eventConn === null) {
+    connectEventsIfNeeded();
+    return;
+  }
+  eventConn.reconnect();
+}
+
 const loading = computed<boolean>(() => rawState.loading);
 const sessionLoading = computed<boolean>(() => rawState.sessionLoading);
 const loadingMoreMessages = computed<boolean>(() => {
@@ -2597,6 +2609,7 @@ export function useKimiWebClient() {
     cancelTask: workspaceState.cancelTask,
 
     // New Phase 1 actions
+    reconnectEvents,
     setPermission: workspaceState.setPermission,
     setThinking: modelProvider.setThinking,
     setPlanMode: workspaceState.setPlanMode,

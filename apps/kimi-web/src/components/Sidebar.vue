@@ -21,6 +21,7 @@ import {
 } from '../lib/storage';
 import { moveInOrder, type DropPosition, type WorkspaceSortMode } from '../lib/workspaceOrder';
 import type { Session, WorkspaceGroup as WorkspaceGroupType, WorkspaceView } from '../types';
+import ConnectionStatusBanner from './desktop/ConnectionStatusBanner.vue';
 import SearchSessionsDialog from './dialogs/SearchSessionsDialog.vue';
 import WorkspaceGroup from './WorkspaceGroup.vue';
 import { isMacosDesktop } from '../lib/desktopFlag';
@@ -813,6 +814,11 @@ onBeforeUnmount(() => {
           </TransitionGroup>
         </template>
       </div>
+
+      <!-- Desktop connection status — persistent warning + manual recovery
+           while the realtime channel is down (browser sessions keep their
+           toast + automatic backoff; the banner gates itself to desktop). -->
+      <ConnectionStatusBanner />
 
       <!-- Footer: settings entry pinned under the session list -->
       <div class="side-footer">
