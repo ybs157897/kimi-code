@@ -1,6 +1,7 @@
 <!-- apps/kimi-web/src/components/dialogs/LoginDialog.vue -->
 <!-- Managed Kimi OAuth device-code login dialog. Built on the design-system -->
-<!-- Dialog primitive; the device code + countdown stay monospace. -->
+<!-- Dialog primitive; the device code + countdown stay monospace. Steps swap -->
+<!-- via a short out-in transition and the success mark draws itself in. -->
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -267,14 +268,18 @@ function formatSeconds(s: number): string {
     @after-leave="onDialogAfterLeave"
   >
 
+    <!-- Step changes swap via a short out-in transition (fade + a few-px
+         rise) so they read as progress instead of a hard cut. -->
+    <Transition name="step-swap" mode="out-in">
+
     <!-- Starting (brief spinner) -->
-    <div v-if="step === 'starting'" class="center-body">
+    <div v-if="step === 'starting'" key="starting" class="center-body">
       <Spinner size="md" />
       <span class="center-text">{{ t('login.starting') }}</span>
     </div>
 
     <!-- Device-code step -->
-    <div v-else-if="step === 'device-code' && flow" class="nb">
+    <div v-else-if="step === 'device-code' && flow" key="device-code" class="nb">
       <div class="nb-lead">{{ t('login.lead') }}</div>
 
       <!-- Primary path: open the complete URI (device code already embedded) -->
@@ -324,15 +329,16 @@ function formatSeconds(s: number): string {
       </div>
     </div>
 
-    <!-- Success -->
-    <div v-else-if="step === 'success'" class="center-body">
-      <AuthStateIcon kind="success" />
+    <!-- Success (the checkmark draws itself in — see .success-check) -->
+    <div v-else-if="step === 'success'" key="success" class="center-body">
+      <AuthStateIcon kind="success" class="success-check" />
       <span class="center-text success-text">{{ t('login.success') }}</span>
       <span class="center-hint">{{ t('login.successHint') }}</span>
     </div>
 
-    <!-- Expired / Cancelled -->
-    <template v-else-if="step === 'expired'">
+    <!-- Expired / Cancelled (single-root wrappers: <Transition> needs one
+         child per step) -->
+    <div v-else-if="step === 'expired'" key="expired">
       <div class="center-body">
         <AuthStateIcon kind="expired" />
         <span class="center-text err-text">{{ t('login.expiredTitle') }}</span>
@@ -342,10 +348,10 @@ function formatSeconds(s: number): string {
         <Button variant="primary" @click="retryFlow">{{ t('login.retry') }}</Button>
         <Button variant="secondary" @click="close">{{ t('login.closeBtn') }}</Button>
       </div>
-    </template>
+    </div>
 
     <!-- Error (endpoint missing, network failure, or repeated poll failures) -->
-    <template v-else-if="step === 'error'">
+    <div v-else-if="step === 'error'" key="error">
       <div class="center-body">
         <AuthStateIcon kind="error" />
         <span class="center-text warn-text">
@@ -359,7 +365,9 @@ function formatSeconds(s: number): string {
         <Button variant="primary" @click="retryFlow">{{ t('login.retry') }}</Button>
         <Button variant="secondary" @click="close">{{ t('login.closeBtn') }}</Button>
       </div>
-    </template>
+    </div>
+
+    </Transition>
 
   </Dialog>
 </template>
@@ -501,6 +509,40 @@ function formatSeconds(s: number): string {
   justify-content: flex-end;
   gap: var(--space-3);
   padding-top: var(--space-4);
+}
+
+/* Step swap: short out-in fade + rise (same shape as settings' panel-swap). */
+.step-swap-enter-active,
+.step-swap-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+.step-swap-enter-from { opacity: 0; transform: translateY(6px); }
+.step-swap-leave-to { opacity: 0; transform: translateY(-4px); }
+
+/* Success checkmark draw-in: the ring sweeps first (circumference 2π·15 ≈
+   94.3), then the check stroke (≈ 24.1) follows. The dash state lives only
+   inside the keyframes (fill: backwards), so if the animation is absent or
+   cut short the icon is simply fully drawn. */
+.success-check :deep(circle) {
+  animation: login-check-ring var(--duration-slow) var(--ease-out) backwards;
+}
+.success-check :deep(polyline) {
+  animation: login-check-mark var(--duration-base) var(--ease-out) var(--duration-slow) backwards;
+}
+@keyframes login-check-ring {
+  from { stroke-dasharray: 94.3; stroke-dashoffset: 94.3; }
+  to { stroke-dasharray: 94.3; stroke-dashoffset: 0; }
+}
+@keyframes login-check-mark {
+  from { stroke-dasharray: 24.1; stroke-dashoffset: 24.1; }
+  to { stroke-dasharray: 24.1; stroke-dashoffset: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .success-check :deep(circle),
+  .success-check :deep(polyline) {
+    animation: none;
+  }
 }
 
 @media (max-width: 640px) {
