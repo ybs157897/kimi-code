@@ -1,7 +1,8 @@
 <!-- apps/kimi-web/src/components/chat/OpenInMenu.vue -->
 <!-- "Open" button group for the chat header: workspace path label + quick-open
      (last used target) + dropdown caret, matching the kimi-cli/web pattern.
-     Falls back to a simple icon+text "Open" button on non-mac platforms. -->
+     Rendered on every platform; the target list is filtered by platform
+     (macOnly entries) and by the apps the daemon reports as available. -->
 <script setup lang="ts">
 import { computed, nextTick, onUnmounted, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -52,7 +53,7 @@ function compactPath(path: string, maxLength = 22): string {
 }
 
 const hasWorkDir = computed(() => Boolean(props.workDir && props.workDir.trim().length > 0));
-const displayPath = computed(() => (hasWorkDir.value ? compactPath(props.workDir!) : 'No directory'));
+const displayPath = computed(() => (hasWorkDir.value ? compactPath(props.workDir!) : t('header.noDirectory')));
 
 const TARGETS: Array<{ id: TargetId; label: string; macOnly?: boolean }> = [
   { id: 'finder', label: 'Finder', macOnly: true },
@@ -182,7 +183,7 @@ async function copyPath(): Promise<void> {
 </script>
 
 <template>
-  <div v-if="isMac" class="open-group">
+  <div class="open-group">
     <Tooltip :text="workDir ?? ''">
       <span
         class="open-label"
@@ -193,7 +194,7 @@ async function copyPath(): Promise<void> {
       </span>
     </Tooltip>
 
-    <Tooltip :text="lastTarget ? `Open in ${lastTarget.label}` : t('header.openInEditor')">
+    <Tooltip :text="lastTarget ? t('header.openInApp', { app: lastTarget.label }) : t('header.openInEditor')">
       <Button
         size="sm"
         variant="secondary"
@@ -231,7 +232,7 @@ async function copyPath(): Promise<void> {
         @click="handleOpenTarget(target.id)"
       >
         <span class="om-label">{{ target.label }}</span>
-        <span v-if="target.id === lastTargetId" class="om-last">Last used</span>
+        <span v-if="target.id === lastTargetId" class="om-last">{{ t('header.lastUsed') }}</span>
       </MenuItem>
       <MenuItem separator />
       <MenuItem @click="copyPath">
@@ -239,19 +240,6 @@ async function copyPath(): Promise<void> {
       </MenuItem>
     </Menu>
   </div>
-
-  <!-- Non-mac fallback: maintain the previous simple open-in-editor button -->
-  <Tooltip :text="t('header.openInEditor')">
-    <button
-      v-else
-      type="button"
-      class="open-fallback"
-      @click="emit('openInApp', 'vscode')"
-    >
-      <Icon name="external-link" size="sm" />
-      <span class="open-fallback-label">{{ t('header.openInEditorShort') }}</span>
-    </button>
-  </Tooltip>
 </template>
 
 <style scoped>
@@ -294,30 +282,10 @@ async function copyPath(): Promise<void> {
   color: var(--muted);
 }
 
-.open-fallback {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex: none;
-  border: none;
-  border-radius: 0;
-  background: transparent;
-  color: var(--dim);
-  font-family: var(--sans);
-  font-size: var(--ui-font-size-xs);
-  padding: 0;
-  cursor: pointer;
-}
-.open-fallback:hover { color: var(--color-text); }
-.open-fallback svg { flex: none; }
-
 @media (max-width: 980px) {
-  .open-fallback-label,
-  .open-path,
-  .open-quick { display: none; }
+  .open-path { display: none; }
 }
 @media (max-width: 640px) {
-  .open-group,
-  .open-fallback { display: none; }
+  .open-group { display: none; }
 }
 </style>
