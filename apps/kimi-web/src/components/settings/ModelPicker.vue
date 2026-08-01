@@ -12,7 +12,8 @@ import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
 import Input from '../ui/Input.vue';
 import Badge from '../ui/Badge.vue';
-import Spinner from '../ui/Spinner.vue';
+import Skeleton from '../ui/Skeleton.vue';
+import EmptyState from '../ui/EmptyState.vue';
 
 const { t } = useI18n();
 
@@ -36,6 +37,10 @@ const starredSet = computed(() => new Set(props.starredIds ?? []));
 function isStarred(modelId: string): boolean {
   return starredSet.value.has(modelId);
 }
+
+// Content-shaped loading ghost: per-row name-line widths so the skeleton
+// reads as an organic list rather than a stamped pattern.
+const SKEL_NAME_WIDTHS = ['46%', '34%', '52%', '40%', '28%'];
 
 // -------------------------------------------------------------------------
 // Search + filtered list
@@ -161,10 +166,22 @@ function selectTab(tabId: string): void {
         </Button>
       </div>
 
-      <!-- Loading state -->
-      <div v-if="loading" class="state-row">
-        <Spinner size="sm" />
-        <span>{{ t('model.loading') }}</span>
+      <!-- Loading state — content-shaped skeleton rows mirroring the model
+           list (breathing Skeleton bars) instead of a bare spinner, so the
+           dialog already reads as list-shaped while models load. -->
+      <div v-if="loading" class="mp-loading">
+        <div class="mp-loading-skel" aria-hidden="true">
+          <div v-for="(nameWidth, i) in SKEL_NAME_WIDTHS" :key="i" class="skel-row">
+            <Skeleton circle width="14px" height="14px" />
+            <span class="skel-main">
+              <Skeleton :width="nameWidth" height="12px" />
+              <Skeleton width="62%" height="10px" />
+            </span>
+            <Skeleton class="skel-provider" width="72px" height="10px" />
+            <Skeleton width="52px" height="10px" />
+          </div>
+        </div>
+        <span class="mp-loading-text">{{ t('model.loading') }}</span>
       </div>
 
       <!-- Unavailable state (daemon 404 / endpoint not supported) -->
@@ -209,9 +226,15 @@ function selectTab(tabId: string): void {
             <Icon v-else name="star-outline" size="md" />
           </IconButton>
         </div>
-        <div v-if="flat.length === 0 && !loading && !unavailable" class="empty">
-          {{ props.models.length === 0 ? t('model.emptyNoModels') : t('model.emptyNoMatch') }}
-        </div>
+        <EmptyState
+          v-if="flat.length === 0 && !loading && !unavailable"
+          :title="props.models.length === 0 ? t('model.emptyNoModels') : t('model.emptyNoMatch')"
+          :hint="props.models.length === 0 ? t('model.manageProviders') : 'Try a different search term or provider tab'"
+        >
+          <template #icon>
+            <Icon :name="props.models.length === 0 ? 'sparkles' : 'search'" size="lg" />
+          </template>
+        </EmptyState>
       </div>
 
       <!-- Footer hint -->
@@ -243,6 +266,9 @@ function selectTab(tabId: string): void {
   display: flex;
   flex-direction: column;
   padding: var(--space-1) 0;
+  /* One-shot entrance when the list mounts after loading (shared
+     kimi-card-in keyframe; reduced-motion covered by the global kill-switch). */
+  animation: kimi-card-in var(--duration-slow) var(--ease-out) both;
 }
 
 .model-row {
@@ -332,11 +358,40 @@ function selectTab(tabId: string): void {
 }
 .state-row.unavail { color: var(--color-warning); }
 
-.empty {
-  padding: var(--space-5) 0;
+/* Content-shaped loading ghost: rows mirror .model-row's column layout
+   (check dot · name/id stack · provider · context) built from Skeleton bars.
+   The breathing loop lives in Skeleton.vue's own scoped styles. */
+.mp-loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  padding: var(--space-1) 0;
+  /* Same one-shot entrance as the loaded list (element mounts once per
+     loading=true window and is static until it unmounts). */
+  animation: kimi-card-in var(--duration-slow) var(--ease-out) both;
+}
+.mp-loading-skel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.skel-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-2) var(--space-2);
+}
+.skel-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mp-loading-text {
   color: var(--color-text-muted);
   font-family: var(--font-ui);
-  font-size: var(--text-base);
+  font-size: var(--text-sm);
 }
 
 /* Footer */
@@ -357,6 +412,12 @@ function selectTab(tabId: string): void {
 @media (max-width: 640px) {
   .model-provider,
   .caps {
+    display: none;
+  }
+  /* Compound selector so it beats Skeleton.vue's scoped root `display: block`
+     regardless of style injection order (mirrors the real row, which hides
+     .model-provider here). */
+  .skel-row .skel-provider {
     display: none;
   }
 }
