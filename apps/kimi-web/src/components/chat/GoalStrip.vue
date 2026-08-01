@@ -143,6 +143,9 @@ async function onCancel(): Promise<void> {
   --goal-corner-radius: calc((var(--composer-send-size) / 2) + var(--composer-send-inset) + var(--space-3));
   margin: var(--space-2) var(--space-4) 0;
   box-shadow: var(--shadow-md);
+  /* Self-contained mount entrance: ChatDock mounts this strip with a bare
+     v-if (no Transition wrapper), so the shared keyframe fires on mount. */
+  animation: kimi-card-in var(--duration-base) var(--ease-out);
 }
 .goal-strip.ui-card {
   border-radius: var(--goal-corner-radius);
@@ -240,6 +243,8 @@ async function onCancel(): Promise<void> {
   height: 100%;
   border-radius: inherit;
   background: var(--color-success);
+  /* Token consumption glides instead of stepping between percentages. */
+  transition: width var(--duration-slow) var(--ease-out);
 }
 .goal-chevron {
   width: var(--p-ic-sm);
@@ -331,9 +336,13 @@ async function onCancel(): Promise<void> {
   }
 }
 @media (prefers-reduced-motion: reduce) {
+  .goal-strip {
+    animation: none;
+  }
   .goal-strip :deep(.ui-card__head),
   .goal-strip :deep(.ui-card__body),
-  .goal-strip :deep(.ui-card__foot) {
+  .goal-strip :deep(.ui-card__foot),
+  .goal-progress-fill {
     transition: none;
   }
 }

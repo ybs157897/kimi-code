@@ -43,7 +43,7 @@ function glyphStatus(state: TaskItem['state']): StatusGlyphStatus {
       </div>
     </template>
 
-    <ul class="ss-list">
+    <TransitionGroup tag="ul" class="ss-list" name="ss-list">
       <li v-for="task in running" :key="task.id" class="ss-row">
         <button type="button" class="ss-main" @click="emit('open', task.id)">
           <StatusGlyph :status="glyphStatus(task.state)" />
@@ -57,7 +57,7 @@ function glyphStatus(state: TaskItem['state']): StatusGlyphStatus {
           @click.stop="emit('cancel', task.id)"
         >{{ t('tasks.stop') }}</button>
       </li>
-    </ul>
+    </TransitionGroup>
   </Card>
 </template>
 
@@ -69,6 +69,10 @@ function glyphStatus(state: TaskItem['state']): StatusGlyphStatus {
   box-shadow: var(--shadow-md);
   border-color: var(--color-accent-bd);
   background: var(--color-accent-soft);
+  /* Self-contained mount entrance: the card pops into existence the moment a
+     background task spawns (bare v-if upstream), so the shared keyframe
+     settles it in; exit stays instant. */
+  animation: kimi-card-in var(--duration-base) var(--ease-out);
 }
 .subagent-strip.ui-card {
   border-radius: var(--radius-lg);
@@ -115,6 +119,34 @@ function glyphStatus(state: TaskItem['state']): StatusGlyphStatus {
   display: flex;
   flex-direction: column;
   gap: 1px;
+  /* Containing block for the absolute leaving row below, so it fades out
+     over its own slot while the siblings glide up into the vacated space. */
+  position: relative;
+}
+/* Roster motion (TransitionGroup in the template): a new subagent rises in,
+   a finished one fades out in place — kept subtle so it never fights the
+   list layout. Reduced motion is covered by the global kill switch. */
+.ss-list-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.ss-list-leave-to {
+  opacity: 0;
+}
+.ss-list-enter-active,
+.ss-list-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+.ss-list-leave-active {
+  /* Out of flow while fading so siblings claim the vacated slot immediately;
+     left/right keep the row at full list width. */
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+.ss-list-move {
+  transition: transform var(--duration-base) var(--ease-out);
 }
 .ss-row {
   display: flex;
@@ -165,6 +197,9 @@ function glyphStatus(state: TaskItem['state']): StatusGlyphStatus {
   color: var(--color-text-muted);
   font-size: var(--text-xs);
   cursor: pointer;
+  transition: background-color var(--duration-fast) var(--ease-out),
+    border-color var(--duration-fast) var(--ease-out),
+    color var(--duration-fast) var(--ease-out);
 }
 .ss-stop:hover {
   border-color: var(--color-danger-bd);
