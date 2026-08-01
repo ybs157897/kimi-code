@@ -799,10 +799,8 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
   padding: 24px 16px;
   color: var(--faint);
   text-align: center;
-  /* One-shot mount entrance: the element is created by the v-else-if branch
-     and only patched in place afterwards (its content is static while shown),
-     so the CSS animation fires exactly once and never replays. */
-  animation: kimi-card-in var(--duration-slow) var(--ease-out) both;
+  /* Entrance is owned by the inner ui/EmptyState (kimi-card-in); the wrapper
+     stays still so the rise isn't doubled. */
 }
 .chat-empty-text { font-size: var(--ui-font-size-sm); }
 
