@@ -4,6 +4,7 @@
      and activate tabs via roving tabindex. -->
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { rovingFocusIndex, rovingFocusIntent } from '../../composables/useRovingFocus';
 
 const props = defineProps<{
   modelValue: string;
@@ -40,12 +41,9 @@ function tabIndexFor(index: number): number {
 // Automatic activation (WAI-ARIA tabs pattern): arrows move focus and select
 // in one step, clamped like the SearchSessionsDialog list navigation.
 function onKeydown(e: KeyboardEvent, index: number): void {
-  let next: number;
-  if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') next = Math.max(0, index - 1);
-  else if (e.key === 'ArrowRight' || e.key === 'ArrowDown') next = Math.min(props.options.length - 1, index + 1);
-  else if (e.key === 'Home') next = 0;
-  else if (e.key === 'End') next = props.options.length - 1;
-  else return;
+  const intent = rovingFocusIntent(e.key);
+  if (!intent) return;
+  const next = rovingFocusIndex(index, props.options.length, intent);
   e.preventDefault();
   if (next === index) return;
   const opt = props.options[next];
