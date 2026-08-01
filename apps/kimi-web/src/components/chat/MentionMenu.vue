@@ -3,6 +3,7 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
 import { iconSvg } from '../../lib/icons';
+import Skeleton from '../ui/Skeleton.vue';
 import type { FileItem } from '../../types';
 
 // Re-exported for the .vue consumers (Composer / ChatDock / ConversationPane)
@@ -60,8 +61,27 @@ function fileIcon(item: FileItem): string {
 
 <template>
   <div class="mention-menu" role="listbox">
-    <!-- Loading state -->
-    <div v-if="props.loading" class="mention-state dim">{{ t('mention.searching') }}</div>
+    <!-- Loading state — item-shaped breathing Skeleton rows (the pulse loop
+         lives in Skeleton.vue's own scoped styles); the searching label stays
+         visually hidden for assistive tech. -->
+    <div v-if="props.loading" class="mention-loading">
+      <span class="mention-loading-label">{{ t('mention.searching') }}</span>
+      <div class="mention-loading-row" aria-hidden="true">
+        <Skeleton circle width="13px" height="13px" />
+        <Skeleton width="34%" height="10px" />
+        <Skeleton width="52%" height="9px" />
+      </div>
+      <div class="mention-loading-row" aria-hidden="true">
+        <Skeleton circle width="13px" height="13px" />
+        <Skeleton width="26%" height="10px" />
+        <Skeleton width="60%" height="9px" />
+      </div>
+      <div class="mention-loading-row" aria-hidden="true">
+        <Skeleton circle width="13px" height="13px" />
+        <Skeleton width="40%" height="10px" />
+        <Skeleton width="44%" height="9px" />
+      </div>
+    </div>
 
     <!-- Empty state (not loading, no items) -->
     <div v-else-if="props.items.length === 0" class="mention-state dim">{{ t('mention.noMatch') }}</div>
@@ -103,6 +123,15 @@ function fileIcon(item: FileItem): string {
   z-index: var(--z-dropdown);
   max-height: 220px;
   overflow-y: auto;
+  /* Self-contained mount entrance (the Composer v-ifs us in without a
+     Transition wrapper): quiet fade + small rise up from the composer.
+     Reduced motion is covered by the global kill-switch in style.css. */
+  animation: mention-menu-in var(--duration-base) var(--ease-out);
+}
+
+@keyframes mention-menu-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .mention-state {
@@ -115,6 +144,37 @@ function fileIcon(item: FileItem): string {
   color: var(--color-text-muted);
 }
 
+/* Loading ghost: three item-shaped rows built from Skeleton bars, so the
+   popup already reads as a file list while the search runs. */
+.mention-loading {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 0;
+}
+
+.mention-loading-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  /* Match .mention-item metrics so results swap in without a layout jump. */
+  padding: 6px 10px;
+}
+
+/* Visually hidden but readable by AT — replaces the old visible searching
+   line (Skeleton bars are aria-hidden). */
+.mention-loading-label {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
 .mention-item {
   display: flex;
   align-items: center;
@@ -124,6 +184,8 @@ function fileIcon(item: FileItem): string {
   font-family: var(--font-ui);
   font-size: var(--text-sm);
   border-radius: var(--radius-sm);
+  /* Arrow-key navigation glides between rows instead of snapping. */
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .mention-icon {

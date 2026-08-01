@@ -62,6 +62,15 @@ watch(
   z-index: var(--z-dropdown);
   max-height: 240px;
   overflow-y: auto;
+  /* Self-contained mount entrance (the Composer v-ifs us in without a
+     Transition wrapper): quiet fade + small rise up from the composer.
+     Reduced motion is covered by the global kill-switch in style.css. */
+  animation: slash-menu-in var(--duration-base) var(--ease-out);
+}
+
+@keyframes slash-menu-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .slash-item {
@@ -74,6 +83,8 @@ watch(
   font-family: var(--font-ui);
   font-size: var(--text-sm);
   border-radius: var(--radius-sm);
+  /* Arrow-key navigation glides between rows instead of snapping. */
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
 
 .slash-item:hover {
