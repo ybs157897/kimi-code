@@ -17,6 +17,7 @@ import Input from '../ui/Input.vue';
 import Select from '../ui/Select.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
+import Banner from '../ui/Banner.vue';
 
 const { t } = useI18n();
 
@@ -451,7 +452,11 @@ function statusLabel(status: AppProvider['status']): string {
               />
             </Field>
 
-            <div v-if="formError" class="add-error">{{ formError }}</div>
+            <!-- Validation / save failure. `role="alert"` falls through onto
+                 Banner's root (overriding its default polite `status`) so
+                 failures announce assertively — same precedent as
+                 AddWorkspaceDialog. -->
+            <Banner v-if="formError" variant="danger" class="add-error" role="alert">{{ formError }}</Banner>
             <div class="form-btns">
               <Button variant="primary" size="sm" :disabled="formBusy" @click="submitForm">
                 <Spinner v-if="formBusy" size="sm" />
@@ -674,11 +679,8 @@ function statusLabel(status: AppProvider['status']): string {
   font-size: var(--text-xs);
   color: var(--color-text-muted);
 }
-.add-error {
-  font-family: var(--font-ui);
-  font-size: var(--text-sm);
-  color: var(--color-danger);
-}
+/* .add-error is the danger Banner — token colors/typography live in
+   Banner.vue; the surrounding .add-form gap supplies the spacing. */
 .form-btns {
   display: flex;
   flex-wrap: wrap;

@@ -163,6 +163,14 @@ const costText = computed(() =>
   display: block;
   height: 100%;
   background: var(--color-accent);
+  transition: width var(--duration-slow) var(--ease-out);
+  animation: kimi-bar-in var(--duration-slow) var(--ease-out);
+}
+/* One-shot entrance: sweep from 0 up to the style-bound width when the panel
+   opens (`to` omitted — the fill settles at the inline value); the width
+   transition above owns live updates afterwards. */
+@keyframes kimi-bar-in {
+  from { width: 0; }
 }
 
 @media (max-width: 640px) {
