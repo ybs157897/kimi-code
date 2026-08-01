@@ -46,6 +46,27 @@ const emit = defineEmits<{
 // and the close button; we forward its `close` event to the parent.
 const open = ref(true);
 
+// The parent v-if-unmounts us on `close`, which would kill Dialog's leave
+// transition mid-flight. So a dismiss flips our local `open` first (the panel
+// animates out) and defers the parent-facing `close` to Dialog's `after-leave`.
+// `add` stays synchronous on purpose: the parent may reject the path and keep
+// the picker open to show the inline error, so it must not trigger a leave.
+let closing = false;
+let emitCloseAfterLeave = false;
+
+function dismiss(): void {
+  if (closing) return;
+  closing = true;
+  open.value = false;
+  emitCloseAfterLeave = true;
+}
+
+function onDialogAfterLeave(): void {
+  if (!emitCloseAfterLeave) return;
+  emitCloseAfterLeave = false;
+  emit('close');
+}
+
 // ---------------------------------------------------------------------------
 // Browser state
 // ---------------------------------------------------------------------------
@@ -247,7 +268,7 @@ function handleFilterKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') {
     // First Esc clears the box (back to browsing); a second closes the dialog.
     if (filter.value) filter.value = '';
-    else emit('close');
+    else dismiss();
     return;
   }
   if (event.key !== 'Enter') return;
@@ -356,7 +377,14 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <Dialog v-model:open="open" :title="t('workspace.addTitle')" size="lg" height="fixed" @close="emit('close')">
+  <Dialog
+    v-model:open="open"
+    :title="t('workspace.addTitle')"
+    size="lg"
+    height="fixed"
+    @close="dismiss"
+    @after-leave="onDialogAfterLeave"
+  >
     <div class="aw">
       <!-- Breadcrumb + up (hidden when the daemon can't browse) -->
       <div v-if="!browseFailed" class="crumbbar">
@@ -475,7 +503,7 @@ onUnmounted(() => {
             @click="openThisFolder"
           >{{ t('workspace.openThisFolder') }}</Button>
         </Tooltip>
-        <Button variant="secondary" @click="emit('close')">{{ t('workspace.cancel') }}</Button>
+        <Button variant="secondary" @click="dismiss">{{ t('workspace.cancel') }}</Button>
       </div>
 
       <div class="footer-hint">{{ footerHint }}</div>

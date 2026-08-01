@@ -19,6 +19,26 @@ const { t } = useI18n();
 // flow is cancelled and timers are stopped before the parent unmounts us.
 const open = ref(true);
 
+// The parent v-if-unmounts us the moment we emit, which would kill Dialog's
+// leave transition mid-flight. So every dismiss flips our local `open` first
+// (the panel animates out) and defers the parent-facing emit to Dialog's
+// `after-leave` — the side effects (timers, cancel) still run immediately.
+let closing = false;
+let afterLeaveEmit: (() => void) | null = null;
+
+function dismiss(emits: () => void): void {
+  if (closing) return;
+  closing = true;
+  open.value = false;
+  afterLeaveEmit = emits;
+}
+
+function onDialogAfterLeave(): void {
+  const emits = afterLeaveEmit;
+  afterLeaveEmit = null;
+  emits?.();
+}
+
 // -------------------------------------------------------------------------
 // Emits
 // -------------------------------------------------------------------------
@@ -132,8 +152,10 @@ async function startFlow(): Promise<void> {
     stopTimers();
     step.value = 'success';
     setTimeout(() => {
-      emit('success');
-      emit('close');
+      dismiss(() => {
+        emit('success');
+        emit('close');
+      });
     }, 800);
     return;
   }
@@ -186,8 +208,10 @@ function scheduleNextPoll(intervalSec: number): void {
       stopTimers();
       step.value = 'success';
       setTimeout(() => {
-        emit('success');
-        emit('close');
+        dismiss(() => {
+          emit('success');
+          emit('close');
+        });
       }, 1200);
     } else if (result.status === 'expired' || result.status === 'cancelled') {
       stopTimers();
@@ -217,12 +241,13 @@ async function copyCode(): Promise<void> {
 }
 
 async function close(): Promise<void> {
+  if (closing) return;
   stopTimers();
   // Best-effort cancel
   if (step.value === 'device-code') {
     void props.onCancelOAuthLogin();
   }
-  emit('close');
+  dismiss(() => emit('close'));
 }
 
 // Format seconds as mm:ss
@@ -234,7 +259,13 @@ function formatSeconds(s: number): string {
 </script>
 
 <template>
-  <Dialog v-model:open="open" :title="t('login.title')" :close-on-overlay="false" @close="close">
+  <Dialog
+    v-model:open="open"
+    :title="t('login.title')"
+    :close-on-overlay="false"
+    @close="close"
+    @after-leave="onDialogAfterLeave"
+  >
 
     <!-- Starting (brief spinner) -->
     <div v-if="step === 'starting'" class="center-body">

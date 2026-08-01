@@ -3,7 +3,9 @@
      ones. radius xl + shadow xl, head(title/desc/close) / body / foot(right).
      Includes focus trap, Esc-to-close, and optional overlay-click-to-close.
      Enters via keyframe animation, exits via a <Transition> (scrim fade +
-     panel scale/fade); focus is restored once the leave completes. -->
+     panel scale/fade); focus is restored once the leave completes, and an
+     `after-leave` event tells consumers the panel is fully gone (v-if-mounted
+     wrappers defer their own teardown until then). -->
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { openDialogCount } from '../../composables/dialogStack';
@@ -38,6 +40,10 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{
   'update:open': [value: boolean];
   close: [];
+  /** The leave transition finished — the panel is fully gone. Consumers that
+   *  v-if-unmount on close should wait for this before tearing down, or the
+   *  leave animation is aborted. */
+  'after-leave': [];
 }>();
 
 const panel = ref<HTMLElement | null>(null);
@@ -75,9 +81,11 @@ function restoreFocus() {
 }
 
 /** <Transition> hook: the panel has finished animating out — hand focus back
- *  to the element that was focused before the dialog opened. */
+ *  to the element that was focused before the dialog opened (first, so focus
+ *  lands before any consumer teardown), then announce the leave completed. */
 function onAfterLeave() {
   restoreFocus();
+  emit('after-leave');
 }
 
 function onKeydown(event: KeyboardEvent) {

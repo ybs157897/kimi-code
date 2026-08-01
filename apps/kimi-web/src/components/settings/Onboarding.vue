@@ -4,6 +4,7 @@
      settings popover. Each preference can be changed any time later, so there's
      nothing to "lose". -->
 <script setup lang="ts">
+import { ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { availableLocales, setLocale, type LocaleCode } from '../../i18n';
 import { useAppearance, type Accent, type ColorScheme } from '../../composables/client/useAppearance';
@@ -16,22 +17,46 @@ const emit = defineEmits<{ complete: []; skip: [] }>();
 const { t, locale } = useI18n();
 const { colorScheme, accent, setColorScheme, setAccent } = useAppearance();
 
+// The parent v-if-unmounts us on `complete`/`skip`, which would kill Dialog's
+// leave transition mid-flight (and drop its focus restore). So a dismiss flips
+// our local `open` first — the panel animates out and Dialog hands focus back
+// — and defers the parent-facing emit to Dialog's `after-leave`.
+const open = ref(true);
+let afterLeaveEmit: (() => void) | null = null;
+
+function dismiss(emits: () => void): void {
+  if (afterLeaveEmit) return;
+  open.value = false;
+  afterLeaveEmit = emits;
+}
+
+function onDialogAfterLeave(): void {
+  const emits = afterLeaveEmit;
+  afterLeaveEmit = null;
+  emits?.();
+}
+
 function chooseLocale(code: LocaleCode): void {
   if (locale.value !== code) setLocale(code);
 }
 
 function finish(): void {
-  emit('complete');
+  dismiss(() => emit('complete'));
+}
+
+function skip(): void {
+  dismiss(() => emit('skip'));
 }
 </script>
 
 <template>
   <Dialog
-    :open="true"
+    v-model:open="open"
     size="md"
     :close-on-overlay="false"
     :close-on-esc="false"
-    @close="emit('skip')"
+    @close="skip"
+    @after-leave="onDialogAfterLeave"
   >
     <template #head>
       <div class="ob-brand">
