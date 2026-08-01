@@ -9,6 +9,7 @@
 import { watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { useResizable } from '../composables/useResizable';
+import { resizeKeyStep } from '../lib/interaction';
 
 const props = withDefaults(
   defineProps<{
@@ -56,27 +57,18 @@ watch(dragging, (d) => emit('update:dragging', d));
 // the equivalent drag would; Home/End jump to the clamps and double-click
 // restores the default width. Everything funnels through setWidth (clamp +
 // persist), so the watch above emits the same update:width events as a drag.
-const KEY_STEP = 4;
-const KEY_STEP_LARGE = 16;
-
 function onKeydown(event: KeyboardEvent): void {
-  let direction: number;
-  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') direction = 1;
-  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') direction = -1;
-  else if (event.key === 'Home') {
-    event.preventDefault();
-    setWidth(props.min);
-    return;
-  } else if (event.key === 'End') {
-    event.preventDefault();
-    setWidth(props.max);
-    return;
-  } else {
-    return;
-  }
+  const next = resizeKeyStep({
+    width: width.value,
+    key: event.key,
+    shiftKey: event.shiftKey,
+    min: props.min,
+    max: props.max,
+    reverse: props.reverse,
+  });
+  if (next === null) return;
   event.preventDefault();
-  const step = event.shiftKey ? KEY_STEP_LARGE : KEY_STEP;
-  setWidth(width.value + (props.reverse ? -direction : direction) * step);
+  setWidth(next);
 }
 
 function onDblClick(): void {

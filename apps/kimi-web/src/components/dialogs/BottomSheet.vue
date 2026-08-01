@@ -11,6 +11,7 @@
 import { computed, onUnmounted, ref, watch, type CSSProperties } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { openDialogCount } from '../../composables/dialogStack';
+import { shouldCloseSheetDrag } from '../../lib/interaction';
 
 const { t } = useI18n();
 
@@ -61,8 +62,6 @@ function setScrollLock(locked: boolean): void {
 // back home. The scrollable body keeps native scrolling unless it is already
 // at the top (pull-to-close).
 const DRAG_ZONE_PX = 48;
-const DRAG_CLOSE_DISTANCE_PX = 80;
-const DRAG_CLOSE_VELOCITY = 0.5; // px/ms, downward
 const DRAG_CLICK_SLOP_PX = 5;
 
 const panelRef = ref<HTMLElement | null>(null);
@@ -139,8 +138,7 @@ function onPanelPointerCancel(e: PointerEvent): void {
 
 function endDrag(cancelled = false): void {
   const dy = dragY.value;
-  const shouldClose =
-    !cancelled && (dy > DRAG_CLOSE_DISTANCE_PX || (velocity > DRAG_CLOSE_VELOCITY && dy > 0));
+  const shouldClose = shouldCloseSheetDrag(dy, velocity, cancelled);
   dragging.value = false;
   closing.value = shouldClose;
   dragY.value = 0;
