@@ -2,7 +2,9 @@
 <!-- A thin (~4px) drag bar. Axis x (default) resizes the panel to its LEFT
      (col-resize). Axis y resizes a BOTTOM panel (row-resize, reverse grows
      upward). Owns the size via useResizable and reports changes through
-     v-model:width so the parent can drive its grid/flex sizing. -->
+     v-model:width so the parent can drive its grid/flex sizing. Also
+     keyboard-operable (separator role): arrows step ±4px (Shift ±16px),
+     Home/End jump to the clamps, double-click restores defaultWidth. -->
 <script setup lang="ts">
 import { watch } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -33,7 +35,7 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 
-const { width, dragging, onPointerDown } = useResizable({
+const { width, dragging, setWidth, onPointerDown } = useResizable({
   storageKey: props.storageKey,
   defaultWidth: props.defaultWidth,
   min: props.min,
@@ -48,6 +50,38 @@ const { width, dragging, onPointerDown } = useResizable({
 emit('update:width', width.value);
 watch(width, (w) => emit('update:width', w));
 watch(dragging, (d) => emit('update:dragging', d));
+
+// Keyboard operation for the separator role. Arrow keys mirror the drag math
+// (including the `reverse` flip), so a key press moves the panel exactly where
+// the equivalent drag would; Home/End jump to the clamps and double-click
+// restores the default width. Everything funnels through setWidth (clamp +
+// persist), so the watch above emits the same update:width events as a drag.
+const KEY_STEP = 4;
+const KEY_STEP_LARGE = 16;
+
+function onKeydown(event: KeyboardEvent): void {
+  let direction: number;
+  if (event.key === 'ArrowRight' || event.key === 'ArrowDown') direction = 1;
+  else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') direction = -1;
+  else if (event.key === 'Home') {
+    event.preventDefault();
+    setWidth(props.min);
+    return;
+  } else if (event.key === 'End') {
+    event.preventDefault();
+    setWidth(props.max);
+    return;
+  } else {
+    return;
+  }
+  event.preventDefault();
+  const step = event.shiftKey ? KEY_STEP_LARGE : KEY_STEP;
+  setWidth(width.value + (props.reverse ? -direction : direction) * step);
+}
+
+function onDblClick(): void {
+  setWidth(props.defaultWidth);
+}
 </script>
 
 <template>
@@ -55,11 +89,18 @@ watch(dragging, (d) => emit('update:dragging', d));
     class="rh"
     :class="{ dragging, 'rh--y': axis === 'y' }"
     role="separator"
+    tabindex="0"
     :aria-orientation="axis === 'y' ? 'horizontal' : 'vertical'"
     :aria-label="ariaLabel ?? t('layout.resizeHandleAria')"
+    :aria-valuenow="width"
+    :aria-valuemin="min"
+    :aria-valuemax="max"
     @pointerdown="onPointerDown"
+    @keydown="onKeydown"
+    @dblclick="onDblClick"
   >
     <span class="rh-bar" aria-hidden="true"></span>
+    <span class="rh-grip" aria-hidden="true"></span>
   </div>
 </template>
 
@@ -86,14 +127,70 @@ watch(dragging, (d) => emit('update:dragging', d));
   justify-self: stretch;
   margin: -2px 0;
 }
+.rh:focus-visible {
+  outline: none;
+  box-shadow: var(--p-focus-ring);
+}
+/* 2px core centered over the column border; thickens to the full 4px strip on
+   hover / drag / keyboard focus (transform, so it stays cheap to animate). */
 .rh-bar {
   position: absolute;
-  inset: 0;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
   background: transparent;
-  transition: background 0.12s;
+  transform: translateX(-50%);
+  transition:
+    background-color var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
 .rh:hover .rh-bar,
-.rh.dragging .rh-bar {
-  background: var(--color-accent);
+.rh.dragging .rh-bar,
+.rh:focus-visible .rh-bar {
+  background-color: var(--color-accent);
+  transform: translateX(-50%) scaleX(2);
+}
+.rh--y .rh-bar {
+  top: 50%;
+  bottom: auto;
+  left: 0;
+  right: 0;
+  width: auto;
+  height: 2px;
+  transform: translateY(-50%);
+}
+.rh--y:hover .rh-bar,
+.rh--y.dragging .rh-bar,
+.rh--y:focus-visible .rh-bar {
+  transform: translateY(-50%) scaleY(2);
+}
+/* Resting affordance: three faint dots mark the grabbable strip so the
+   invisible handle is discoverable; they fade out as the accent core
+   thickens in on hover / drag / focus. */
+.rh-grip {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 2px;
+  height: 2px;
+  border-radius: 50%;
+  background: var(--color-text-faint);
+  box-shadow:
+    0 -5px 0 var(--color-text-faint),
+    0 5px 0 var(--color-text-faint);
+  transform: translate(-50%, -50%);
+  opacity: 0.7;
+  transition: opacity var(--duration-fast) var(--ease-out);
+}
+.rh:hover .rh-grip,
+.rh.dragging .rh-grip,
+.rh:focus-visible .rh-grip {
+  opacity: 0;
+}
+.rh--y .rh-grip {
+  box-shadow:
+    -5px 0 0 var(--color-text-faint),
+    5px 0 0 var(--color-text-faint);
 }
 </style>
