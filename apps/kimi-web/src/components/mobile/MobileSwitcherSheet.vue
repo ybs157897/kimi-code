@@ -239,7 +239,7 @@ function onDeleteWorkspace(ws: WorkspaceView): void {
           </IconButton>
 
           <!-- Workspace menu: copy path / delete (two-step confirm) -->
-          <Menu v-if="wsMenuFor === g.workspace.id" class="kmenu wsmenu" @click.stop>
+          <Menu :open="wsMenuFor === g.workspace.id" class="kmenu wsmenu" @click.stop @close="wsMenuFor = null">
             <MenuItem size="lg" @click="onCopyWsPath(g.workspace)">
               {{ t('sidebar.copyPath') }}
             </MenuItem>
@@ -271,7 +271,7 @@ function onDeleteWorkspace(ws: WorkspaceView): void {
             </IconButton>
 
             <!-- Kebab menu -->
-            <Menu v-if="menuFor === s.id" class="kmenu" @click.stop>
+            <Menu :open="menuFor === s.id" class="kmenu" @click.stop @close="menuFor = null">
               <MenuItem size="lg" @click="onRename(s)">{{ t('sidebar.rename') }}</MenuItem>
               <MenuItem size="lg" danger @click="onArchive(s.id)">{{ t('sidebar.archive') }}</MenuItem>
             </Menu>

@@ -28,6 +28,7 @@ import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
 import Kbd from './ui/Kbd.vue';
 import Menu from './ui/Menu.vue';
+import type { MenuOrigin } from './ui/menu-context';
 import MenuItem from './ui/MenuItem.vue';
 import Pill from './ui/Pill.vue';
 
@@ -387,6 +388,8 @@ const wsMenuOpenId = ref<string | null>(null);
 const wsMenuTarget = ref<WorkspaceView | null>(null);
 const wsMenuStyle = ref<Record<string, string>>({});
 const wsMenuRef = ref<InstanceType<typeof Menu> | null>(null);
+// Anchor corner for the open/close motion — flips with the viewport flip.
+const wsMenuOrigin = ref<MenuOrigin>('top-right');
 
 function onWsMenuDocClick(e: MouseEvent): void {
   const target = e.target as Element;
@@ -412,11 +415,14 @@ async function toggleWsMenu(ws: WorkspaceView, e: MouseEvent): Promise<void> {
   const menuH = menu?.offsetHeight ?? 0;
   const menuW = menu?.offsetWidth ?? 0;
   let top = r.bottom + gap;
+  let above = false;
   if (top + menuH > window.innerHeight - margin) {
     top = Math.max(margin, r.top - menuH - gap);
+    above = true;
   }
   let left = r.right - menuW;
   if (left < margin) left = margin;
+  wsMenuOrigin.value = above ? 'bottom-right' : 'top-right';
   wsMenuStyle.value = {
     top: `${Math.round(top)}px`,
     left: `${Math.round(left)}px`,
@@ -455,6 +461,8 @@ function deleteWs(ws: WorkspaceView): void {
 const sectionMenuOpen = ref(false);
 const sectionMenuStyle = ref<Record<string, string>>({});
 const sectionMenuRef = ref<InstanceType<typeof Menu> | null>(null);
+// Anchor corner for the open/close motion — flips with the viewport flip.
+const sectionMenuOrigin = ref<MenuOrigin>('top-right');
 
 function onSectionMenuDocClick(e: MouseEvent): void {
   const target = e.target as Element;
@@ -479,11 +487,14 @@ async function toggleSectionMenu(e: MouseEvent): Promise<void> {
   const menuH = menu?.offsetHeight ?? 0;
   const menuW = menu?.offsetWidth ?? 0;
   let top = r.bottom + gap;
+  let above = false;
   if (top + menuH > window.innerHeight - margin) {
     top = Math.max(margin, r.top - menuH - gap);
+    above = true;
   }
   let left = r.right - menuW;
   if (left < margin) left = margin;
+  sectionMenuOrigin.value = above ? 'bottom-right' : 'top-right';
   sectionMenuStyle.value = {
     top: `${Math.round(top)}px`,
     left: `${Math.round(left)}px`,
@@ -509,6 +520,8 @@ function chooseSortMode(mode: WorkspaceSortMode): void {
 const backendMenuOpen = ref(false);
 const backendMenuStyle = ref<Record<string, string>>({});
 const backendMenuRef = ref<InstanceType<typeof Menu> | null>(null);
+// Anchor corner for the open/close motion — flips with the viewport flip.
+const backendMenuOrigin = ref<MenuOrigin>('top-left');
 
 function onBackendMenuDocClick(e: MouseEvent): void {
   const target = e.target as Element;
@@ -533,9 +546,12 @@ async function toggleBackendMenu(e: MouseEvent): Promise<void> {
   const margin = 8;
   const menuH = menu?.offsetHeight ?? 0;
   let top = r.bottom + gap;
+  let above = false;
   if (top + menuH > window.innerHeight - margin) {
     top = Math.max(margin, r.top - menuH - gap);
+    above = true;
   }
+  backendMenuOrigin.value = above ? 'bottom-left' : 'top-left';
   backendMenuStyle.value = {
     top: `${Math.round(top)}px`,
     left: `${Math.round(Math.max(margin, r.left))}px`,
@@ -802,11 +818,13 @@ onBeforeUnmount(() => {
 
     <!-- Workspace right-click menu (position:fixed) -->
     <Menu
-      v-if="ghMenuOpen"
       ref="ghMenuRef"
+      :open="ghMenuOpen"
+      origin="top-left"
       class="gh-menu"
       :style="ghMenuStyle"
       @click.stop
+      @close="closeGhMenu"
     >
       <MenuItem @click="copyPathFromMenu">{{ t('sidebar.copyPath') }}</MenuItem>
       <MenuItem @click="startRenameFromMenu">{{ t('sidebar.rename') }}</MenuItem>
@@ -816,25 +834,34 @@ onBeforeUnmount(() => {
     <!-- Workspace kebab menu (position:fixed, anchored to the ⋯ button so the
          scrolling session list cannot clip it) -->
     <Menu
-      v-if="wsMenuOpenId !== null && wsMenuTarget"
       ref="wsMenuRef"
+      :open="wsMenuOpenId !== null"
+      :origin="wsMenuOrigin"
       class="ws-menu"
       :style="wsMenuStyle"
       @click.stop
+      @close="closeWsMenu"
     >
-      <MenuItem @click="copyWsPath(wsMenuTarget)">{{ t('sidebar.copyPath') }}</MenuItem>
-      <MenuItem separator />
-      <MenuItem @click="startRenameWs(wsMenuTarget)">{{ t('sidebar.rename') }}</MenuItem>
-      <MenuItem separator />
-      <MenuItem danger @click="deleteWs(wsMenuTarget)">{{ t('sidebar.removeWorkspace') }}</MenuItem>
+      <!-- The menu surface stays mounted (so its close can animate); the items
+           only exist while a target workspace is set, which also keeps the
+           non-null narrowing the handlers below rely on. -->
+      <template v-if="wsMenuTarget">
+        <MenuItem @click="copyWsPath(wsMenuTarget)">{{ t('sidebar.copyPath') }}</MenuItem>
+        <MenuItem separator />
+        <MenuItem @click="startRenameWs(wsMenuTarget)">{{ t('sidebar.rename') }}</MenuItem>
+        <MenuItem separator />
+        <MenuItem danger @click="deleteWs(wsMenuTarget)">{{ t('sidebar.removeWorkspace') }}</MenuItem>
+      </template>
     </Menu>
     <!-- Workspace sort menu (position:fixed, anchored to the sort button) -->
     <Menu
-      v-if="sectionMenuOpen"
       ref="sectionMenuRef"
+      :open="sectionMenuOpen"
+      :origin="sectionMenuOrigin"
       class="section-menu"
       :style="sectionMenuStyle"
       @click.stop
+      @close="closeSectionMenu"
     >
       <MenuItem @click="chooseSortMode('manual')">
         <span class="section-menu-check">
@@ -851,11 +878,13 @@ onBeforeUnmount(() => {
     </Menu>
     <!-- Dev backend switcher menu (position:fixed, anchored to the brand pill) -->
     <Menu
-      v-if="backendMenuOpen"
       ref="backendMenuRef"
+      :open="backendMenuOpen"
+      :origin="backendMenuOrigin"
       class="backend-menu"
       :style="backendMenuStyle"
       @click.stop
+      @close="closeBackendMenu"
     >
       <MenuItem v-for="name in backendNames" :key="name" @click="chooseBackend(name)">
         <span class="section-menu-check">

@@ -1,6 +1,11 @@
 <!-- apps/kimi-web/src/components/ui/MenuItem.vue -->
-<!-- Design-system §03 Menu item: supports active / danger / disabled / separator. -->
+<!-- Design-system §03 Menu item: supports active / danger / disabled / separator.
+     Inside a Menu, participates in the roving tabindex: only the menu's current
+     keyboard target is tabbable (tabindex 0), the rest sit at -1. -->
 <script setup lang="ts">
+import { computed, inject, ref } from 'vue';
+import { menuContextKey } from './menu-context';
+
 withDefaults(defineProps<{
   active?: boolean;
   danger?: boolean;
@@ -11,16 +16,27 @@ withDefaults(defineProps<{
 }>(), { size: 'md' });
 
 defineEmits<{ click: [event: MouseEvent] }>();
+
+// Roving-tabindex marker from the enclosing Menu (null when standalone — the
+// item keeps its native tab order then).
+const menu = inject(menuContextKey, null);
+const buttonEl = ref<HTMLElement>();
+const tabindex = computed(() => {
+  if (menu === null) return undefined;
+  return menu.tabTarget.value === buttonEl.value ? 0 : -1;
+});
 </script>
 
 <template>
   <div v-if="separator" class="ui-menu-sep" role="separator" />
   <button
     v-else
+    ref="buttonEl"
     class="ui-menu-item"
     :class="[`ui-menu-item--${size}`, { 'is-active': active, 'is-danger': danger }]"
     type="button"
     role="menuitem"
+    :tabindex="tabindex"
     :disabled="disabled"
     @click="$emit('click', $event)"
   >

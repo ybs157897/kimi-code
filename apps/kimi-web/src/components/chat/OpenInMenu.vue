@@ -11,6 +11,7 @@ import Button from '../ui/Button.vue';
 import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
 import Menu from '../ui/Menu.vue';
+import type { MenuOrigin } from '../ui/menu-context';
 import MenuItem from '../ui/MenuItem.vue';
 import Tooltip from '../ui/Tooltip.vue';
 
@@ -103,6 +104,8 @@ const menuOpen = ref(false);
 const triggerRef = ref<InstanceType<typeof IconButton> | null>(null);
 const menuRef = ref<InstanceType<typeof Menu> | null>(null);
 const menuStyle = ref<Record<string, string>>({});
+// Anchor corner for the open/close motion — flips with the viewport flip.
+const menuOrigin = ref<MenuOrigin>('top-right');
 
 function onDocClick(e: MouseEvent): void {
   const target = e.target as Node;
@@ -132,11 +135,14 @@ async function openMenu(): Promise<void> {
   const menuW = menu.offsetWidth;
   const menuH = menu.offsetHeight;
   let top = r.bottom + gap;
+  let above = false;
   if (top + menuH > window.innerHeight - margin) {
     top = Math.max(margin, r.top - menuH - gap);
+    above = true;
   }
   let left = r.right - menuW;
   if (left < margin) left = margin;
+  menuOrigin.value = above ? 'bottom-right' : 'top-right';
   menuStyle.value = {
     top: `${Math.round(top)}px`,
     left: `${Math.round(left)}px`,
@@ -210,11 +216,13 @@ async function copyPath(): Promise<void> {
     </IconButton>
 
     <Menu
-      v-if="menuOpen"
       ref="menuRef"
+      :open="menuOpen"
+      :origin="menuOrigin"
       class="open-menu"
       :style="menuStyle"
       @click.stop
+      @close="closeMenu"
     >
       <MenuItem
         v-for="target in visibleTargets"

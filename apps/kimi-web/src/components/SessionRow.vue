@@ -10,6 +10,7 @@ import Spinner from './ui/Spinner.vue';
 import Badge from './ui/Badge.vue';
 import IconButton from './ui/IconButton.vue';
 import Menu from './ui/Menu.vue';
+import type { MenuOrigin } from './ui/menu-context';
 import MenuItem from './ui/MenuItem.vue';
 import Icon from './ui/Icon.vue';
 import Tooltip from './ui/Tooltip.vue';
@@ -57,6 +58,8 @@ const kebabRef = ref<InstanceType<typeof IconButton> | null>(null);
 const menuRef = ref<InstanceType<typeof Menu> | null>(null);
 // Fixed-position style for the teleported kebab menu, anchored to the ⋯ button.
 const menuStyle = ref<Record<string, string>>({});
+// Anchor corner for the open/close motion — flips with the viewport flip.
+const menuOrigin = ref<MenuOrigin>('top-right');
 
 function onDocClick(e: MouseEvent): void {
   const target = e.target as Node;
@@ -78,11 +81,14 @@ function positionMenu(): void {
   const menuH = menu?.offsetHeight ?? 0;
   const menuW = menu?.offsetWidth ?? 0;
   let top = r.bottom + gap;
+  let above = false;
   if (top + menuH > window.innerHeight - margin) {
     top = Math.max(margin, r.top - menuH - gap);
+    above = true;
   }
   let left = r.right - menuW;
   if (left < margin) left = margin;
+  menuOrigin.value = above ? 'bottom-right' : 'top-right';
   menuStyle.value = {
     top: `${Math.round(top)}px`,
     left: `${Math.round(left)}px`,
@@ -99,7 +105,8 @@ async function toggleMenu(e: Event): Promise<void> {
   // Defer so the current click doesn't immediately close the menu.
   setTimeout(() => document.addEventListener('mousedown', onDocClick), 0);
   window.addEventListener('resize', closeMenu);
-  // Wait for the teleported menu to mount so its size can be measured.
+  // Wait for the teleported menu surface to become visible so its size can be
+  // measured.
   await nextTick();
   positionMenu();
 }
@@ -262,7 +269,15 @@ defineExpose({ closeMenu });
     <!-- Kebab dropdown — teleported to <body> and position:fixed so it escapes
          the `overflow: hidden` on the collapsing `.group-sessions` list. -->
     <Teleport to="body">
-      <Menu ref="menuRef" v-if="menuOpen" class="menu" :style="menuStyle" @click.stop>
+      <Menu
+        ref="menuRef"
+        :open="menuOpen"
+        :origin="menuOrigin"
+        class="menu"
+        :style="menuStyle"
+        @click.stop
+        @close="closeMenu"
+      >
         <MenuItem :danger="copyFailed" @click="copySessionId">
           <Icon :name="copiedId ? 'check' : 'copy'" size="sm" />
           {{

@@ -8,6 +8,7 @@ import { useI18n } from 'vue-i18n';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import { isMacosDesktop } from '../../lib/desktopFlag';
 import Menu from '../ui/Menu.vue';
+import type { MenuOrigin } from '../ui/menu-context';
 import MenuItem from '../ui/MenuItem.vue';
 import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
@@ -83,6 +84,8 @@ const menuOpen = ref(false);
 const kebabRef = ref<InstanceType<typeof IconButton> | null>(null);
 const menuRef = ref<InstanceType<typeof Menu> | null>(null);
 const menuStyle = ref<Record<string, string>>({});
+// Anchor corner for the open/close motion — follows the viewport flips below.
+const menuOrigin = ref<MenuOrigin>('top-left');
 
 function onDocClick(e: MouseEvent): void {
   const target = e.target as Node;
@@ -113,13 +116,24 @@ async function toggleMenu(e: Event): Promise<void> {
   const menuW = menu.offsetWidth;
   const menuH = menu.offsetHeight;
   let top = r.bottom + gap;
+  let above = false;
   if (top + menuH > window.innerHeight - margin) {
     top = Math.max(margin, r.top - menuH - gap);
+    above = true;
   }
   let left = r.left;
+  let rightAligned = false;
   if (left + menuW > window.innerWidth - margin) {
     left = Math.max(margin, r.right - menuW);
+    rightAligned = true;
   }
+  menuOrigin.value = above
+    ? rightAligned
+      ? 'bottom-right'
+      : 'bottom-left'
+    : rightAligned
+      ? 'top-right'
+      : 'top-left';
   menuStyle.value = {
     top: `${Math.round(top)}px`,
     left: `${Math.round(left)}px`,
@@ -261,11 +275,13 @@ function startArchive(): void {
 
     <!-- Fixed more menu -->
     <Menu
-      v-if="menuOpen"
       ref="menuRef"
+      :open="menuOpen"
+      :origin="menuOrigin"
       class="ch-menu"
       :style="menuStyle"
       @click.stop
+      @close="closeMenu"
     >
       <MenuItem @click="onCopyAll">
         <Icon :name="copied ? 'check' : 'copy'" size="sm" />
