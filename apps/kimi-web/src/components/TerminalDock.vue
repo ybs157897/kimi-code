@@ -1,7 +1,7 @@
 <!-- Bottom multi-tab terminal dock. Each tab keeps a stable local :key so the
      Terminal view is not remounted when the server assigns a pty id. -->
 <script setup lang="ts">
-import { nextTick, ref, watch } from 'vue';
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import { getKimiWebApi } from '../api';
 import Terminal from './Terminal.vue';
@@ -67,6 +67,38 @@ function focusActive(): void {
   if (!id) return;
   terminalRefs.value[id]?.focus();
 }
+
+const dockEl = ref<HTMLElement | null>(null);
+/** True while the open/close height slide runs. Gates the height transition
+    so resize drags (which churn the height prop) apply instantly. */
+const animating = ref(false);
+let animatingFallback: ReturnType<typeof setTimeout> | null = null;
+
+function beginHeightAnimation(): void {
+  animating.value = true;
+  if (animatingFallback !== null) clearTimeout(animatingFallback);
+  // Safety net in case transitionend never fires (background tab, etc.):
+  // drop the gate shortly after the 0.28s slide so drags stay instant.
+  animatingFallback = setTimeout(() => {
+    animatingFallback = null;
+    animating.value = false;
+  }, 340);
+}
+
+function onDockTransitionEnd(e: TransitionEvent): void {
+  if (e.target !== dockEl.value || e.propertyName !== 'height') return;
+  if (animatingFallback !== null) {
+    clearTimeout(animatingFallback);
+    animatingFallback = null;
+  }
+  animating.value = false;
+  // xterm measured the mid-slide box; refit now that the height settled.
+  fitActive();
+}
+
+onBeforeUnmount(() => {
+  if (animatingFallback !== null) clearTimeout(animatingFallback);
+});
 
 async function revealActive(): Promise<void> {
   await nextTick();
@@ -238,6 +270,14 @@ watch(
   { immediate: true },
 );
 
+// Open/close slides the height 0 ↔ var(--terminal-h). The transition is gated
+// to that window (non-immediate watch: no slide on first render) so height
+// changes from the resize handle never fight it.
+watch(
+  () => props.open,
+  () => beginHeightAnimation(),
+);
+
 watch(
   () => [props.height, props.maximized, activeId.value] as const,
   () => {
@@ -249,12 +289,14 @@ watch(
 
 <template>
   <section
+    ref="dockEl"
     class="terminal-dock"
-    :class="{ open, maximized }"
+    :class="{ open, maximized, 'is-animating': animating }"
     :style="{ '--terminal-h': `${height}px` }"
     role="complementary"
     :aria-label="t('layout.terminalPanelAria')"
     :aria-hidden="!open"
+    @transitionend="onDockTransitionEnd"
   >
     <header class="terminal-dock__header">
       <div class="terminal-dock__tabs" role="tablist">
@@ -348,19 +390,34 @@ watch(
 </template>
 
 <style scoped>
+/* Always a flex column: show/hide slides the height 0 ↔ var(--terminal-h)
+   instead of snapping display. Closed = zero height, no hairline, hidden
+   (keeps the collapsed box out of the tab order, matching aria-hidden). */
 .terminal-dock {
-  display: none;
+  display: flex;
   flex-direction: column;
+  flex: none;
+  height: 0;
   min-height: 0;
   min-width: 0;
   background: var(--bg);
-  border-top: 1px solid var(--line);
+  border-top: 1px solid transparent;
   overflow: hidden;
+  visibility: hidden;
+}
+/* The slide is gated by .is-animating (set on open toggles, cleared on
+   transitionend) so resize drags apply their height instantly. visibility
+   flips at the end of the hide slide and at the start of the show slide. */
+.terminal-dock.is-animating {
+  transition:
+    height 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    border-top-color 0.28s cubic-bezier(0.4, 0, 0.2, 1),
+    visibility 0.28s;
 }
 .terminal-dock.open {
-  display: flex;
   height: var(--terminal-h);
-  flex: none;
+  border-top-color: var(--line);
+  visibility: visible;
 }
 .terminal-dock.maximized {
   flex: 1 1 auto;
