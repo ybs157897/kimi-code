@@ -18,6 +18,7 @@ import (
 
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 
+	"kimi-desktop/internal/appdata"
 	"kimi-desktop/internal/ipcclient"
 	"kimi-desktop/internal/sidecar"
 )
@@ -129,6 +130,12 @@ func NewApp() *App {
 // the ready channel, so the webview cannot race the engine's cold boot.
 func (a *App) startup(ctx context.Context) {
 	a.ctx = ctx
+	// Seed the user-level experts root with the bundled defaults. Failure is
+	// only logged: it must never block the engine startup, and an existing
+	// experts directory is left untouched.
+	if err := appdata.MaterializeDefaultExperts(appdata.HomeDir()); err != nil {
+		log.Printf("kimi-desktop: materialize default experts: %v", err)
+	}
 	go a.connect()
 }
 
