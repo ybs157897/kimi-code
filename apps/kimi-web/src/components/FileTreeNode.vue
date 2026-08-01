@@ -77,7 +77,8 @@ const visibleChildren = computed(() => {
       <span class="file-tree__twist">
         <Icon
           v-if="isDir"
-          :name="node.expanded ? 'chevron-down' : 'chevron-right'"
+          class="file-tree__twist-icon"
+          name="chevron-right"
           size="sm"
         />
       </span>
@@ -110,22 +111,66 @@ const visibleChildren = computed(() => {
       {{ node.error }}
     </div>
 
-    <ul
-      v-if="node.expanded && visibleChildren.length > 0"
-      class="file-tree"
-      role="group"
+    <div
+      class="file-tree__children"
+      :class="{ 'is-open': node.expanded && visibleChildren.length > 0 }"
     >
-      <FileTreeNode
-        v-for="child in visibleChildren"
-        :key="child.entry.path"
-        :node="child"
-        :depth="depth + 1"
-        :selected-path="selectedPath"
-        :query="query"
-        :badge-kind="badgeKind"
-        :badge-glyph="badgeGlyph"
-        @toggle="emit('toggle', $event)"
-      />
-    </ul>
+      <Transition name="file-tree-kids">
+        <ul
+          v-if="node.expanded && visibleChildren.length > 0"
+          class="file-tree"
+          role="group"
+        >
+          <FileTreeNode
+            v-for="child in visibleChildren"
+            :key="child.entry.path"
+            :node="child"
+            :depth="depth + 1"
+            :selected-path="selectedPath"
+            :query="query"
+            :badge-kind="badgeKind"
+            :badge-glyph="badgeGlyph"
+            @toggle="emit('toggle', $event)"
+          />
+        </ul>
+      </Transition>
+    </div>
   </li>
 </template>
+
+<style scoped>
+/* Single chevron that rotates 90° when the directory opens (no icon swap),
+   same idiom as the ToolGroup caret. */
+.file-tree__twist-icon {
+  transition: transform var(--duration-base) var(--ease-out);
+}
+.file-tree__item.is-expanded .file-tree__twist-icon {
+  transform: rotate(90deg);
+}
+
+/* Child list collapse: grid-template-rows 0fr ↔ 1fr (the house idiom). The
+   <ul> itself stays v-if'd on expanded, so unexpanded subtrees never render;
+   the <Transition> (duration taken from the opacity transition below) keeps
+   it mounted for the length of the collapse so the track can animate down
+   before the lazy unmount lands. */
+.file-tree__children {
+  display: grid;
+  grid-template-rows: minmax(0, 0fr);
+  overflow: hidden;
+  transition: grid-template-rows var(--duration-base) var(--ease-out);
+}
+.file-tree__children.is-open {
+  grid-template-rows: minmax(0, 1fr);
+}
+.file-tree__children > .file-tree {
+  min-height: 0;
+}
+.file-tree-kids-enter-active,
+.file-tree-kids-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out);
+}
+.file-tree-kids-enter-from,
+.file-tree-kids-leave-to {
+  opacity: 0;
+}
+</style>
