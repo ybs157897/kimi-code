@@ -762,48 +762,55 @@ onBeforeUnmount(() => {
               </IconButton>
             </div>
           </div>
-          <div
-            v-for="g in groups"
-            :key="g.workspace.id"
-            class="ws-drop-target"
-            :class="{
-              'drop-before': dragOver?.id === g.workspace.id && dragOver.position === 'before',
-              'drop-after': dragOver?.id === g.workspace.id && dragOver.position === 'after',
-            }"
-            @dragover="onGroupDragOver($event, g.workspace.id)"
-            @drop="onGroupDrop(g.workspace.id)"
-          >
-            <WorkspaceGroup
-              :group="g"
-              :active-workspace-id="activeWorkspaceId"
-              :active-id="activeId"
-              :renaming-id="renamingId"
-              :rename-value="renameValue"
-              :rename-input-ref="getRenameInputRef()"
-              :pending-by-session="pendingBySession"
-              :unread-by-session="unreadBySession"
-              :ws-menu-open-id="wsMenuOpenId"
-              :dragging="draggingWsId === g.workspace.id"
-              :is-collapsed="isCollapsed"
-              :is-expanded="isExpanded"
-              @group-click="handleGhClick"
-              @group-contextmenu="openGhMenu"
-              @toggle-ws-menu="toggleWsMenu"
-              @create-in-workspace="(id) => emit('createInWorkspace', id)"
-              @select-session="onSelectSession"
-              @rename-session="(id, title) => emit('rename', id, title)"
-              @archive-session="(id) => emit('archive', id)"
-              @fork-session="(id) => emit('fork', id)"
-              @export-session="(id) => emit('export', id)"
-              @load-more="onLoadMore"
-              @toggle-expand="toggleExpand"
-              @confirm-rename="confirmRenameWorkspace"
-              @cancel-rename="cancelRenameWorkspace"
-              @update-rename-value="onUpdateRenameValue"
-              @ws-dragstart="onWsDragstart"
-              @ws-dragend="onWsDragend"
-            />
-          </div>
+          <!-- The rows are keyed workspace groups inside a TransitionGroup:
+               a new group fades in with a small rise, a removed group fades
+               out in place, and reorders (drag-drop, sort-mode switch) glide
+               to their new slot via the FLIP -move class instead of snapping
+               (scoped .ws-list-* transitions below). -->
+          <TransitionGroup tag="div" class="ws-list" name="ws-list">
+            <div
+              v-for="g in groups"
+              :key="g.workspace.id"
+              class="ws-drop-target"
+              :class="{
+                'drop-before': dragOver?.id === g.workspace.id && dragOver.position === 'before',
+                'drop-after': dragOver?.id === g.workspace.id && dragOver.position === 'after',
+              }"
+              @dragover="onGroupDragOver($event, g.workspace.id)"
+              @drop="onGroupDrop(g.workspace.id)"
+            >
+              <WorkspaceGroup
+                :group="g"
+                :active-workspace-id="activeWorkspaceId"
+                :active-id="activeId"
+                :renaming-id="renamingId"
+                :rename-value="renameValue"
+                :rename-input-ref="getRenameInputRef()"
+                :pending-by-session="pendingBySession"
+                :unread-by-session="unreadBySession"
+                :ws-menu-open-id="wsMenuOpenId"
+                :dragging="draggingWsId === g.workspace.id"
+                :is-collapsed="isCollapsed"
+                :is-expanded="isExpanded"
+                @group-click="handleGhClick"
+                @group-contextmenu="openGhMenu"
+                @toggle-ws-menu="toggleWsMenu"
+                @create-in-workspace="(id) => emit('createInWorkspace', id)"
+                @select-session="onSelectSession"
+                @rename-session="(id, title) => emit('rename', id, title)"
+                @archive-session="(id) => emit('archive', id)"
+                @fork-session="(id) => emit('fork', id)"
+                @export-session="(id) => emit('export', id)"
+                @load-more="onLoadMore"
+                @toggle-expand="toggleExpand"
+                @confirm-rename="confirmRenameWorkspace"
+                @cancel-rename="cancelRenameWorkspace"
+                @update-rename-value="onUpdateRenameValue"
+                @ws-dragstart="onWsDragstart"
+                @ws-dragend="onWsDragend"
+              />
+            </div>
+          </TransitionGroup>
         </template>
       </div>
 
@@ -1257,6 +1264,37 @@ onBeforeUnmount(() => {
    will land. Inset shadows avoid layout shift. */
 .ws-drop-target.drop-before { box-shadow: inset 0 2px 0 var(--color-accent); }
 .ws-drop-target.drop-after { box-shadow: inset 0 -2px 0 var(--color-accent); }
+
+/* Workspace row list motion (TransitionGroup in the template): a new group
+   fades in with a small rise, a removed group fades out in place, and
+   reorders — the drag-drop landing, a sort-mode switch — glide to their new
+   slot via the FLIP `-move` class instead of snapping. */
+.ws-list {
+  /* Containing block for the absolute leaving row below, so it fades out
+     over its own slot and left/right resolve to the list width. */
+  position: relative;
+}
+.ws-list-enter-from,
+.ws-list-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.ws-list-enter-active,
+.ws-list-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+.ws-list-leave-active {
+  /* Out of flow while fading so the siblings glide into the vacated slot
+     immediately; left/right keep the row at full list width (absolute would
+     otherwise shrink it to content). */
+  position: absolute;
+  left: 0;
+  right: 0;
+}
+.ws-list-move {
+  transition: transform var(--duration-base) var(--ease-out);
+}
 
 .empty {
   padding: var(--space-6) var(--space-3);
