@@ -3,9 +3,11 @@
      chat" row, then collapsible workspace groups (folder icon + name +
      path sub-line + per-group "+") with their session rows beneath.
      Tapping a session selects it AND closes the sheet; tapping a group header
-     folds it, same as the desktop sidebar. -->
+     folds it, same as the desktop sidebar. Kebab menus dismiss on outside tap
+     and on body scroll (they're anchored inside the scrolling sheet body);
+     rename is an inline input, same as the desktop SessionRow. -->
 <script setup lang="ts">
-import { ref } from 'vue';
+import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { Session, WorkspaceGroup, WorkspaceView } from '../../types';
 import { copyTextToClipboard } from '../../lib/clipboard';
@@ -137,6 +139,8 @@ function wsAttention(id: string): number {
 // ---------------------------------------------------------------------------
 // Per-row kebab menu (rename / archive) — opened from the ⋯ button.
 // Archive is confirmed via modal (consistent with remove-workspace).
+// Rename is inline (mirrors the desktop SessionRow): the row title swaps to
+// an input, Enter/blur commits, Esc cancels.
 // ---------------------------------------------------------------------------
 const menuFor = ref<string | null>(null);
 
@@ -144,11 +148,31 @@ function toggleMenu(id: string): void {
   menuFor.value = menuFor.value === id ? null : id;
   wsMenuFor.value = null;
 }
-function onRename(s: Session): void {
+
+const renamingId = ref<string | null>(null);
+const renameValue = ref('');
+const renameInputRef = ref<HTMLInputElement | null>(null);
+
+async function onRename(s: Session): Promise<void> {
   menuFor.value = null;
-  const next = typeof window !== 'undefined' ? window.prompt(t('sidebar.rename'), s.title) : null;
-  const title = next?.trim();
-  if (title) emit('rename', s.id, title);
+  renamingId.value = s.id;
+  renameValue.value = s.title;
+  await nextTick();
+  try {
+    renameInputRef.value?.focus();
+    renameInputRef.value?.select();
+  } catch {
+    // jsdom may not implement focus/select
+  }
+}
+function commitRename(): void {
+  const id = renamingId.value;
+  const title = renameValue.value.trim();
+  if (id && title) emit('rename', id, title);
+  renamingId.value = null;
+}
+function cancelRename(): void {
+  renamingId.value = null;
 }
 function onArchive(id: string): void {
   menuFor.value = null;
@@ -175,6 +199,38 @@ function onDeleteWorkspace(ws: WorkspaceView): void {
   wsMenuFor.value = null;
   emit('deleteWorkspace', ws.id);
 }
+
+// ---------------------------------------------------------------------------
+// Menu dismissal on outside tap / scroll. The menus are absolutely positioned
+// inside BottomSheet's scrolling .sheet-body, so they cannot stay anchored to
+// their row while it scrolls — close them instead of letting them drift.
+// The .sheet-content wrapper covers the whole sheet-body slot: outside taps
+// bubble up to it (the kebab triggers and the menu surfaces stop propagation),
+// and the scroll listener attaches to the scrolling element itself, since
+// scroll events do not bubble.
+// ---------------------------------------------------------------------------
+const sheetBodyRef = ref<HTMLElement | null>(null);
+let sheetScrollEl: HTMLElement | null = null;
+
+function closeMenus(): void {
+  menuFor.value = null;
+  wsMenuFor.value = null;
+}
+
+function detachSheetScroll(): void {
+  sheetScrollEl?.removeEventListener('scroll', closeMenus);
+  sheetScrollEl = null;
+}
+
+watch(sheetBodyRef, (el) => {
+  detachSheetScroll();
+  if (el) {
+    sheetScrollEl = el.parentElement;
+    sheetScrollEl?.addEventListener('scroll', closeMenus);
+  }
+});
+
+onBeforeUnmount(detachSheetScroll);
 </script>
 
 <template>
@@ -182,125 +238,144 @@ function onDeleteWorkspace(ws: WorkspaceView): void {
     :model-value="modelValue"
     @update:model-value="emit('update:modelValue', $event)"
   >
-    <!-- + New chat (mirrors the sidebar's top button) -->
-    <button type="button" class="newrow" @click="onCreate">
-      <Icon name="message" size="sm" />
-      {{ t('sidebar.newChat') }}
-    </button>
-    <button type="button" class="newrow secondary" @click="onAddWorkspace">
-      <Icon name="folder" size="sm" />
-      {{ t('sidebar.newWorkspace') }}
-    </button>
+    <!-- Sheet-body slot wrapper: outside taps bubble up here (the kebab
+         triggers and the menu surfaces stop propagation) and dismiss any open
+         menu; the scroll listener on the parent .sheet-body is wired in the
+         script via this ref. -->
+    <div ref="sheetBodyRef" class="sheet-content" @click="closeMenus">
+      <!-- + New chat (mirrors the sidebar's top button) -->
+      <button type="button" class="newrow" @click="onCreate">
+        <Icon name="message" size="sm" />
+        {{ t('sidebar.newChat') }}
+      </button>
+      <button type="button" class="newrow secondary" @click="onAddWorkspace">
+        <Icon name="folder" size="sm" />
+        {{ t('sidebar.newWorkspace') }}
+      </button>
 
-    <!-- Workspace groups with their sessions -->
-    <div class="mlist">
-      <div v-if="groups.length === 0" class="mempty">
-        {{ t('workspace.noWorkspace') }}
-      </div>
-
-      <div v-for="g in groups" :key="g.workspace.id" class="mgroup">
-        <div
-          class="mgh"
-          :class="{ on: g.workspace.id === activeWorkspaceId }"
-          @click="toggleCollapse(g.workspace.id)"
-        >
-          <!-- Folder icon: open/closed mirrors the desktop sidebar -->
-          <Icon v-if="isCollapsed(g.workspace.id)" class="mgh-folder" name="folder-closed" size="sm" />
-          <Icon v-else class="mgh-folder" name="folder" size="sm" />
-
-          <div class="mgh-main">
-            <span class="mgh-name">{{ g.workspace.name }}</span>
-            <Tooltip :text="g.workspace.root">
-              <span class="mgh-path">{{ g.workspace.shortPath }}</span>
-            </Tooltip>
-          </div>
-
-          <span
-            v-if="isCollapsed(g.workspace.id) && wsAttention(g.workspace.id) > 0"
-            class="att"
-          >{{ wsAttention(g.workspace.id) }}</span>
-
-          <IconButton
-            size="lg"
-            class="mgh-more"
-            :label="t('sidebar.options')"
-            @click.stop="toggleWsMenu(g.workspace.id)"
-          >
-            <Icon name="dots-horizontal" size="md" />
-          </IconButton>
-
-          <IconButton
-            size="lg"
-            class="mgh-add"
-            :label="t('workspace.newInGroup')"
-            @click.stop="onCreateInWorkspace(g.workspace.id)"
-          >
-            <Icon name="plus" size="md" />
-          </IconButton>
-
-          <!-- Workspace menu: copy path / delete (two-step confirm) -->
-          <Menu :open="wsMenuFor === g.workspace.id" class="kmenu wsmenu" @click.stop @close="wsMenuFor = null">
-            <MenuItem size="lg" @click="onCopyWsPath(g.workspace)">
-              {{ t('sidebar.copyPath') }}
-            </MenuItem>
-            <MenuItem size="lg" danger @click="onDeleteWorkspace(g.workspace)">{{ t('sidebar.delete') }}</MenuItem>
-          </Menu>
+      <!-- Workspace groups with their sessions -->
+      <div class="mlist">
+        <div v-if="groups.length === 0" class="mempty">
+          {{ t('workspace.noWorkspace') }}
         </div>
 
-        <div v-show="!isCollapsed(g.workspace.id)">
-          <div v-if="g.sessions.length === 0" class="mempty small">{{ t('sidebar.noSessions') }}</div>
+        <div v-for="g in groups" :key="g.workspace.id" class="mgroup">
           <div
-            v-for="s in visibleSessions(g)"
-            :key="s.id"
-            class="srow"
-            :class="{ cur: s.id === activeId }"
-            @click="onSelectSession(s.id)"
+            class="mgh"
+            :class="{ on: g.workspace.id === activeWorkspaceId }"
+            @click="toggleCollapse(g.workspace.id)"
           >
-            <div class="m">
-              <div class="t" :class="{ run: s.busy, aborted: !s.busy && (attentionBySession[s.id] ?? 0) === 0 && (s.lastTurnReason === 'cancelled' || s.lastTurnReason === 'failed') }">{{ s.title }}</div>
-              <div class="s">{{ s.time }}</div>
+            <!-- Folder icon: open/closed mirrors the desktop sidebar -->
+            <Icon v-if="isCollapsed(g.workspace.id)" class="mgh-folder" name="folder-closed" size="sm" />
+            <Icon v-else class="mgh-folder" name="folder" size="sm" />
+
+            <div class="mgh-main">
+              <span class="mgh-name">{{ g.workspace.name }}</span>
+              <Tooltip :text="g.workspace.root">
+                <span class="mgh-path">{{ g.workspace.shortPath }}</span>
+              </Tooltip>
             </div>
-            <span v-if="(attentionBySession[s.id] ?? 0) > 0" class="att">{{ attentionBySession[s.id] }}</span>
+
+            <span
+              v-if="isCollapsed(g.workspace.id) && wsAttention(g.workspace.id) > 0"
+              class="att"
+            >{{ wsAttention(g.workspace.id) }}</span>
+
             <IconButton
               size="lg"
-              class="kb"
+              class="mgh-more"
               :label="t('sidebar.options')"
-              @click.stop="toggleMenu(s.id)"
+              @click.stop="toggleWsMenu(g.workspace.id)"
             >
               <Icon name="dots-horizontal" size="md" />
             </IconButton>
 
-            <!-- Kebab menu -->
-            <Menu :open="menuFor === s.id" class="kmenu" @click.stop @close="menuFor = null">
-              <MenuItem size="lg" @click="onRename(s)">{{ t('sidebar.rename') }}</MenuItem>
-              <MenuItem size="lg" danger @click="onArchive(s.id)">{{ t('sidebar.archive') }}</MenuItem>
+            <IconButton
+              size="lg"
+              class="mgh-add"
+              :label="t('workspace.newInGroup')"
+              @click.stop="onCreateInWorkspace(g.workspace.id)"
+            >
+              <Icon name="plus" size="md" />
+            </IconButton>
+
+            <!-- Workspace menu: copy path / delete (two-step confirm) -->
+            <Menu :open="wsMenuFor === g.workspace.id" class="kmenu wsmenu" @click.stop @close="wsMenuFor = null">
+              <MenuItem size="lg" @click="onCopyWsPath(g.workspace)">
+                {{ t('sidebar.copyPath') }}
+              </MenuItem>
+              <MenuItem size="lg" danger @click="onDeleteWorkspace(g.workspace)">{{ t('sidebar.delete') }}</MenuItem>
             </Menu>
           </div>
-          <button
-            v-if="g.hasMore || g.loadingMore"
-            type="button"
-            class="mshow-more"
-            :disabled="g.loadingMore"
-            @click.stop="onLoadMore(g.workspace.id)"
-          >
-            {{
-              g.loadingMore
-                ? t('sidebar.loadingMore')
-                : t('sidebar.showMore', { count: Math.max(0, g.workspace.sessionCount - g.sessions.length) })
-            }}
-          </button>
-          <button
-            v-if="g.sessions.length > g.initialCount"
-            type="button"
-            class="mshow-more"
-            @click.stop="toggleExpand(g.workspace.id)"
-          >
-            {{
-              isExpanded(g.workspace.id)
-                ? t('sidebar.showLess')
-                : t('sidebar.showAll', { count: g.sessions.length - g.initialCount })
-            }}
-          </button>
+
+          <div v-show="!isCollapsed(g.workspace.id)">
+            <div v-if="g.sessions.length === 0" class="mempty small">{{ t('sidebar.noSessions') }}</div>
+            <div
+              v-for="s in visibleSessions(g)"
+              :key="s.id"
+              class="srow"
+              :class="{ cur: s.id === activeId }"
+              @click="onSelectSession(s.id)"
+            >
+              <div class="m">
+                <!-- Inline rename input (mirrors the desktop SessionRow):
+                     Enter/blur commits, Esc cancels. -->
+                <input
+                  v-if="renamingId === s.id"
+                  ref="renameInputRef"
+                  v-model="renameValue"
+                  class="mrename"
+                  @click.stop
+                  @keydown.enter.stop="commitRename"
+                  @keydown.esc.stop="cancelRename"
+                  @blur="commitRename"
+                />
+                <div v-else class="t" :class="{ run: s.busy, aborted: !s.busy && (attentionBySession[s.id] ?? 0) === 0 && (s.lastTurnReason === 'cancelled' || s.lastTurnReason === 'failed') }">{{ s.title }}</div>
+                <div class="s">{{ s.time }}</div>
+              </div>
+              <span v-if="(attentionBySession[s.id] ?? 0) > 0" class="att">{{ attentionBySession[s.id] }}</span>
+              <IconButton
+                v-if="renamingId !== s.id"
+                size="lg"
+                class="kb"
+                :label="t('sidebar.options')"
+                @click.stop="toggleMenu(s.id)"
+              >
+                <Icon name="dots-horizontal" size="md" />
+              </IconButton>
+
+              <!-- Kebab menu -->
+              <Menu :open="menuFor === s.id" class="kmenu" @click.stop @close="menuFor = null">
+                <MenuItem size="lg" @click="onRename(s)">{{ t('sidebar.rename') }}</MenuItem>
+                <MenuItem size="lg" danger @click="onArchive(s.id)">{{ t('sidebar.archive') }}</MenuItem>
+              </Menu>
+            </div>
+            <button
+              v-if="g.hasMore || g.loadingMore"
+              type="button"
+              class="mshow-more"
+              :disabled="g.loadingMore"
+              @click.stop="onLoadMore(g.workspace.id)"
+            >
+              {{
+                g.loadingMore
+                  ? t('sidebar.loadingMore')
+                  : t('sidebar.showMore', { count: Math.max(0, g.workspace.sessionCount - g.sessions.length) })
+              }}
+            </button>
+            <button
+              v-if="g.sessions.length > g.initialCount"
+              type="button"
+              class="mshow-more"
+              @click.stop="toggleExpand(g.workspace.id)"
+            >
+              {{
+                isExpanded(g.workspace.id)
+                  ? t('sidebar.showLess')
+                  : t('sidebar.showAll', { count: g.sessions.length - g.initialCount })
+              }}
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -464,6 +539,25 @@ function onDeleteWorkspace(ws: WorkspaceView): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Inline rename input — swaps in place of the row title (mirrors the desktop
+   SessionRow .rename-input): Enter/blur commits, Esc cancels. Sized to the
+   title so the row height barely moves while editing. */
+.mrename {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: var(--sans);
+  font-size: var(--text-base);
+  font-weight: 450;
+  line-height: var(--leading-tight);
+  color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-accent);
+  border-radius: var(--radius-sm);
+  padding: 1px 6px;
+  outline: none;
+  min-width: 0;
 }
 .att {
   flex: none;
