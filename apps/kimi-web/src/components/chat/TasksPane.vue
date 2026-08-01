@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n';
 import type { TaskItem } from '../../types';
 import { copyTextToClipboard } from '../../lib/clipboard';
 import Badge from '../ui/Badge.vue';
+import EmptyState from '../ui/EmptyState.vue';
 import Icon from '../ui/Icon.vue';
 import StatusGlyph, { type StatusGlyphStatus } from './StatusGlyph.vue';
 
@@ -80,7 +81,14 @@ async function copyTaskOutput(task: TaskItem): Promise<void> {
     </div>
 
     <div class="tp-list">
-      <div v-if="tasks.length === 0" class="tp-empty">{{ t('tasks.emptyTasks') }}</div>
+      <EmptyState
+        v-if="tasks.length === 0"
+        class="tp-empty"
+        :title="t('tasks.emptyTasks')"
+        hint="Tasks started by the agent will appear here."
+      >
+        <template #icon><Icon name="check-list" size="lg" /></template>
+      </EmptyState>
 
       <template v-else>
         <div
@@ -103,30 +111,33 @@ async function copyTaskOutput(task: TaskItem): Promise<void> {
             <Icon v-else-if="hasDetail(task)" class="tp-chevron" :class="{ open: expandedIds.has(task.id) }" name="chevron-right" size="sm" />
           </div>
           <div
-            v-if="expandedIds.has(task.id) && hasDetail(task)"
             class="tp-detail"
+            :class="{ open: expandedIds.has(task.id) }"
+            :inert="!expandedIds.has(task.id)"
           >
-            <div v-if="task.meta" class="tp-codebox">
-              <button
-                class="tp-copy"
-                :class="{ copied: copiedCommandIds.has(task.id) }"
-                @click.stop="copyTaskCommand(task)"
-              >
-                {{ copiedCommandIds.has(task.id) ? '已复制' : '复制' }}
-              </button>
-              <pre class="tp-pre"><code><span class="tp-cmd">{{ task.meta }}</span></code></pre>
-            </div>
-            <div v-if="task.output && task.output.length > 0" class="tp-codebox">
-              <button
-                class="tp-copy"
-                :class="{ copied: copiedOutputIds.has(task.id) }"
-                @click.stop="copyTaskOutput(task)"
-              >
-                {{ copiedOutputIds.has(task.id) ? '已复制' : '复制' }}
-              </button>
-              <pre class="tp-pre"><code>
-                <span v-for="(line, i) in task.output" :key="i" class="tp-line">{{ line }}</span>
-              </code></pre>
+            <div class="tp-detail-pad">
+              <div v-if="task.meta" class="tp-codebox">
+                <button
+                  class="tp-copy"
+                  :class="{ copied: copiedCommandIds.has(task.id) }"
+                  @click.stop="copyTaskCommand(task)"
+                >
+                  {{ copiedCommandIds.has(task.id) ? '已复制' : '复制' }}
+                </button>
+                <pre class="tp-pre"><code><span class="tp-cmd">{{ task.meta }}</span></code></pre>
+              </div>
+              <div v-if="task.output && task.output.length > 0" class="tp-codebox">
+                <button
+                  class="tp-copy"
+                  :class="{ copied: copiedOutputIds.has(task.id) }"
+                  @click.stop="copyTaskOutput(task)"
+                >
+                  {{ copiedOutputIds.has(task.id) ? '已复制' : '复制' }}
+                </button>
+                <pre class="tp-pre"><code>
+                  <span v-for="(line, i) in task.output" :key="i" class="tp-line">{{ line }}</span>
+                </code></pre>
+              </div>
             </div>
           </div>
         </div>
@@ -236,8 +247,24 @@ async function copyTaskOutput(task: TaskItem): Promise<void> {
 }
 .tp-stop:hover { background: var(--panel); }
 
-/* Expanded detail: separate code boxes for command and terminal output */
+/* Expanded detail: separate code boxes for command and terminal output.
+   Opens downward / collapses upward via a `grid-template-rows` transition
+   (0fr ↔ 1fr) instead of a v-if snap, so expanding a task's output animates
+   (same idiom as ToolRow's `.bb`). The inner `.tp-detail-pad` needs
+   `min-height: 0` + `overflow: hidden` so the 0fr track can collapse fully;
+   its margin provides the open-state spacing and is clipped while closed. */
 .tp-detail {
+  display: grid;
+  grid-template-rows: minmax(0, 0fr);
+  overflow: hidden;
+  transition: grid-template-rows var(--duration-base) var(--ease-out);
+}
+.tp-detail.open {
+  grid-template-rows: minmax(0, 1fr);
+}
+.tp-detail-pad {
+  min-height: 0;
+  overflow: hidden;
   margin: 4px 0 0 23px;
   display: flex;
   flex-direction: column;
@@ -305,11 +332,10 @@ async function copyTaskOutput(task: TaskItem): Promise<void> {
   display: block;
 }
 
+/* EmptyState owns the typography/centering; just keep it compact for the
+   low dock pane. */
 .tp-empty {
-  padding: 24px 0;
-  text-align: center;
-  color: var(--faint);
-  font-size: var(--ui-font-size-sm);
+  padding: var(--space-4) 0;
 }
 
 /* Mobile */
@@ -325,7 +351,7 @@ async function copyTaskOutput(task: TaskItem): Promise<void> {
     border-radius: 6px;
     font-size: var(--ui-font-size-xs);
   }
-  .tp-detail { margin-left: 0; }
+  .tp-detail-pad { margin-left: 0; }
   .tp-pre { font-size: var(--ui-font-size-xs); }
 }
 

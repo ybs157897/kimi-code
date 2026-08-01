@@ -209,12 +209,19 @@ onUnmounted(() => {
           {{ toast.copied ? t('warnings.copied') : t('warnings.copyDetails') }}
         </button>
       </div>
-      <dl v-if="toast.detailsOpen && toastDetails(toast.warning)?.length" class="details">
-        <div v-for="detail in toastDetails(toast.warning)" :key="`${detail.label}:${detail.value}`" class="detail-row">
-          <dt>{{ detail.label }}</dt>
-          <dd>{{ detail.value }}</dd>
-        </div>
-      </dl>
+      <div
+        v-if="toastDetails(toast.warning)?.length"
+        class="details-wrap"
+        :class="{ open: toast.detailsOpen }"
+        :inert="!toast.detailsOpen"
+      >
+        <dl class="details">
+          <div v-for="detail in toastDetails(toast.warning)" :key="`${detail.label}:${detail.value}`" class="detail-row">
+            <dt>{{ detail.label }}</dt>
+            <dd>{{ detail.value }}</dd>
+          </div>
+        </dl>
+      </div>
     </Toast>
   </TransitionGroup>
 </template>
@@ -268,7 +275,24 @@ onUnmounted(() => {
 .link:hover {
   text-decoration: underline;
 }
+/* Details panel: permanently mounted and opened/closed via a
+   `grid-template-rows` transition (0fr ↔ 1fr), so "Show details" expands and
+   collapses smoothly instead of snapping in/out with a v-if (same idiom as
+   ToolRow's `.bb`). The inner `.details` needs `min-height: 0` +
+   `overflow: hidden` so the 0fr track can collapse fully; its margin-top
+   provides the open-state spacing and is clipped while closed. */
+.details-wrap {
+  display: grid;
+  grid-template-rows: minmax(0, 0fr);
+  overflow: hidden;
+  transition: grid-template-rows var(--duration-base) var(--ease-out);
+}
+.details-wrap.open {
+  grid-template-rows: minmax(0, 1fr);
+}
 .details {
+  min-height: 0;
+  overflow: hidden;
   display: grid;
   gap: 5px;
   margin: 8px 0 0;
