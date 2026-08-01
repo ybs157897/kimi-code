@@ -10,6 +10,8 @@ import Dialog from '../ui/Dialog.vue';
 import Button from '../ui/Button.vue';
 import Badge from '../ui/Badge.vue';
 import Spinner from '../ui/Spinner.vue';
+import Skeleton from '../ui/Skeleton.vue';
+import EmptyState from '../ui/EmptyState.vue';
 import Field from '../ui/Field.vue';
 import Input from '../ui/Input.vue';
 import Select from '../ui/Select.vue';
@@ -276,18 +278,34 @@ function statusLabel(status: AppProvider['status']): string {
 
       <!-- Provider list -->
       <div v-if="!formOpen" class="prov-list">
-        <!-- Loading state -->
-        <div v-if="loading" class="state-row">
-          <Spinner size="sm" />
-          <span>{{ t('providers.loading') }}</span>
+        <!-- Loading state — a content-shaped ghost of the provider rows
+             (breathing lives in Skeleton.vue's own scoped styles). -->
+        <div v-if="loading" class="prov-loading">
+          <div class="prov-skel" aria-hidden="true">
+            <div v-for="n in 3" :key="n" class="prov-skel-row">
+              <Skeleton circle width="8px" height="8px" />
+              <div class="prov-skel-info">
+                <Skeleton width="36%" height="12px" />
+                <Skeleton width="22%" height="9px" />
+              </div>
+              <div class="prov-skel-actions">
+                <Skeleton width="52px" height="22px" />
+                <Skeleton width="66px" height="22px" />
+                <Skeleton width="56px" height="22px" />
+              </div>
+            </div>
+          </div>
+          <span class="prov-loading-text">{{ t('providers.loading') }}</span>
         </div>
         <!-- Unavailable (daemon 404) -->
         <div v-else-if="unavailable" class="state-row unavail">
           <Icon name="alert-triangle" size="md" />
           <span>{{ t('providers.unavailable') }}</span>
         </div>
-        <!-- Empty -->
-        <div v-else-if="providers.length === 0" class="empty">{{ t('providers.empty') }}</div>
+        <!-- Empty — design-system EmptyState with a connect hint. -->
+        <EmptyState v-else-if="providers.length === 0" class="prov-empty" :title="t('providers.empty')">
+          <template #icon><Icon name="globe" size="lg" /></template>
+        </EmptyState>
         <!-- Provider rows -->
         <template v-else>
           <div v-for="p in providers" :key="p.id" class="prov-row">
@@ -500,12 +518,46 @@ function statusLabel(status: AppProvider['status']): string {
   font-size: var(--text-base);
 }
 .state-row.unavail { color: var(--color-warning); }
-.empty {
-  padding: var(--space-4) 0;
-  color: var(--color-text-muted);
-  font-family: var(--font-ui);
-  font-size: var(--text-base);
+/* Loading ghost — mirrors the provider-row shape (dot / info / actions) so a
+   loading list already reads as provider-shaped. */
+.prov-loading {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+  animation: kimi-card-in var(--duration-slow) var(--ease-out) both;
 }
+.prov-skel {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+}
+.prov-skel-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-3);
+  padding: var(--space-3) 0;
+  border-bottom: 1px solid var(--color-line);
+}
+.prov-skel-row:last-child { border-bottom: none; }
+.prov-skel-info {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.prov-skel-actions {
+  display: flex;
+  flex: none;
+  gap: var(--space-2);
+}
+.prov-loading-text {
+  color: var(--color-text-faint);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+}
+/* Empty state — same one-shot entrance as the loading ghost. */
+.prov-empty { animation: kimi-card-in var(--duration-slow) var(--ease-out) both; }
 .prov-row {
   display: flex;
   align-items: center;
@@ -513,8 +565,15 @@ function statusLabel(status: AppProvider['status']): string {
   padding: var(--space-3) 0;
   border-bottom: 1px solid var(--color-line);
   transition: background var(--duration-fast) var(--ease-out);
+  animation: kimi-card-in var(--duration-slow) var(--ease-out) both;
 }
 .prov-row:last-child { border-bottom: none; }
+/* Gentle cascade for the list entrance (the global reduced-motion kill-switch
+   in style.css zeroes these delays). */
+.prov-row:nth-child(2) { animation-delay: 30ms; }
+.prov-row:nth-child(3) { animation-delay: 60ms; }
+.prov-row:nth-child(4) { animation-delay: 90ms; }
+.prov-row:nth-child(5) { animation-delay: 120ms; }
 
 .status-dot {
   width: 8px;
@@ -647,6 +706,14 @@ function statusLabel(status: AppProvider['status']): string {
     flex-wrap: wrap;
   }
   .prov-actions {
+    flex: 1 1 100%;
+    justify-content: flex-end;
+  }
+  .prov-skel-row {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+  .prov-skel-actions {
     flex: 1 1 100%;
     justify-content: flex-end;
   }
