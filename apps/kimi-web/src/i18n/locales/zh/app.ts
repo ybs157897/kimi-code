@@ -8,4 +8,5 @@ export default {
   connectingDesktop: '正在启动本地引擎，首次启动可能需要一点时间…',
   connectRetrying: '无法连接服务器，正在重试…',
   internalBuildBanner: '仅供内部测试',
+  internalBuildDiag: '传输 {transport} · 后端 {backend} · {endpoint}',
 } as const;

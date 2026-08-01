@@ -25,6 +25,8 @@ import ConnectionStatusBanner from './desktop/ConnectionStatusBanner.vue';
 import SearchSessionsDialog from './dialogs/SearchSessionsDialog.vue';
 import WorkspaceGroup from './WorkspaceGroup.vue';
 import { isMacosDesktop } from '../lib/desktopFlag';
+import Button from './ui/Button.vue';
+import EmptyState from './ui/EmptyState.vue';
 import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
 import Kbd from './ui/Kbd.vue';
@@ -733,10 +735,18 @@ onBeforeUnmount(() => {
       <!-- Session list — grouped by workspace -->
       <div class="sessions" @scroll="onSessionsScroll">
         <!-- Empty state — only when no workspace is registered at all; empty
-             workspaces still render their group header (with the + button). -->
-        <div v-if="groups.length === 0" class="empty">
-          {{ t('workspace.noWorkspace') }}
-        </div>
+             workspaces still render their group header (with the + button).
+             The action emits `addWorkspace`, which App.vue wires to the
+             add-workspace dialog (same handler as the group header's +). -->
+        <EmptyState
+          v-if="groups.length === 0"
+          class="side-empty"
+          :title="t('workspace.noWorkspace')"
+          :hint="t('workspace.noWorkspaceHint')"
+        >
+          <template #icon><Icon name="folder" size="lg" /></template>
+          <Button size="sm" @click.stop="emit('addWorkspace')">{{ t('workspace.addWorkspace') }}</Button>
+        </EmptyState>
 
         <template v-else>
           <div class="side-section-label">
@@ -1302,12 +1312,11 @@ onBeforeUnmount(() => {
   transition: transform var(--duration-base) var(--ease-out);
 }
 
-.empty {
-  padding: var(--space-6) var(--space-3);
-  text-align: center;
-  color: var(--faint);
-  font-size: calc(var(--ui-font-size) - 3px);
-  line-height: 1.6;
+/* No-workspace empty state: EmptyState owns the typography, the icon and the
+   shared kimi-card-in entrance; just trim its roomy default padding to the
+   narrow column so the action button stays comfortably reachable. */
+.side-empty {
+  padding: var(--space-6) var(--space-2);
 }
 
 /* Workspace menus — surface + items come from Menu / MenuItem; only the

@@ -8,4 +8,5 @@ export default {
   connectingDesktop: 'Starting the local engine — first launch may take a moment…',
   connectRetrying: 'Cannot reach the server — retrying…',
   internalBuildBanner: 'Internal testing only',
+  internalBuildDiag: 'transport {transport} · backend {backend} · {endpoint}',
 } as const;

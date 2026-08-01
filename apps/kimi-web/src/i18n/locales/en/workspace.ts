@@ -10,6 +10,7 @@ export default {
   currentWorkspace: 'Current workspace only',
   addWorkspace: 'Add workspace…',
   noWorkspace: 'No workspace',
+  noWorkspaceHint: 'Add a workspace folder to start your first session.',
   deleteHasSessions: 'This workspace still has sessions — archive them before deleting it',
   // Secondary confirmation (modal)
   removeWorkspaceConfirm: 'Remove workspace "{name}"?',
