@@ -66,6 +66,7 @@ export default {
   exportLogBtn: '导出日志',
   conversationToc: '显示对话目录',
   conversationTocHint: '在右侧显示可点击跳转的对话目录',
+  archivedKicker: '已归档会话',
   archivedTitle: '已归档会话',
   archivedDesc: '查看已归档会话，确认其所属工作区路径、会话名称和归档时间，并可恢复到会话列表。',
   archivedSearch: '搜索已归档会话',

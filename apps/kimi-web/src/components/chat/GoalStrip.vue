@@ -83,7 +83,7 @@ async function onCancel(): Promise<void> {
     <template #default>
       <div class="goal-full">{{ goal.objective }}</div>
       <div v-if="goal.completionCriterion" class="goal-criterion">
-        <span>Done when</span>
+        <span>{{ t('conversation.goal.doneWhen') }}</span>
         <p>{{ goal.completionCriterion }}</p>
       </div>
     </template>
@@ -95,10 +95,10 @@ async function onCancel(): Promise<void> {
         :aria-hidden="!expanded"
       >
         <div class="goal-meta">
-          <span>{{ goal.turnsUsed }} turns</span>
-          <span>{{ formatTokens(goal.tokensUsed) }} tokens</span>
+          <span>{{ t('conversation.goal.turns', { count: goal.turnsUsed }) }}</span>
+          <span>{{ t('conversation.goal.tokens', { tokens: formatTokens(goal.tokensUsed) }) }}</span>
           <span>{{ formatMs(goal.wallClockMs) }}</span>
-          <span v-if="goal.budget.tokenBudget !== null">{{ tokenPct }}% token budget</span>
+          <span v-if="goal.budget.tokenBudget !== null">{{ t('conversation.goal.tokenBudget', { pct: tokenPct }) }}</span>
         </div>
         <div class="goal-actions">
           <Button

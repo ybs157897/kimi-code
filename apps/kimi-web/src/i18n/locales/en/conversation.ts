@@ -39,4 +39,10 @@ export default {
     expand: 'Show more',
     collapse: 'Show less',
   },
+  goal: {
+    doneWhen: 'Done when',
+    turns: '{count} turns',
+    tokens: '{tokens} tokens',
+    tokenBudget: '{pct}% token budget',
+  },
 } as const;

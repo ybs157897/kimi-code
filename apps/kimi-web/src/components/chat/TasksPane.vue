@@ -85,7 +85,7 @@ async function copyTaskOutput(task: TaskItem): Promise<void> {
         v-if="tasks.length === 0"
         class="tp-empty"
         :title="t('tasks.emptyTasks')"
-        hint="Tasks started by the agent will appear here."
+        :hint="t('tasks.emptyTasksHint')"
       >
         <template #icon><Icon name="check-list" size="lg" /></template>
       </EmptyState>
@@ -122,7 +122,7 @@ async function copyTaskOutput(task: TaskItem): Promise<void> {
                   :class="{ copied: copiedCommandIds.has(task.id) }"
                   @click.stop="copyTaskCommand(task)"
                 >
-                  {{ copiedCommandIds.has(task.id) ? '已复制' : '复制' }}
+                  {{ copiedCommandIds.has(task.id) ? t('tasks.copied') : t('tasks.copy') }}
                 </button>
                 <pre class="tp-pre"><code><span class="tp-cmd">{{ task.meta }}</span></code></pre>
               </div>
@@ -132,7 +132,7 @@ async function copyTaskOutput(task: TaskItem): Promise<void> {
                   :class="{ copied: copiedOutputIds.has(task.id) }"
                   @click.stop="copyTaskOutput(task)"
                 >
-                  {{ copiedOutputIds.has(task.id) ? '已复制' : '复制' }}
+                  {{ copiedOutputIds.has(task.id) ? t('tasks.copied') : t('tasks.copy') }}
                 </button>
                 <pre class="tp-pre"><code>
                   <span v-for="(line, i) in task.output" :key="i" class="tp-line">{{ line }}</span>

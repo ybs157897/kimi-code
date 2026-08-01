@@ -623,10 +623,10 @@ function citationChipLabel(seg: Extract<CodexSegment, { kind: 'citation' }>): st
           <Badge v-if="seg.variant" variant="neutral" size="sm">{{ seg.variant }}</Badge>
         </template>
         <div v-if="seg.subject || seg.recipient" class="md-writing-meta">
-          <div v-if="seg.subject"><span class="md-meta-k">Subject</span> {{ seg.subject }}</div>
-          <div v-if="seg.recipient"><span class="md-meta-k">To</span> {{ seg.recipient }}</div>
-          <div v-if="seg.cc"><span class="md-meta-k">Cc</span> {{ seg.cc }}</div>
-          <div v-if="seg.bcc"><span class="md-meta-k">Bcc</span> {{ seg.bcc }}</div>
+          <div v-if="seg.subject"><span class="md-meta-k">{{ t('markdown.writingSubject') }}</span> {{ seg.subject }}</div>
+          <div v-if="seg.recipient"><span class="md-meta-k">{{ t('markdown.writingTo') }}</span> {{ seg.recipient }}</div>
+          <div v-if="seg.cc"><span class="md-meta-k">{{ t('markdown.writingCc') }}</span> {{ seg.cc }}</div>
+          <div v-if="seg.bcc"><span class="md-meta-k">{{ t('markdown.writingBcc') }}</span> {{ seg.bcc }}</div>
         </div>
         <MarkdownRender
           :content="seg.body"

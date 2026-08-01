@@ -39,4 +39,10 @@ export default {
     expand: '展开',
     collapse: '收起',
   },
+  goal: {
+    doneWhen: '完成条件',
+    turns: '{count} 轮',
+    tokens: '{tokens} tokens',
+    tokenBudget: '{pct}% token 预算',
+  },
 } as const;

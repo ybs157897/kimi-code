@@ -1,6 +1,10 @@
 export default {
   suggestedTask: 'Suggested task',
   writingBlock: 'Writing',
+  writingSubject: 'Subject',
+  writingTo: 'To',
+  writingCc: 'Cc',
+  writingBcc: 'Bcc',
   artifact: 'Artifact',
   automation: 'Automation',
   inlineVis: 'Visualization',

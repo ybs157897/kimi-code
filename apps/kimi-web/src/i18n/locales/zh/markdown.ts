@@ -1,6 +1,10 @@
 export default {
   suggestedTask: '建议任务',
   writingBlock: '写作',
+  writingSubject: '主题',
+  writingTo: '收件人',
+  writingCc: '抄送',
+  writingBcc: '密送',
   artifact: '产物模板',
   automation: '自动化引用',
   inlineVis: '可视化',
