@@ -1,14 +1,18 @@
 <!-- apps/kimi-web/src/components/dialogs/AddWorkspaceDialog.vue -->
 <!-- Daemon-driven folder browser for adding a workspace: starts at the path -->
 <!-- kimi-web is working in, with a clickable breadcrumb and the folder list -->
-<!-- (fs:browse). "Open this folder" adds the current path. The search box -->
+<!-- (fs:browse). "Open this folder" adds the current path. The daemon's -->
+<!-- recent roots are offered as quick-pick rows when the browser sits at -->
+<!-- $HOME or in an empty folder. Keyboard: ↑/↓ roves a highlight across the -->
+<!-- visible rows (browse / search-hit / candidate share it), Enter opens the -->
+<!-- highlighted row, Backspace on the empty box goes up. The search box -->
 <!-- doubles as an absolute-path entry: absolute-looking input (POSIX, "~", -->
 <!-- Windows drive or UNC) is validated live and the browser follows valid -->
 <!-- paths, so the existing "Open this folder" button submits them. When the -->
 <!-- daemon can't browse, the same box is the only way to add a path. -->
 <!-- Built on the design-system Dialog / Button / IconButton primitives. -->
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { FsBrowseEntry, FsBrowseResult } from '../../api/types';
 import {
@@ -21,6 +25,7 @@ import {
 import Dialog from '../ui/Dialog.vue';
 import Button from '../ui/Button.vue';
 import IconButton from '../ui/IconButton.vue';
+import Skeleton from '../ui/Skeleton.vue';
 import Spinner from '../ui/Spinner.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
@@ -75,6 +80,9 @@ const browseFailed = ref(false);
 const currentPath = ref('');
 const parentPath = ref<string | null>(null);
 const entries = ref<FsBrowseEntry[]>([]);
+/** Recently used workspace roots reported by the daemon (`getFsHome`) —
+ *  surfaced as quick-pick rows so a frequent folder is one click away. */
+const recentRoots = ref<string[]>([]);
 
 // fzf-style search: typing runs a bounded RECURSIVE fuzzy search under the
 // current folder (not just a one-level filter), so a deep target is reachable
@@ -128,6 +136,9 @@ function fuzzyMatch(query: string, text: string): boolean {
 const SEARCH_MAX_DIRS = 600;
 const SEARCH_MAX_DEPTH = 6;
 const SEARCH_MAX_RESULTS = 150;
+
+/** Name-bar widths for the loading skeleton rows — varied for an organic feel. */
+const SKELETON_WIDTHS = ['64%', '42%', '75%', '51%', '68%', '38%', '57%', '46%'];
 
 async function runSearch(query: string): Promise<void> {
   const root = currentPath.value;
@@ -254,6 +265,113 @@ function pickCandidate(name: string): void {
   filterEl.value?.focus();
 }
 
+// ---------------------------------------------------------------------------
+// Recent-folder quick picks
+// ---------------------------------------------------------------------------
+const RECENT_MAX = 6;
+
+/** Deduped recent roots, minus the folder the browser already sits in. */
+const recentPicks = computed<string[]>(() => {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const p of recentRoots.value) {
+    if (!p || p === currentPath.value || seen.has(p)) continue;
+    seen.add(p);
+    out.push(p);
+    if (out.length >= RECENT_MAX) break;
+  }
+  return out;
+});
+
+/** Quick picks render in the browse slot when the browser sits at $HOME (the
+ *  natural picking ground) or in a folder with no subfolders of its own. */
+const showRecents = computed(
+  () =>
+    recentPicks.value.length > 0 &&
+    (currentPath.value === homePath.value || entries.value.length === 0),
+);
+
+/** How many quick-pick rows render above the subfolder rows (browse mode). */
+const recentRowCount = computed(() => (showRecents.value ? recentPicks.value.length : 0));
+
+/** Display name for a recent root — its last path segment. */
+function recentName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.at(-1) ?? path;
+}
+
+/** Jump to a recent root; a root that vanished since last use is dropped
+ *  instead of flipping the whole dialog into degraded mode. */
+async function pickRecent(path: string): Promise<void> {
+  await navigate(path);
+  if (browseFailed.value) {
+    browseFailed.value = false;
+    recentRoots.value = recentRoots.value.filter((p) => p !== path);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Roving keyboard navigation (SearchSessionsDialog pattern): ↑/↓ move a
+// highlight across whichever .folder-row set is visible, Enter opens the
+// highlighted row, Backspace on the empty box goes up.
+// ---------------------------------------------------------------------------
+const selectedIndex = ref(0);
+const listEl = ref<HTMLElement | null>(null);
+
+/** Flat action list mirroring the visible rows in DOM order, so one index
+ *  addresses candidates / search hits / quick picks / subfolders alike. */
+const navActions = computed<(() => void)[]>(() => {
+  if (loading.value || browseFailed.value) return [];
+  // Path mode (not yet valid): only the not-found candidate list is actionable.
+  if (isPathMode.value && pathState.value !== 'valid') {
+    if (pathState.value !== 'not-found') return [];
+    return pathCandidates.value.map((c) => () => pickCandidate(c.name));
+  }
+  // Fuzzy-search mode: hits navigate on open.
+  if (isSearching.value && !isPathMode.value) {
+    return searchResults.value.map((hit) => () => void navigate(hit.path));
+  }
+  // Browse mode: quick picks (when rendered) sit above the subfolders.
+  const acts: (() => void)[] = [];
+  if (showRecents.value) {
+    for (const p of recentPicks.value) acts.push(() => void pickRecent(p));
+  }
+  for (const entry of entries.value) acts.push(() => openEntry(entry));
+  return acts;
+});
+
+// A new row set always restarts the highlight at the top.
+watch(navActions, () => {
+  selectedIndex.value = 0;
+});
+watch(filter, () => {
+  selectedIndex.value = 0;
+});
+
+function clampIndex(i: number): number {
+  const len = navActions.value.length;
+  if (len === 0) return 0;
+  return Math.max(0, Math.min(len - 1, i));
+}
+
+async function scrollSelectedIntoView(): Promise<void> {
+  await nextTick();
+  const el = listEl.value?.querySelector<HTMLElement>('[aria-selected="true"]');
+  el?.scrollIntoView({ block: 'nearest' });
+}
+
+function move(delta: number): void {
+  selectedIndex.value = clampIndex(selectedIndex.value + delta);
+  void scrollSelectedIntoView();
+}
+
+function openSelectedRow(): boolean {
+  const act = navActions.value[selectedIndex.value];
+  if (!act) return false;
+  act();
+  return true;
+}
+
 const filterPlaceholder = computed(() =>
   browseFailed.value ? t('workspace.degradedPlaceholder') : t('workspace.searchPlaceholder'),
 );
@@ -271,19 +389,36 @@ function handleFilterKeydown(event: KeyboardEvent): void {
     else dismiss();
     return;
   }
-  if (event.key !== 'Enter') return;
-  const text = filter.value.trim();
-  if (!isWorkspacePathInput(text)) return; // fuzzy search: Enter keeps doing nothing
-  event.preventDefault();
-  if (browseFailed.value) {
-    const { target } = parseWorkspacePathInput(text, homePath.value);
-    if (target) emit('add', target);
+  if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+    event.preventDefault();
+    move(event.key === 'ArrowDown' ? 1 : -1);
     return;
   }
-  if (pathState.value === 'valid') openThisFolder();
-  else if (pathState.value === 'not-found' && pathCandidates.value[0]) {
-    pickCandidate(pathCandidates.value[0].name);
+  if (event.key === 'Backspace' && filter.value === '' && !browseFailed.value && parentPath.value) {
+    // Empty box: Backspace steps out to the parent folder.
+    event.preventDefault();
+    goUp();
+    return;
   }
+  if (event.key !== 'Enter') return;
+  const text = filter.value.trim();
+  if (isWorkspacePathInput(text)) {
+    event.preventDefault();
+    if (browseFailed.value) {
+      const { target } = parseWorkspacePathInput(text, homePath.value);
+      if (target) emit('add', target);
+      return;
+    }
+    if (pathState.value === 'valid') openThisFolder();
+    else if (pathState.value === 'not-found') {
+      // Enter accepts the highlighted candidate (the first one by default).
+      const c = pathCandidates.value[selectedIndex.value] ?? pathCandidates.value[0];
+      if (c) pickCandidate(c.name);
+    }
+    return;
+  }
+  // Fuzzy-search / browse modes: Enter opens the highlighted row.
+  openSelectedRow();
 }
 
 /** Split the current absolute path into clickable breadcrumb segments. */
@@ -328,6 +463,10 @@ async function navigate(path?: string): Promise<void> {
     browseFailed.value = true;
   } finally {
     loading.value = false;
+    // The clicked row/breadcrumb leaves the DOM on re-render, which would drop
+    // focus back to the panel — hand it back to the box so ↑/↓ keep working.
+    await nextTick();
+    filterEl.value?.focus();
   }
 }
 
@@ -350,9 +489,11 @@ function openThisFolder(): void {
 onMounted(async () => {
   loading.value = true;
   try {
-    // $HOME up-front: needed for "~" expansion and as the browse fallback.
+    // $HOME up-front: needed for "~" expansion, as the browse fallback, and as
+    // the anchor for the recent-folder quick picks.
     const home = await props.getFsHome().catch(() => ({ home: '', recentRoots: [] as string[] }));
     if (home.home) homePath.value = home.home;
+    recentRoots.value = home.recentRoots;
     // Default to the path kimi-web is working in; fall back to $HOME.
     if (props.defaultPath) {
       await navigate(props.defaultPath);
@@ -367,6 +508,10 @@ onMounted(async () => {
     browseFailed.value = true;
   } finally {
     loading.value = false;
+    // Dialog's initial focus ran while the box was still hidden (loading), so
+    // it landed on the panel — move it into the box now that it exists.
+    await nextTick();
+    filterEl.value?.focus();
   }
 });
 
@@ -429,8 +574,14 @@ onUnmounted(() => {
       </div>
 
       <!-- Folder list. Fixed height → the dialog never resizes while searching. -->
-      <div v-if="!browseFailed" class="folder-list">
-        <div v-if="loading" class="fl-loading">{{ t('workspace.browsing') }}</div>
+      <div v-if="!browseFailed" ref="listEl" class="folder-list" role="listbox">
+        <!-- Loading: breathing skeleton folder rows instead of a bare label. -->
+        <div v-if="loading" class="fl-skeleton" aria-hidden="true">
+          <div v-for="(w, i) in SKELETON_WIDTHS" :key="i" class="skel-row">
+            <Skeleton width="var(--p-ic-sm)" height="var(--p-ic-sm)" />
+            <Skeleton :width="w" height="10px" />
+          </div>
+        </div>
 
         <!-- Path mode: validation states. A valid path live-follows, so it falls
              through to the browse rows below. -->
@@ -439,10 +590,14 @@ onUnmounted(() => {
           <template v-else-if="pathState === 'not-found'">
             <div v-if="pathCandidates.length > 0" class="fl-note">{{ t('workspace.pathPickHint') }}</div>
             <button
-              v-for="c in pathCandidates"
+              v-for="(c, i) in pathCandidates"
               :key="c.path"
               class="folder-row"
+              :class="{ on: selectedIndex === i }"
+              role="option"
+              :aria-selected="selectedIndex === i"
               @click="pickCandidate(c.name)"
+              @mousemove="selectedIndex = i"
             >
               <Icon class="dir-icon" name="folder-closed" size="sm" />
               <span class="folder-name">{{ c.name }}</span>
@@ -459,10 +614,14 @@ onUnmounted(() => {
         <!-- Search mode: recursive fuzzy hits (relative paths) -->
         <template v-else-if="isSearching && !isPathMode">
           <button
-            v-for="hit in searchResults"
+            v-for="(hit, i) in searchResults"
             :key="hit.path"
             class="folder-row"
+            :class="{ on: selectedIndex === i }"
+            role="option"
+            :aria-selected="selectedIndex === i"
             @click="navigate(hit.path)"
+            @mousemove="selectedIndex = i"
           >
             <Icon class="dir-icon" name="folder-closed" size="sm" />
             <span class="folder-name search-rel">{{ hit.rel }}</span>
@@ -471,18 +630,40 @@ onUnmounted(() => {
           <div v-else-if="searching && searchResults.length === 0" class="fl-loading">{{ t('workspace.searching') }}</div>
         </template>
 
-        <!-- Browse mode: the current folder's subfolders -->
+        <!-- Browse mode: recent-folder quick picks (at $HOME / empty folder),
+             then the current folder's subfolders. -->
         <template v-else>
+          <template v-if="showRecents">
+            <div class="fl-note recent-label">{{ t('workspace.recentLabel') }}</div>
+            <button
+              v-for="(p, i) in recentPicks"
+              :key="'recent:' + p"
+              class="folder-row"
+              :class="{ on: selectedIndex === i }"
+              role="option"
+              :aria-selected="selectedIndex === i"
+              @click="pickRecent(p)"
+              @mousemove="selectedIndex = i"
+            >
+              <Icon class="dir-icon" name="folder-closed" size="sm" />
+              <span class="folder-name">{{ recentName(p) }}</span>
+              <span class="recent-path">{{ p }}</span>
+            </button>
+          </template>
           <button
-            v-for="entry in entries"
+            v-for="(entry, i) in entries"
             :key="entry.path"
             class="folder-row"
+            :class="{ on: selectedIndex === recentRowCount + i }"
+            role="option"
+            :aria-selected="selectedIndex === recentRowCount + i"
             @click="openEntry(entry)"
+            @mousemove="selectedIndex = recentRowCount + i"
           >
             <Icon class="dir-icon" name="folder-closed" size="sm" />
             <span class="folder-name">{{ entry.name }}</span>
           </button>
-          <div v-if="entries.length === 0" class="fl-empty">{{ t('workspace.noSubfolders') }}</div>
+          <div v-if="entries.length === 0 && !showRecents" class="fl-empty">{{ t('workspace.noSubfolders') }}</div>
         </template>
       </div>
 
@@ -609,10 +790,21 @@ onUnmounted(() => {
   text-align: left;
   padding: var(--space-1) var(--space-4);
   border-radius: var(--radius-md);
+  transition: background-color var(--duration-fast) var(--ease-out);
 }
-.folder-row:hover { background: var(--color-surface-sunken); }
-.dir-icon { flex: none; width: var(--p-ic-sm); height: var(--p-ic-sm); color: var(--color-text-muted); }
-.folder-row:hover .dir-icon { color: var(--color-accent); }
+/* `.on` is the roving keyboard highlight — it mirrors :hover so mouse and
+   keyboard always land on the same affordance. */
+.folder-row:hover,
+.folder-row.on { background: var(--color-surface-sunken); }
+.dir-icon {
+  flex: none;
+  width: var(--p-ic-sm);
+  height: var(--p-ic-sm);
+  color: var(--color-text-muted);
+  transition: color var(--duration-fast) var(--ease-out);
+}
+.folder-row:hover .dir-icon,
+.folder-row.on .dir-icon { color: var(--color-accent); }
 .folder-name {
   flex: 1;
   min-width: 0;
@@ -621,6 +813,28 @@ onUnmounted(() => {
   white-space: nowrap;
   color: var(--color-text);
 }
+
+/* Recent-folder quick picks: full path trails the name, muted + truncated. */
+.recent-label { padding-top: var(--space-1); }
+.recent-path {
+  flex: none;
+  max-width: 55%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: var(--text-sm);
+  color: var(--color-text-muted);
+}
+
+/* Loading skeleton: folder-row-shaped breathing placeholders. */
+.fl-skeleton { padding: var(--space-1) 0; }
+.skel-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+  padding: var(--space-1) var(--space-4);
+}
+.skel-row :deep(.ui-skeleton:first-child) { flex: none; }
 
 /* Degraded mode (daemon can't browse): compact hint under the input box. */
 .degraded-hint {
