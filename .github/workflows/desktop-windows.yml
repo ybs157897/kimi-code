@@ -1,0 +1,101 @@
+name: Desktop Windows Build
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Git tag to publish a GitHub Release for (must already exist — create it in GitHub first). Leave empty to skip the release upload.'
+        required: false
+        type: string
+        default: ''
+      retention_days:
+        description: 'Artifact retention in days'
+        required: false
+        type: number
+        default: 30
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    name: Windows x64
+    runs-on: windows-2025-vs2026
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Setup Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: apps/kimi-desktop/go.mod
+
+      - name: Build web frontend
+        # Builds @moonshot-ai/kimi-web and copies the bundle into frontend/dist.
+        run: pnpm --filter @moonshot-ai/kimi-desktop run build:frontend
+
+      - name: Build sidecar engine
+        # Cross-platform script; produces internal/sidecar/runtime/kimi-desktop-engine.exe here.
+        run: pnpm --filter @moonshot-ai/kimi-desktop run build:sidecar
+
+      - name: Bundle default experts
+        # Generates the experts.tar.gz that the packaged build embeds via
+        # go:embed (internal/appdata/experts.tar.gz).
+        run: node apps/kimi-desktop/scripts/bundle-experts.mjs
+
+      - name: Install Wails CLI
+        shell: bash
+        run: |
+          go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install NSIS
+        # `wails build -nsis` needs makensis on PATH (shimmed by chocolatey).
+        run: choco install nsis -y --no-progress
+
+      - name: Build Windows installer
+        # wails.json's frontend:build re-runs the web build (idempotent);
+        # bindings are skipped because the web app owns a typed manual bridge.
+        working-directory: apps/kimi-desktop
+        run: wails build -tags packaged -skipbindings -nsis
+
+      - name: Package portable zip
+        working-directory: apps/kimi-desktop
+        run: node scripts/package-windows.mjs
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: kimi-desktop-windows-x64
+          retention-days: ${{ inputs.retention_days }}
+          path: |
+            apps/kimi-desktop/build/bin/Kimi-Desktop-Windows-x64.zip
+            apps/kimi-desktop/build/bin/*-installer.exe
+            apps/kimi-desktop/build/bin/Kimi Code.exe
+          if-no-files-found: ignore
+
+      # Release upload: the `tag` input must name an already-existing tag.
+      # action-gh-release does not create tags, and a release against a
+      # missing tag fails — create the tag in GitHub first, then re-run the
+      # workflow with that tag name.
+      - name: Publish GitHub release
+        if: inputs.tag != ''
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag }}
+          files: |
+            apps/kimi-desktop/build/bin/Kimi-Desktop-Windows-x64.zip
+            apps/kimi-desktop/build/bin/*-installer.exe
