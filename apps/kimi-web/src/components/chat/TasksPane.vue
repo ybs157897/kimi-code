@@ -306,6 +306,10 @@ async function copyTaskOutput(task: TaskItem): Promise<void> {
 .tp-copy.copied {
   color: var(--color-success);
   border-color: color-mix(in srgb, var(--color-success) 30%, var(--line));
+  /* The label swaps to 已复制; the shared kimi-check-in scale-pop makes the
+     success read visibly (same idiom as FilePreview's .fp-check). */
+  transform-origin: center;
+  animation: kimi-check-in var(--duration-slow) var(--ease-out);
 }
 
 .tp-pre {

@@ -444,7 +444,12 @@ function parseCsvLine(line: string): string[] {
   return cells;
 }
 
-const csvRows = computed<string[][]>(() => lines.value.slice(0, 200).map(parseCsvLine));
+// The table view caps at this many rows; `csvTruncated` drives the muted
+// note below the table so the cap is never silent.
+const CSV_ROW_CAP = 200;
+
+const csvRows = computed<string[][]>(() => lines.value.slice(0, CSV_ROW_CAP).map(parseCsvLine));
+const csvTruncated = computed<boolean>(() => lines.value.length > CSV_ROW_CAP);
 
 const languageKey = computed(() => {
   const f = props.file;
@@ -725,6 +730,7 @@ function truncatePath(path: string, maxLen = 55): string {
               </tr>
             </tbody>
           </table>
+          <p v-if="csvTruncated" class="fp-csv-note">{{ t('filePreview.csvTruncated', { count: CSV_ROW_CAP }) }}</p>
         </div>
 
         <!-- Body: Image (base64) -->
@@ -1086,6 +1092,19 @@ function truncatePath(path: string, maxLen = 55): string {
   border-right: 1px solid var(--line2);
   border-bottom: 1px solid var(--line2);
   white-space: pre;
+}
+
+/* Rows beyond CSV_ROW_CAP are dropped; the muted note below the table says
+   so. sticky-left mirrors the row-number column, so the note stays readable
+   even when a wide table is scrolled sideways. */
+.fp-csv-note {
+  position: sticky;
+  left: 0;
+  margin: 0;
+  padding: 8px 12px 10px;
+  font-family: var(--sans);
+  font-size: max(9px, calc(var(--ui-font-size) - 3.5px));
+  color: var(--muted);
 }
 
 /* ---- Image ---- */

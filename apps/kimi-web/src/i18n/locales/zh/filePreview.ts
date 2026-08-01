@@ -26,6 +26,7 @@ export default {
   unknownType: '未知类型',
   copyCode: '复制代码',
   enlargeImage: '放大图片',
+  csvTruncated: '已截断 · 仅显示前 {count} 行',
   errors: {
     emptyPath: '文件路径为空',
     unsupportedPath: '不支持预览 URL 或远程路径',

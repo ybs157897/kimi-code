@@ -26,6 +26,7 @@ export default {
   unknownType: 'unknown type',
   copyCode: 'Copy code',
   enlargeImage: 'Enlarge image',
+  csvTruncated: 'Truncated · showing first {count} rows',
   errors: {
     emptyPath: 'File path is empty',
     unsupportedPath: 'URLs and remote paths cannot be previewed',
