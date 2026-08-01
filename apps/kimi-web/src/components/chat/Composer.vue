@@ -114,9 +114,8 @@ const emit = defineEmits<{
   togglePlan: [];
   toggleSwarm: [];
   toggleGoal: [];
-  selectExpertTeam: [pluginId: string];
-  clearExpertTeam: [];
   refreshExpertTeams: [];
+  openExpertPicker: [];
   openBtw: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
@@ -727,24 +726,25 @@ const goalCanResume = computed(() => goalStatus.value === 'paused' || goalStatus
 // reported at least one team (or one is still active after its package left).
 const expertOn = computed(() => props.expertTeamStatus !== null);
 const showExpertTeams = computed(() => props.expertTeams.length > 0 || expertOn.value);
-function onExpertTeamRow(pluginId: string): void {
-  if (props.expertTeamStatus?.pluginId === pluginId) {
-    emit('clearExpertTeam');
-    return;
-  }
-  emit('selectExpertTeam', pluginId);
+function openExpertPicker(): void {
+  // Re-scan before opening the card dialog — packages can appear while the
+  // session is open, and a failed first load leaves the catalog empty.
+  emit('refreshExpertTeams');
+  emit('openExpertPicker');
 }
 
 // Modes selector (plan / goal / swarm) — the popover that replaces the bare
 // "plan" pill. Plan/Swarm are real client toggles; goal reflects agent-driven
-// state and focuses its card when active.
+// state and focuses its card when active. Expert teams live in their own
+// picker dialog beside this menu.
 const modesOpen = ref(false);
 const modesRef = ref<HTMLElement | null>(null);
 const modesMenuRef = ref<HTMLElement | null>(null);
 // The menu is position:fixed (so no composer stacking context can paint over
 // it); these coords anchor it just above the pill, computed on open.
 const modesMenuStyle = ref<Record<string, string>>({});
-const anyModeActive = computed(() => planOn.value || swarmOn.value || goalArmed.value || expertOn.value);
+// Expert teams have their own pill; Modes only reflects plan / swarm / goal.
+const anyModeActive = computed(() => planOn.value || swarmOn.value || goalArmed.value);
 function closeModes(): void {
   modesOpen.value = false;
   document.removeEventListener('mousedown', onModesDocClick);
@@ -762,9 +762,6 @@ function toggleModes(): void {
   // Keep the toolbar menus mutually exclusive so they never overlap.
   closeDropdown();
   closePermDropdown();
-  // Re-scan the catalog when opening — packages can appear while the session
-  // is open, and a failed first load (backend still settling) leaves it empty.
-  emit('refreshExpertTeams');
   const r = modesRef.value?.getBoundingClientRect();
   if (r) {
     modesMenuStyle.value = {
@@ -1070,7 +1067,6 @@ function selectModel(modelId: string): void {
               <span v-if="planOn" class="mode-tag">{{ t('status.planLabel') }}</span>
               <span v-if="swarmOn" class="mode-tag">{{ t('status.swarmLabel') }}</span>
               <span v-if="goalArmed" class="mode-tag">{{ t('status.goalLabel') }}</span>
-              <span v-if="expertOn" class="mode-tag">{{ props.expertTeamStatus?.displayName }}</span>
             </button>
 
             <div v-if="modesOpen" ref="modesMenuRef" class="modes-menu" :style="modesMenuInlineStyle" role="menu">
@@ -1139,49 +1135,22 @@ function selectModel(modelId: string): void {
                   </Button>
                 </div>
               </div>
-              <!-- Expert teams — one exclusive server-owned mode per session. -->
-              <template v-if="showExpertTeams">
-                <div class="modes-menu-divider" role="separator" />
-                <div class="modes-menu-heading">{{ t('status.expertTeamsLabel') }}</div>
-                <button
-                  v-for="team in props.expertTeams"
-                  :key="team.pluginId"
-                  type="button"
-                  class="mode-row"
-                  :class="{ on: props.expertTeamStatus?.pluginId === team.pluginId }"
-                  role="menuitem"
-                  @click="onExpertTeamRow(team.pluginId)"
-                >
-                  <span class="mode-row-icon"><Icon name="team" size="sm" /></span>
-                  <span class="mode-row-info">
-                    <span class="mode-row-name">{{ team.displayName }}</span>
-                    <span class="mode-row-desc">{{
-                      team.description ?? t('status.expertTeamMembers', { count: team.memberAgentNames.length })
-                    }}</span>
-                  </span>
-                  <span
-                    class="mode-switch"
-                    :class="{ on: props.expertTeamStatus?.pluginId === team.pluginId }"
-                  ><span class="mode-knob" /></span>
-                </button>
-                <!-- A still-active team whose package disappeared from the catalog. -->
-                <button
-                  v-if="expertOn && !props.expertTeams.some((team) => team.pluginId === props.expertTeamStatus?.pluginId)"
-                  type="button"
-                  class="mode-row on"
-                  role="menuitem"
-                  @click="emit('clearExpertTeam')"
-                >
-                  <span class="mode-row-icon"><Icon name="team" size="sm" /></span>
-                  <span class="mode-row-info">
-                    <span class="mode-row-name">{{ props.expertTeamStatus?.displayName }}</span>
-                    <span class="mode-row-desc">{{ t('status.expertTeamUnavailable') }}</span>
-                  </span>
-                  <span class="mode-switch on"><span class="mode-knob" /></span>
-                </button>
-              </template>
             </div>
           </div>
+
+          <!-- Expert-team picker entry — dedicated pill; teams are chosen in
+               ExpertTeamPicker, not inside the Modes menu. -->
+          <button
+            v-if="showExpertTeams"
+            type="button"
+            class="expert-pill"
+            :class="{ on: expertOn }"
+            @click.stop="openExpertPicker"
+          >
+            <Icon name="team" size="sm" />
+            <span v-if="expertOn" class="expert-pill-name">{{ props.expertTeamStatus?.displayName }}</span>
+            <span v-else class="expert-pill-name">{{ t('status.expertTeamsLabel') }}</span>
+          </button>
 
         </div>
 
@@ -2084,6 +2053,33 @@ function selectModel(modelId: string): void {
 }
 .mode-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-accent); flex: none; }
 
+/* Expert-team picker entry pill — mirrors the mode-pill but keeps a team icon
+   so it reads as a distinct, dedicated entry point. */
+.expert-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border: none;
+  background: none;
+  border-radius: 6px;
+  font-size: var(--ui-font-size);
+  font-family: var(--font-ui);
+  font-weight: var(--weight-medium);
+  color: var(--color-text);
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.1s, color 0.15s;
+}
+.expert-pill:hover { background: var(--color-surface-sunken); }
+.expert-pill.on { background: var(--color-accent-soft); color: var(--color-accent-hover); }
+.expert-pill-name {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .modes-menu {
   position: fixed;
   z-index: var(--z-dropdown);
@@ -2098,18 +2094,6 @@ function selectModel(modelId: string): void {
   display: flex;
   flex-direction: column;
   gap: 1px;
-}
-.modes-menu-divider {
-  height: 1px;
-  background: var(--line);
-  margin: 3px 0;
-}
-.modes-menu-heading {
-  padding: 4px 7px 2px;
-  font-size: var(--text-xs);
-  color: var(--muted);
-  text-transform: uppercase;
-  font-weight: var(--weight-semibold);
 }
 .mode-row {
   display: grid;

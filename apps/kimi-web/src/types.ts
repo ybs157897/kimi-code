@@ -128,6 +128,8 @@ export interface AgentMember {
   /** The subagent's concatenated live output (assistant deltas) — grows in the
    *  detail panel like a thinking block. */
   text?: string;
+  /** Live thinking stream (`thinking.delta`) for models that reason before text. */
+  thinking?: string;
   suspendedReason?: string;
   swarmIndex?: number;
 }

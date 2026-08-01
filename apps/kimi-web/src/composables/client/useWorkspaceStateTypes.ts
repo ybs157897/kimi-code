@@ -4,6 +4,7 @@
 
 import type { ComputedRef, Ref } from 'vue';
 import type {
+  AppExpertTeam,
   AppMessage,
   AppSession,
   AppWorkspace,
@@ -82,7 +83,15 @@ export interface UseWorkspaceStateDeps {
   saveSwarmModeToStorage: () => void;
   saveGoalModeToStorage: () => void;
   /** Staged mode toggles for the not-yet-created draft session. */
-  draftModes: { planMode: boolean; swarmMode: boolean; goalMode: boolean };
+  draftModes: {
+    planMode: boolean;
+    swarmMode: boolean;
+    goalMode: boolean;
+    /** Staged expert-team plugin id; null = standard agent. */
+    expertTeamPluginId: string | null;
+  };
+  /** Catalog cache for the empty-composer draft (no session id yet). */
+  draftExpertTeams: Ref<AppExpertTeam[]>;
   saveUnread: (changes: Record<string, boolean>) => void;
   saveActiveWorkspaceToStorage: (id: string) => void;
   saveHiddenWorkspacesToStorage: (roots: string[]) => void;

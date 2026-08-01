@@ -34,6 +34,10 @@ const apiMock = vi.hoisted(() => ({
   getMeta: vi.fn(),
   listSessions: vi.fn(),
   listWorkspaces: vi.fn(),
+  listExpertTeams: vi.fn(),
+  getExpertTeam: vi.fn(),
+  activateExpertTeam: vi.fn(),
+  deactivateExpertTeam: vi.fn(),
 }));
 
 vi.mock('../src/api', () => ({
@@ -111,6 +115,8 @@ function createState(): ExtendedState {
     messagesLoadingMoreBySession: {},
     messagesHasMoreBySession: {},
     messagesLoadMoreErrorBySession: {},
+    expertTeamsBySession: {},
+    expertTeamStatusBySession: {},
   };
 }
 
@@ -146,7 +152,13 @@ function createDeps(): UseWorkspaceStateDeps {
     savePlanModeToStorage: vi.fn(),
     saveSwarmModeToStorage: vi.fn(),
     saveGoalModeToStorage: vi.fn(),
-    draftModes: { planMode: false, swarmMode: false, goalMode: false },
+    draftModes: {
+      planMode: false,
+      swarmMode: false,
+      goalMode: false,
+      expertTeamPluginId: null,
+    },
+    draftExpertTeams: ref([]),
     saveUnread: vi.fn(),
     saveActiveWorkspaceToStorage: vi.fn(),
     saveHiddenWorkspacesToStorage: vi.fn(),
@@ -154,6 +166,7 @@ function createDeps(): UseWorkspaceStateDeps {
     basename: (path: string) => path.split('/').at(-1) ?? path,
     resetFastMoon: vi.fn(),
     initialized: ref(true),
+    connectIssue: ref(null),
     selectedDiffPath: ref(null),
     fileDiffLines: ref([]),
     fileDiffLoading: ref(false),
@@ -831,7 +844,12 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
     const deps = {
       ...skillDeps(activateSkill),
       persistSessionProfile,
-      draftModes: { planMode: true, swarmMode: true, goalMode: false },
+      draftModes: {
+        planMode: true,
+        swarmMode: true,
+        goalMode: false,
+        expertTeamPluginId: null,
+      },
     };
     const state = createState();
     state.permission = 'auto';
@@ -872,7 +890,12 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
       upsertSessionFront: vi.fn((s) => {
         state2.sessions = [s, ...state2.sessions.filter((x) => x.id !== s.id)];
       }),
-      draftModes: { planMode: true, swarmMode: false, goalMode: false },
+      draftModes: {
+        planMode: true,
+        swarmMode: false,
+        goalMode: false,
+        expertTeamPluginId: null,
+      },
     };
     const ws2 = useWorkspaceState(state2, deps2);
 
@@ -895,6 +918,117 @@ describe('useWorkspaceState — startSessionAndActivateSkill', () => {
     expect(apiMock.createSession).not.toHaveBeenCalled();
     expect(activateSkill).not.toHaveBeenCalled();
     expect(deps.pushOperationFailure).not.toHaveBeenCalled();
+  });
+});
+
+describe('useWorkspaceState — draft expert team', () => {
+  const registered = { id: 'wd_1', root: '/abs/path', name: 'A', sessionCount: 0 };
+  const newSession = { ...createSession(), id: 'sess_new', workspaceId: 'wd_1', cwd: '/abs/path' };
+  const activatedStatus = {
+    pluginId: 'code-review-team',
+    displayName: 'Code Review',
+    leadAgentName: 'lead',
+    memberAgentNames: ['member'],
+    activatedAt: '2026-01-01T00:00:00.000Z',
+    teamMembers: [],
+  };
+
+  beforeEach(() => {
+    apiMock.addWorkspace.mockReset();
+    apiMock.createSession.mockReset();
+    apiMock.activateExpertTeam.mockReset();
+    apiMock.listExpertTeams.mockReset();
+    apiMock.addWorkspace.mockResolvedValue(registered);
+    apiMock.createSession.mockResolvedValue(newSession);
+    apiMock.activateExpertTeam.mockResolvedValue(activatedStatus);
+    apiMock.listExpertTeams.mockResolvedValue([
+      {
+        pluginId: 'code-review-team',
+        displayName: 'Code Review',
+        tags: [],
+        leadAgentName: 'lead',
+        memberAgentNames: ['member'],
+        members: [],
+        quickPrompts: [],
+      },
+    ]);
+  });
+
+  it('stages activate/deactivate on the draft when no session is active', async () => {
+    const draftModes = {
+      planMode: false,
+      swarmMode: true,
+      goalMode: false,
+      expertTeamPluginId: null as string | null,
+    };
+    const state = createState();
+    state.activeSessionId = null;
+    const deps = { ...createDeps(), draftModes };
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.activateExpertTeam('code-review-team');
+
+    expect(apiMock.activateExpertTeam).not.toHaveBeenCalled();
+    expect(draftModes.expertTeamPluginId).toBe('code-review-team');
+    expect(draftModes.swarmMode).toBe(false);
+
+    await ws.deactivateExpertTeam();
+
+    expect(apiMock.deactivateExpertTeam).not.toHaveBeenCalled();
+    expect(draftModes.expertTeamPluginId).toBeNull();
+  });
+
+  it('activates a staged expert team after createDraftSession and clears the draft pick', async () => {
+    const draftModes = {
+      planMode: false,
+      swarmMode: false,
+      goalMode: false,
+      expertTeamPluginId: 'code-review-team' as string | null,
+    };
+    const activateSkill = vi.fn().mockResolvedValue(undefined);
+    const state = createState();
+    state.backend = 'v2';
+    const deps = {
+      ...createDeps(),
+      draftModes,
+      taskPoller: { loadTasksForSession: vi.fn() } as unknown as UseWorkspaceStateDeps['taskPoller'],
+      modelProvider: {
+        draftModel: ref(null),
+        skillsBySession: ref({}),
+        loadSkillsForSession: vi.fn(),
+        activateSkill,
+        resolveThinkingForPrompt: async () => undefined,
+      } as unknown as UseWorkspaceStateDeps['modelProvider'],
+      mergedWorkspaces: computed(() => [workspace('wd_1', '/abs/path', 'A')]),
+    };
+    const ws = useWorkspaceState(state, deps);
+
+    await ws.startSessionAndActivateSkill('wd_1', 'pre-changelog');
+
+    expect(apiMock.activateExpertTeam).toHaveBeenCalledWith('sess_new', 'code-review-team');
+    expect(draftModes.expertTeamPluginId).toBeNull();
+    expect(state.expertTeamStatusBySession['sess_new']).toEqual(activatedStatus);
+    expect(state.swarmModeBySession['sess_new']).toBe(false);
+  });
+
+  it('loads the catalog into draftExpertTeams when opening a workspace draft', async () => {
+    const draftExpertTeams: Ref<Array<{ pluginId: string }>> = ref([]);
+    const state = createState();
+    state.backend = 'v2';
+    state.sessions = [createSession()];
+    const deps = {
+      ...createDeps(),
+      draftExpertTeams: draftExpertTeams as UseWorkspaceStateDeps['draftExpertTeams'],
+      workspacesView: computed(() => [workspace('wd_1', '/abs/path', 'A')]),
+    };
+    const ws = useWorkspaceState(state, deps);
+
+    ws.openWorkspaceDraft('wd_1');
+    await vi.waitFor(() => {
+      expect(apiMock.listExpertTeams).toHaveBeenCalledWith('sess_1');
+    });
+    expect(draftExpertTeams.value).toHaveLength(1);
+    expect(draftExpertTeams.value[0]?.pluginId).toBe('code-review-team');
   });
 });
 
@@ -1034,7 +1168,12 @@ describe('useWorkspaceState — createGoal from an empty composer', () => {
     const state = emptyComposerState();
     const deps: UseWorkspaceStateDeps = {
       ...goalDeps(),
-      draftModes: { planMode: false, swarmMode: false, goalMode: true },
+      draftModes: {
+        planMode: false,
+        swarmMode: false,
+        goalMode: true,
+        expertTeamPluginId: null,
+      },
     };
     const ws = useWorkspaceState(state, deps);
 

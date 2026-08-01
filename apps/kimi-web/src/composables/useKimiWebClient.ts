@@ -49,6 +49,7 @@ import {
   SESSIONS_INITIAL_PAGE_SIZE,
   useWorkspaceState,
 } from './client/useWorkspaceState';
+import { draftExpertTeamStatus } from './client/useExpertTeams';
 import type { ExtendedState, PromptAttachment } from './client/kimiWebClientTypes';
 import { buildApprovalBlock, formatTime, shortenHome, toUiQuestion } from './client/viewMappers';
 import {
@@ -305,17 +306,25 @@ const rawState: ExtendedState = reactive({
 
 // ---------------------------------------------------------------------------
 // Draft mode staging (no active session yet).
-// When the user toggles plan/swarm/goal in the empty composer before the first
-// message is sent, there is no session to bind the toggle to. These staged
-// values are transferred into the new session's per-session entry when the
-// first prompt is sent (see startSessionAndSendPrompt), then cleared. Not
-// persisted — the draft is ephemeral.
+// When the user toggles plan/swarm/goal/expert-team in the empty composer
+// before the first message is sent, there is no session to bind the toggle to.
+// These staged values are transferred into the new session's per-session entry
+// when the first prompt is sent (see startSessionAndSendPrompt), then cleared.
+// Not persisted — the draft is ephemeral.
 // ---------------------------------------------------------------------------
-const draftModes = reactive<{ planMode: boolean; swarmMode: boolean; goalMode: boolean }>({
+const draftModes = reactive<{
+  planMode: boolean;
+  swarmMode: boolean;
+  goalMode: boolean;
+  expertTeamPluginId: string | null;
+}>({
   planMode: false,
   swarmMode: false,
   goalMode: false,
+  expertTeamPluginId: null,
 });
+/** Catalog shown in the empty composer; borrowed from any known session. */
+const draftExpertTeams = ref<AppExpertTeam[]>([]);
 
 // ---------------------------------------------------------------------------
 // rawState.sessions — single mutation funnel.
@@ -1747,14 +1756,18 @@ const goalMode = computed<boolean>(() => {
   return sid ? (rawState.goalModeBySession[sid] ?? false) : draftModes.goalMode;
 });
 
-// Expert teams reflect the ACTIVE session; server-owned, so no draft state.
+// Expert teams reflect the ACTIVE session, or the staged draft pick/catalog
+// when the empty composer has no session yet.
 const expertTeams = computed<AppExpertTeam[]>(() => {
   const sid = rawState.activeSessionId;
-  return sid ? (rawState.expertTeamsBySession[sid] ?? []) : [];
+  return sid ? (rawState.expertTeamsBySession[sid] ?? []) : draftExpertTeams.value;
 });
 const expertTeamStatus = computed<AppExpertTeamStatus | null>(() => {
   const sid = rawState.activeSessionId;
-  return sid ? (rawState.expertTeamStatusBySession[sid] ?? null) : null;
+  if (sid) return rawState.expertTeamStatusBySession[sid] ?? null;
+  const pluginId = draftModes.expertTeamPluginId;
+  if (!pluginId) return null;
+  return draftExpertTeamStatus(pluginId, draftExpertTeams.value);
 });
 
 const activationBadges = computed<ActivationBadges>(() => {
@@ -2296,6 +2309,7 @@ const workspaceState = useWorkspaceState(rawState, {
   saveSwarmModeToStorage,
   saveGoalModeToStorage,
   draftModes,
+  draftExpertTeams,
   saveUnread,
   saveActiveWorkspaceToStorage,
   saveHiddenWorkspacesToStorage,

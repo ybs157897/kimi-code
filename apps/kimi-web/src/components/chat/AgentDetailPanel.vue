@@ -28,6 +28,24 @@ const progressLines = computed(() =>
 // The subagent's concatenated live output (assistant deltas). Trim trailing
 // whitespace for display; grows in real time as deltas stream in.
 const liveText = computed(() => (props.member.text ?? '').trimEnd());
+const liveThinking = computed(() => (props.member.thinking ?? '').trimEnd());
+
+const hasBody = computed(
+  () =>
+    Boolean(props.member.prompt) ||
+    Boolean(props.member.subagentType) ||
+    Boolean(props.member.suspendedReason) ||
+    liveThinking.value.length > 0 ||
+    liveText.value.length > 0 ||
+    progressLines.value.length > 0 ||
+    Boolean(props.member.summary),
+);
+
+const showWaiting = computed(
+  () =>
+    !hasBody.value &&
+    (props.member.phase === 'queued' || props.member.phase === 'working'),
+);
 
 interface ProgressGroup {
   key: string;
@@ -80,19 +98,19 @@ function foldCount(group: ProgressGroup): number {
 
 function phaseLabel(phase: AgentMember['phase']): string {
   switch (phase) {
-    case 'queued': return 'Queued';
-    case 'working': return 'Working';
-    case 'suspended': return 'Suspended';
-    case 'completed': return 'Completed';
-    case 'failed': return 'Failed';
+    case 'queued': return t('tasks.phaseQueued');
+    case 'working': return t('tasks.phaseWorking');
+    case 'suspended': return t('tasks.phaseSuspended');
+    case 'completed': return t('tasks.phaseCompleted');
+    case 'failed': return t('tasks.phaseFailed');
   }
 }
 
 const bodyEl = ref<HTMLElement | null>(null);
 watch(
-  // Follow the bottom as either the tool progress or the live text grows, as
-  // long as the user hasn't scrolled up.
-  () => progressLines.value.length + liveText.value.length,
+  // Follow the bottom as thinking, tool progress, or live text grows, as long
+  // as the user hasn't scrolled up.
+  () => progressLines.value.length + liveText.value.length + liveThinking.value.length,
   () => {
     const el = bodyEl.value;
     if (!el) return;
@@ -120,15 +138,19 @@ watch(
       <div v-if="member.subagentType" class="ap-type">{{ member.subagentType }}</div>
       <div v-if="member.suspendedReason" class="ap-reason">{{ member.suspendedReason }}</div>
       <div v-if="member.prompt" class="ap-field">
-        <span class="ap-field-label">Task</span>
+        <span class="ap-field-label">{{ t('tasks.detailTask') }}</span>
         <div class="ap-field-body">{{ member.prompt }}</div>
       </div>
+      <div v-if="liveThinking" class="ap-field">
+        <span class="ap-field-label">{{ t('tasks.detailThinking') }}</span>
+        <div class="ap-field-body ap-live ap-thinking">{{ liveThinking }}</div>
+      </div>
       <div v-if="liveText" class="ap-field">
-        <span class="ap-field-label">Output</span>
+        <span class="ap-field-label">{{ t('tasks.detailOutput') }}</span>
         <div class="ap-field-body ap-live">{{ liveText }}</div>
       </div>
       <div v-if="progressGroups.length > 0" class="ap-field">
-        <span class="ap-field-label">Progress</span>
+        <span class="ap-field-label">{{ t('tasks.detailProgress') }}</span>
         <div class="ap-field-body ap-progress">
           <div v-for="group in progressGroups" :key="group.key" class="ap-group">
             <div v-if="group.call" class="ap-call">
@@ -151,9 +173,10 @@ watch(
         </div>
       </div>
       <div v-if="member.summary" class="ap-field">
-        <span class="ap-field-label">Result</span>
+        <span class="ap-field-label">{{ t('tasks.detailResult') }}</span>
         <div class="ap-field-body">{{ member.summary }}</div>
       </div>
+      <div v-if="showWaiting" class="ap-waiting">{{ t('tasks.detailWaiting') }}</div>
     </div>
   </div>
 </template>
@@ -198,69 +221,64 @@ watch(
 }
 .ap-field-body {
   white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  word-break: break-word;
+  color: var(--color-text);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.ap-live {
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+.ap-thinking {
+  color: var(--color-text-muted);
 }
 .ap-progress {
   display: flex;
   flex-direction: column;
-  gap: 6px;
-  font: var(--text-base)/var(--leading-relaxed) var(--font-mono);
-  color: var(--color-text);
-  min-width: 0;
-}
-.ap-live {
-  font: var(--text-base)/var(--leading-relaxed) var(--font-mono);
-  color: var(--color-text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
+  gap: 8px;
 }
 .ap-group {
-  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 .ap-call {
   display: flex;
-  align-items: baseline;
+  align-items: flex-start;
   gap: 6px;
-  min-width: 0;
-  font-weight: var(--weight-medium);
   color: var(--color-text);
-  overflow-wrap: anywhere;
-  white-space: pre-wrap;
+  font-size: var(--text-sm);
 }
 .ap-glyph {
   flex: none;
+  margin-top: 0.2em;
+  font-size: 0.65em;
   color: var(--color-accent);
-  font-size: 0.85em;
 }
 .ap-output {
-  margin: 2px 0 0 16px;
-  padding-left: 8px;
-  color: var(--color-text-muted);
-  font-size: var(--text-sm);
-  line-height: var(--leading-normal);
+  padding-left: 14px;
   border-left: 2px solid var(--color-line);
-  min-width: 0;
 }
 .ap-out-line {
-  min-width: 0;
-  overflow-wrap: anywhere;
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
   white-space: pre-wrap;
+  word-break: break-word;
 }
 .ap-fold {
-  display: inline-block;
-  margin: 2px 0;
-  padding: 0;
-  background: none;
   border: none;
+  background: none;
+  padding: 2px 0;
   color: var(--color-accent);
   font: inherit;
+  font-size: var(--text-xs);
   cursor: pointer;
 }
-.ap-fold:hover {
-  text-decoration: underline;
-}
-.ap-fold:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: 1px;
+.ap-waiting {
+  margin-top: 8px;
+  color: var(--color-text-faint);
+  font-size: var(--text-sm);
 }
 </style>

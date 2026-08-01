@@ -53,7 +53,9 @@ import type {
   WireConfig,
   WireExpertTeamDefinition,
   WireExpertTeamSnapshot,
+  WireLocalizedText,
 } from './wire';
+import { i18n } from '../../i18n';
 
 // ---------------------------------------------------------------------------
 // Session mappers
@@ -864,7 +866,33 @@ export function wireEventSeq(wire: WireEvent): number {
 // Expert teams
 // ---------------------------------------------------------------------------
 
+/** Resolve CodeBuddy-style `{ en, zh }` (or plain string) display text for the UI locale. */
+export function resolveLocalizedText(
+  text: WireLocalizedText | undefined,
+  locale: 'zh' | 'en' = uiLocaleKey(),
+): string | undefined {
+  if (text === undefined) return undefined;
+  if (typeof text === 'string') {
+    const trimmed = text.trim();
+    return trimmed.length === 0 ? undefined : trimmed;
+  }
+  const preferred = text[locale]?.trim();
+  if (preferred) return preferred;
+  const fallback = (locale === 'zh' ? text['en'] : text['zh'])?.trim();
+  if (fallback) return fallback;
+  for (const value of Object.values(text)) {
+    if (typeof value === 'string' && value.trim().length > 0) return value.trim();
+  }
+  return undefined;
+}
+
+function uiLocaleKey(): 'zh' | 'en' {
+  const locale = String(i18n.global.locale.value ?? 'en').toLowerCase();
+  return locale.startsWith('zh') ? 'zh' : 'en';
+}
+
 export function toAppExpertTeam(wire: WireExpertTeamDefinition): AppExpertTeam {
+  const locale = uiLocaleKey();
   return {
     pluginId: wire.plugin_id,
     pluginVersion: wire.plugin_version,
@@ -876,8 +904,12 @@ export function toAppExpertTeam(wire: WireExpertTeamDefinition): AppExpertTeam {
     members: (wire.members ?? []).map((member) => ({
       agent: member.agent,
       role: member.role,
-      displayName: member.display_name,
-      description: member.description,
+      displayName:
+        member.display_name ??
+        resolveLocalizedText(member.name, locale) ??
+        resolveLocalizedText(member.profession, locale),
+      description:
+        member.description ?? resolveLocalizedText(member.profession, locale),
     })),
     quickPrompts: wire.quick_prompts ?? [],
   };

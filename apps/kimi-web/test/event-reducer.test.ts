@@ -429,6 +429,32 @@ describe('reduceAppEvent taskProgress', () => {
     expect(task?.outputLines ?? []).toHaveLength(0);
   });
 
+  it('concatenates subagent thinking-kind chunks into a growing thinking block', () => {
+    const state = {
+      ...createInitialState(),
+      tasksBySession: { 's1': [makeSubagentTask('t1', 's1')] },
+    };
+    let next = state;
+    for (const chunk of ['Step ', 'one']) {
+      next = reduceAppEvent(
+        next,
+        {
+          type: 'taskProgress',
+          sessionId: 's1',
+          taskId: 't1',
+          outputChunk: chunk,
+          stream: 'stdout',
+          kind: 'thinking',
+        },
+        { sessionId: 's1', seq: 1 },
+      );
+    }
+    const task = next.tasksBySession['s1']?.[0];
+    expect(task?.thinking).toBe('Step one');
+    expect(task?.text).toBeUndefined();
+    expect(task?.outputLines ?? []).toHaveLength(0);
+  });
+
   it('preserves accumulated text across a taskCreated replacement', () => {
     const state = {
       ...createInitialState(),

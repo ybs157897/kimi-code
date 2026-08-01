@@ -59,6 +59,23 @@ describe('subagent streaming text', () => {
     });
   });
 
+  it('forwards a subagent thinking.delta as a thinking-kind taskProgress', () => {
+    const projector = createAgentProjector();
+    const events = projector.project(
+      'thinking.delta',
+      { agentId: 'sub-1', delta: 'Let me check…' },
+      's1',
+    );
+    expect(events).toContainEqual({
+      type: 'taskProgress',
+      sessionId: 's1',
+      taskId: 'sub-1',
+      outputChunk: 'Let me check…',
+      stream: 'stdout',
+      kind: 'thinking',
+    });
+  });
+
   it('drops an empty subagent assistant.delta', () => {
     const projector = createAgentProjector();
     const events = projector.project('assistant.delta', { agentId: 'sub-1', delta: '' }, 's1');

@@ -74,7 +74,12 @@ export function mergeSnapshotSubagents(roster: AppTask[], existing: AppTask[]): 
   const merged = roster.map((task) => {
     const live = existingById.get(task.id);
     if (!live) return task;
-    return { ...task, outputLines: live.outputLines, text: live.text };
+    return {
+      ...task,
+      outputLines: live.outputLines,
+      text: live.text,
+      thinking: live.thinking,
+    };
   });
   const kept = existing.filter((t) => !rosterIds.has(t.id));
   return kept.length === 0 ? merged : [...merged, ...kept];

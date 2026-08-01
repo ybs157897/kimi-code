@@ -11,6 +11,7 @@ import type { FileItem } from './MentionMenu.vue';
 import type { PromptAttachment } from '../../composables/useKimiWebClient';
 import Composer from './Composer.vue';
 import GoalStrip from './GoalStrip.vue';
+import SubagentStrip from './SubagentStrip.vue';
 import QuestionCard from './QuestionCard.vue';
 import ApprovalCard from './ApprovalCard.vue';
 import TasksPane from './TasksPane.vue';
@@ -68,9 +69,8 @@ const emit = defineEmits<{
   togglePlan: [];
   toggleSwarm: [];
   toggleGoal: [];
-  selectExpertTeam: [pluginId: string];
-  clearExpertTeam: [];
   refreshExpertTeams: [];
+  openExpertPicker: [];
   openBtw: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
@@ -218,6 +218,15 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       :force-expanded="goalExpandSignal"
       @control-goal="emit('controlGoal', $event)"
     />
+    <!-- Always-visible roster while background subagents run — the workbar
+         pill alone is easy to miss when the main agent is waiting on them.
+         Hidden while the dock panel already lists the same tasks. -->
+    <SubagentStrip
+      v-if="dockPanel !== 'subagent'"
+      :tasks="subagentTasks"
+      @open="emit('openAgent', $event)"
+      @cancel="emit('cancelTask', $event)"
+    />
     <div v-if="hasDockWork" ref="workbarRef" class="dock-workbar">
       <Pill
         v-if="bashTasks.length > 0"
@@ -298,9 +307,8 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       @toggle-plan="emit('togglePlan')"
       @toggle-swarm="emit('toggleSwarm')"
       @toggle-goal="emit('toggleGoal')"
-      @select-expert-team="emit('selectExpertTeam', $event)"
-      @clear-expert-team="emit('clearExpertTeam')"
       @refresh-expert-teams="emit('refreshExpertTeams')"
+      @open-expert-picker="emit('openExpertPicker')"
       @open-btw="emit('openBtw')"
       @create-goal="emit('createGoal', $event)"
       @control-goal="emit('controlGoal', $event)"

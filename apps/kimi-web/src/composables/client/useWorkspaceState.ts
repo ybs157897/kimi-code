@@ -107,6 +107,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     saveSwarmModeToStorage,
     saveGoalModeToStorage,
     draftModes,
+    draftExpertTeams,
     saveUnread,
     saveActiveWorkspaceToStorage,
     saveHiddenWorkspacesToStorage,
@@ -148,10 +149,12 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
 
   const {
     loadExpertTeamsForSession,
+    loadDraftExpertTeams,
     activateExpertTeam,
     deactivateExpertTeam,
+    applyDraftExpertTeam,
     refreshExpertTeams,
-  } = useExpertTeams(rawState, { pushOperationFailure });
+  } = useExpertTeams(rawState, { pushOperationFailure, draftModes, draftExpertTeams });
 
   const {
     listAllSessionsGlobal,
@@ -476,6 +479,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     selectWorkspace(workspaceId);
     clearActiveSession();
     clearFileDiff();
+    // Warm the expert-team catalog so the empty composer Modes menu can show
+    // teams before a session id exists (borrow any known session for the list).
+    void loadDraftExpertTeams();
   }
 
   /**
@@ -553,6 +559,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     draftModes.planMode = false;
     draftModes.swarmMode = false;
     draftModes.goalMode = false;
+    // Expert team is server-owned: activate on the new session after the other
+    // staged modes are written. applyDraftExpertTeam clears the draft pick.
+    await applyDraftExpertTeam(sid);
     return sid;
   }
 
@@ -1544,6 +1553,9 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       void persistSessionProfile({ swarmMode: on });
     } else {
       draftModes.swarmMode = on;
+      // Swarm and expert-team are mutually exclusive on the daemon; keep the
+      // draft staging consistent so the Modes UI never shows both as on.
+      if (on) draftModes.expertTeamPluginId = null;
     }
   }
 

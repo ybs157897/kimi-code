@@ -21,17 +21,17 @@ export const MOCK_REPLY_CLOSING =
 export const MOCK_EXPERT_TEAMS: WireExpertTeamDefinition[] = [
   {
     plugin_id: 'mock-experts',
-    display_name: 'Mock Expert Team',
-    description: 'Demo specialists for the desktop transport',
-    tags: ['demo'],
+    display_name: '演示专家团',
+    description: '桌面传输演示用的专家角色',
+    tags: ['演示'],
     lead_agent_name: 'lead',
     member_agent_names: ['researcher', 'reviewer'],
     members: [
-      { agent: 'lead', role: 'lead', display_name: 'Lead' },
-      { agent: 'researcher', role: 'member', display_name: 'Researcher' },
-      { agent: 'reviewer', role: 'member', display_name: 'Reviewer' },
+      { agent: 'lead', role: 'lead', display_name: '主理人' },
+      { agent: 'researcher', role: 'member', display_name: '研究员' },
+      { agent: 'reviewer', role: 'member', display_name: '审查员' },
     ],
-    quick_prompts: ['Review this change as a specialist team'],
+    quick_prompts: ['以专家团身份审查这次改动'],
   },
 ];
 

@@ -20,6 +20,7 @@ import SettingsDialog from './components/settings/SettingsDialog.vue';
 import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.vue';
 import ConfirmDialogHost from './components/dialogs/ConfirmDialogHost.vue';
 import StatusPanel from './components/chat/StatusPanel.vue';
+import ExpertTeamPicker from './components/chat/ExpertTeamPicker.vue';
 import WarningToasts from './components/WarningToasts.vue';
 import MobileTopBar from './components/mobile/MobileTopBar.vue';
 import MobileSwitcherSheet from './components/mobile/MobileSwitcherSheet.vue';
@@ -157,13 +158,19 @@ const statusPanelThinking = computed<ThinkingLevel>(() => {
 // First-run onboarding (language + welcome greeting). Shown until the user
 // finishes it once; re-openable from the settings popover. Native desktop
 // opens directly into the product shell and can still reopen onboarding later.
-const showOnboarding = ref(!desktopShellAvailable && !client.onboarded.value);
+// Derived from client.onboarded (localStorage) so a remount / auth gate cycle
+// cannot re-show the welcome after the user already completed it. Settings
+// "reopen" flips reopenOnboarding without clearing the persisted flag.
+const reopenOnboarding = ref(false);
+const showOnboarding = computed(
+  () => !desktopShellAvailable && (reopenOnboarding.value || !client.onboarded.value),
+);
 function completeOnboarding(): void {
   client.setOnboarded(true);
-  showOnboarding.value = false;
+  reopenOnboarding.value = false;
 }
 function openOnboarding(): void {
-  showOnboarding.value = true;
+  reopenOnboarding.value = true;
 }
 
 // iOS Safari does not shrink `dvh` for the on-screen keyboard. Instead it pans
@@ -373,6 +380,7 @@ const showProviders = ref(false);
 const showLogin = ref(false);
 const showAddWorkspace = ref(false);
 const showStatusPanel = ref(false);
+const showExpertPicker = ref(false);
 const showSettings = ref(false);
 
 type SubmitPayload = {
@@ -939,9 +947,8 @@ function openPr(url: string): void {
           @toggle-plan="client.togglePlanMode()"
           @toggle-swarm="client.toggleSwarmMode()"
           @toggle-goal="client.toggleGoalMode()"
-          @select-expert-team="client.activateExpertTeam($event)"
-          @clear-expert-team="client.deactivateExpertTeam()"
           @refresh-expert-teams="client.refreshExpertTeams()"
+          @open-expert-picker="showExpertPicker = true"
           @create-goal="client.createGoal($event)"
           @control-goal="client.controlGoal($event)"
           @refresh-git-status="client.activeSessionId.value && client.loadGitStatus(client.activeSessionId.value)"
@@ -1184,6 +1191,16 @@ function openPr(url: string): void {
       :expert-team-name="client.expertTeamStatus.value?.displayName ?? null"
       :cost-usd="client.sessionCost.value"
       @close="showStatusPanel = false"
+    />
+
+    <!-- Expert-team picker dialog — card grid for browsing and activating teams -->
+    <ExpertTeamPicker
+      v-if="showExpertPicker"
+      :expert-teams="client.expertTeams.value"
+      :expert-team-status="client.expertTeamStatus.value"
+      @select="client.activateExpertTeam($event)"
+      @clear="client.deactivateExpertTeam()"
+      @close="showExpertPicker = false"
     />
 
     <!-- Add Workspace overlay (daemon folder browser + paste-path fallback) -->

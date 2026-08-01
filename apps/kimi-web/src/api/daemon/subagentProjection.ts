@@ -89,14 +89,15 @@ export function projectSubagentProgress(
   // placeholders like "Started a step".
   if (sideChannelAgents.has(subagentId) && rawType === 'turn.step.started') return [];
 
-  // The subagent's own streamed text: forward each delta as a `text`-kind
-  // progress chunk so the reducer concatenates it into `AppTask.text`, letting
-  // the right-side detail panel show the subagent's output growing live (like
-  // a thinking block) instead of staying blank until the first tool call.
-  if (rawType === 'assistant.delta') {
+  // Streamed text / thinking: forward each delta so the reducer concatenates
+  // into `AppTask.text` / `AppTask.thinking`. Thinking-capable models (e.g.
+  // DeepSeek with Thinking Max) often emit only `thinking.delta` for a long
+  // stretch — without projecting those, the detail panel stays blank until
+  // the first tool call or assistant token.
+  if (rawType === 'assistant.delta' || rawType === 'thinking.delta') {
     const delta = stringField(payload, 'delta');
     if (!delta) return [];
-    // Ensure the subagent task exists before forwarding the text delta. A client
+    // Ensure the subagent task exists before forwarding the delta. A client
     // that subscribed from a snapshot after `subagent.spawned` already fired
     // never received the lifecycle taskCreated, and the reducer only applies
     // taskProgress to existing tasks — without this, the deltas are dropped and
@@ -115,7 +116,7 @@ export function projectSubagentProgress(
       taskId: subagentId,
       outputChunk: delta,
       stream: 'stdout',
-      kind: 'text',
+      kind: rawType === 'thinking.delta' ? 'thinking' : 'text',
     });
     return out;
   }

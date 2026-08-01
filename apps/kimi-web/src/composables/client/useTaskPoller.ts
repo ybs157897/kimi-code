@@ -173,9 +173,10 @@ export function useTaskPoller(
       const polled = outputByTaskId.get(fresh.id);
       return {
         ...fresh,
-        // Preserve any WS-driven outputLines / streamed text (future taskProgress events).
+        // Preserve any WS-driven outputLines / streamed text / thinking.
         outputLines: old?.outputLines,
         text: old?.text,
+        thinking: old?.thinking,
         outputPreview: polled?.preview ?? old?.outputPreview,
         outputBytes: polled?.bytes ?? old?.outputBytes,
       };

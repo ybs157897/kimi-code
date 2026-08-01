@@ -648,6 +648,7 @@ export function reduceAppEvent(
           ...event.task,
           outputLines: previous.outputLines,
           text: previous.text,
+          thinking: previous.thinking,
           // A post-refresh lifecycle event re-projects the task with skeleton
           // metadata; don't let its placeholder clobber the roster-seeded
           // description.
@@ -673,11 +674,13 @@ export function reduceAppEvent(
       const list = next.tasksBySession[sid] ?? [];
       next.tasksBySession[sid] = list.map((t) => {
         if (t.id !== event.taskId) return t;
-        // Subagent streamed output (assistant.delta) concatenates into a single
-        // growing text block rather than fragmenting each delta into its own
-        // line — the detail panel renders it like a thinking block.
+        // Subagent streamed output / thinking concatenates into growing text
+        // blocks rather than fragmenting each delta into its own line.
         if (t.kind === 'subagent' && event.kind === 'text') {
           return { ...t, text: (t.text ?? '') + event.outputChunk };
+        }
+        if (t.kind === 'subagent' && event.kind === 'thinking') {
+          return { ...t, thinking: (t.thinking ?? '') + event.outputChunk };
         }
         const outputLines = t.outputLines ?? [];
         if (outputLines.at(-1) === event.outputChunk) return t;

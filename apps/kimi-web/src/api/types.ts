@@ -323,6 +323,10 @@ export interface AppTask {
    *  the event reducer from `taskProgress` chunks of kind `text`. Grows in the
    *  right-side detail panel like a thinking block. */
   text?: string;
+  /** The subagent's concatenated thinking stream (`thinking.delta`), accumulated
+   *  from `taskProgress` chunks of kind `thinking`. Thinking-capable models
+   *  often emit only this for a long time before any assistant text. */
+  thinking?: string;
   subagentPhase?: AppSubagentPhase;
   subagentType?: string;
   parentToolCallId?: string;
@@ -457,8 +461,9 @@ export type AppEvent =
        * `line` (default) appends a new progress line (tool-call / tool-progress).
        * `text` concatenates onto the subagent's growing streamed output
        * (`AppTask.text`), shown live in the detail panel like a thinking block.
+       * `thinking` concatenates onto `AppTask.thinking` from `thinking.delta`.
        */
-      kind?: 'line' | 'text';
+      kind?: 'line' | 'text' | 'thinking';
     }
   | { type: 'taskCompleted'; sessionId: string; taskId: string; status: AppTaskStatus; outputPreview?: string; outputBytes?: number }
   // Prompt-level lifecycle (distinct from turn-level): a prompt that never
