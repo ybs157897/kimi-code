@@ -1,3 +1,6 @@
+<!-- apps/kimi-web/src/components/Terminal.vue -->
+<!-- Single xterm pane. The starting/error overlays cross-fade instead of
+     hard-mounting, and the toolbar dot pulses once when the shell connects. -->
 <script setup lang="ts">
 import '@xterm/xterm/css/xterm.css';
 
@@ -8,6 +11,7 @@ import { useI18n } from 'vue-i18n';
 import { useIsDark } from '../composables/useIsDark';
 import { useTerminal, type TerminalStartMode } from '../composables/useTerminal';
 import Button from './ui/Button.vue';
+import Spinner from './ui/Spinner.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -249,8 +253,18 @@ defineExpose({ fitAndResize, focus, restart, close: () => terminalClient.close()
     </div>
     <div class="terminal-surface">
       <div ref="hostRef" class="terminal-host"></div>
-      <div v-if="terminalClient.loading.value" class="terminal-overlay">{{ t('terminal.starting') }}</div>
-      <div v-else-if="terminalClient.error.value" class="terminal-overlay error">{{ terminalClient.error.value }}</div>
+      <!-- The overlays cross-fade over the live xterm surface. loading and
+           error are mutually exclusive (error is only set once loading
+           clears), so each gets its own opacity Transition. -->
+      <Transition name="terminal-fade">
+        <div v-if="terminalClient.loading.value" class="terminal-overlay">
+          <Spinner size="sm" :label="t('terminal.starting')" />
+          {{ t('terminal.starting') }}
+        </div>
+      </Transition>
+      <Transition name="terminal-fade">
+        <div v-if="terminalClient.error.value" class="terminal-overlay error">{{ terminalClient.error.value }}</div>
+      </Transition>
     </div>
   </section>
 </template>
@@ -284,14 +298,38 @@ defineExpose({ fitAndResize, focus, restart, close: () => terminalClient.close()
   font-size: var(--text-base);
 }
 .terminal-dot {
+  position: relative;
   width: 7px;
   height: 7px;
   border-radius: 50%;
   background: var(--muted);
   flex: none;
+  transition: background-color var(--duration-base) var(--ease-out);
 }
 .terminal-dot.on {
   background: var(--color-success);
+}
+/* One-shot pulse ring: the pseudo-element mounts the moment `.on` lands,
+   runs its fade-out-and-grow animation once, then sits invisible until the
+   next reconnect re-creates it. */
+.terminal-dot.on::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border: 1px solid var(--color-success);
+  border-radius: 50%;
+  pointer-events: none;
+  animation: terminal-dot-pulse var(--duration-slow) var(--ease-out) forwards;
+}
+@keyframes terminal-dot-pulse {
+  from {
+    opacity: 0.7;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(2.4);
+  }
 }
 .terminal-cwd {
   min-width: 0;
@@ -331,6 +369,7 @@ defineExpose({ fitAndResize, focus, restart, close: () => terminalClient.close()
   display: flex;
   align-items: center;
   justify-content: center;
+  gap: 8px;
   padding: 20px;
   background: color-mix(in srgb, var(--bg) 80%, transparent);
   color: var(--muted);
@@ -340,5 +379,15 @@ defineExpose({ fitAndResize, focus, restart, close: () => terminalClient.close()
 }
 .terminal-overlay.error {
   color: var(--color-danger);
+}
+/* Overlay cross-fade (Transition in the template). The overlay is absolute
+   over the xterm surface, so a leaving overlay simply dissolves in place. */
+.terminal-fade-enter-active,
+.terminal-fade-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out);
+}
+.terminal-fade-enter-from,
+.terminal-fade-leave-to {
+  opacity: 0;
 }
 </style>

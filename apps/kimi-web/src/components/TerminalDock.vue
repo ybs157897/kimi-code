@@ -1,5 +1,7 @@
 <!-- Bottom multi-tab terminal dock. Each tab keeps a stable local :key so the
-     Terminal view is not remounted when the server assigns a pty id. -->
+     Terminal view is not remounted when the server assigns a pty id. Tab chips
+     run through a TransitionGroup (new shells rise in, closed ones collapse
+     out); the zero-tabs body is the design-system EmptyState. -->
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -8,6 +10,7 @@ import Terminal from './Terminal.vue';
 import IconButton from './ui/IconButton.vue';
 import Icon from './ui/Icon.vue';
 import Button from './ui/Button.vue';
+import EmptyState from './ui/EmptyState.vue';
 
 type TabStatus = 'creating' | 'ready' | 'closed' | 'error';
 
@@ -299,7 +302,7 @@ watch(
     @transitionend="onDockTransitionEnd"
   >
     <header class="terminal-dock__header">
-      <div class="terminal-dock__tabs" role="tablist">
+      <TransitionGroup tag="div" name="dock-tab" class="terminal-dock__tabs" role="tablist">
         <div
           v-for="tab in tabs"
           :key="tab.id"
@@ -329,13 +332,14 @@ watch(
           </button>
         </div>
         <IconButton
+          key="new-tab"
           size="sm"
           :label="t('terminal.newTab')"
           @click="createTab"
         >
           <Icon name="plus" size="sm" />
         </IconButton>
-      </div>
+      </TransitionGroup>
       <div class="terminal-dock__actions">
         <IconButton
           size="sm"
@@ -358,12 +362,14 @@ watch(
         class="terminal-dock__pane"
       >
         <div v-if="tab.status === 'error'" class="terminal-dock__state">
+          <Icon name="alert-triangle" size="lg" class="terminal-dock__state-icon is-error" />
           <p>{{ tab.errorMessage || t('terminal.startFailed') }}</p>
           <Button size="sm" variant="secondary" @click="reopenTab(tab.id)">
             {{ t('terminal.restart') }}
           </Button>
         </div>
         <div v-else-if="tab.status === 'closed'" class="terminal-dock__state">
+          <Icon name="stop" size="lg" class="terminal-dock__state-icon" />
           <p>{{ t('terminal.exited') }}</p>
           <Button size="sm" variant="secondary" @click="reopenTab(tab.id)">
             {{ t('terminal.restart') }}
@@ -380,11 +386,20 @@ watch(
           @exited="onExited(tab.id)"
         />
       </div>
-      <div v-if="tabs.length === 0" class="terminal-dock__state">
+      <!-- Zero tabs — design-system EmptyState (owns its kimi-card-in
+           entrance). The hint is the keyboard shortcut that re-opens the
+           panel with a fresh shell. -->
+      <EmptyState
+        v-if="tabs.length === 0"
+        class="terminal-dock__empty"
+        :title="t('terminal.tab')"
+        :hint="t('header.toggleTerminalHint')"
+      >
+        <template #icon><Icon name="terminal" size="lg" /></template>
         <Button size="sm" variant="secondary" @click="createTab">
           {{ t('terminal.newTab') }}
         </Button>
-      </div>
+      </EmptyState>
     </div>
   </section>
 </template>
@@ -441,6 +456,32 @@ watch(
   gap: 2px;
   overflow-x: auto;
   scrollbar-width: thin;
+  /* Containing block for the absolute leaving chip below, so a closing tab
+     fades out over its own slot while the siblings glide left. */
+  position: relative;
+}
+/* Tab chip motion (TransitionGroup in the template): a new shell rises in,
+   a closed one fades out in place — kept subtle so it never fights the
+   header layout. Reduced motion is covered by the global kill switch. */
+.dock-tab-enter-from {
+  opacity: 0;
+  transform: translateY(4px);
+}
+.dock-tab-leave-to {
+  opacity: 0;
+}
+.dock-tab-enter-active,
+.dock-tab-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+.dock-tab-leave-active {
+  /* Out of flow while fading so the remaining chips claim the vacated slot
+     immediately; the group's FLIP keeps it visually anchored. */
+  position: absolute;
+}
+.dock-tab-move {
+  transition: transform var(--duration-base) var(--ease-out);
 }
 .terminal-dock__tab {
   display: inline-flex;
@@ -529,5 +570,18 @@ watch(
 }
 .terminal-dock__state p {
   margin: 0;
+}
+.terminal-dock__state-icon {
+  flex: none;
+  color: var(--color-text-faint);
+}
+.terminal-dock__state-icon.is-error {
+  color: var(--color-warning);
+}
+/* The dock body can be short — trim EmptyState's generous default padding
+   and let it fill the pane so the content centers vertically. */
+.terminal-dock__empty {
+  height: 100%;
+  padding: var(--space-3) var(--space-4);
 }
 </style>
