@@ -4,15 +4,19 @@
      the desktop shell, the browser dev mock under plain `pnpm dev` — both
      stream through the same `{sessionId,agentId,event}` contract, so this view
      renders identically with and without the Go side.
+     Also subscribes the bridge's `onConnectionState` and exposes
+     `EnsureConnected()` (the headline reconnect path) behind a live status
+     dot + button, mirroring the desktop client's boot/recovery flow.
      Dev tooling: labels are intentionally not localized (DebugPanel precedent).
      Opt in with `?desktop_demo=1` (see isDesktopDemoEnabled). -->
 <script setup lang="ts">
-import { nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import Button from '../ui/Button.vue';
 import IconButton from '../ui/IconButton.vue';
 import Icon from '../ui/Icon.vue';
 import Badge from '../ui/Badge.vue';
 import Card from '../ui/Card.vue';
+import EmptyState from '../ui/EmptyState.vue';
 import Textarea from '../ui/Textarea.vue';
 import {
   getDesktopBridge,
@@ -56,10 +60,26 @@ const promptText = ref('Hello from the desktop bridge demo!');
 const turns = ref<TurnView[]>([]);
 const eventLog = ref<DesktopEventPayload[]>([]);
 const running = ref(false);
-const busy = ref<'hello' | 'list' | 'create' | 'submit' | 'cancel' | null>(null);
+const busy = ref<'hello' | 'list' | 'create' | 'ensure' | 'submit' | 'cancel' | null>(null);
 const errorMsg = ref('');
 
+// Live IPC connection state (`kimi:connection`): unknown until the first
+// EnsureConnected() round trip or push frame settles it.
+const connectionState = ref<'connected' | 'disconnected' | 'unknown'>('unknown');
+const connectionVariant = computed<'success' | 'danger' | 'neutral'>(() => {
+  if (connectionState.value === 'connected') return 'success';
+  if (connectionState.value === 'disconnected') return 'danger';
+  return 'neutral';
+});
+const connectionLabel = computed(() =>
+  connectionState.value === 'unknown' ? 'connection unknown' : connectionState.value,
+);
+
 const logRef = ref<HTMLElement | null>(null);
+const promptRef = ref<InstanceType<typeof Textarea> | null>(null);
+
+const EVENT_LOG_HINT =
+  'Frames from runtime.EventsOn("kimi:event") (or the mock\'s equivalent) land here.';
 
 function fail(error: unknown): void {
   errorMsg.value = error instanceof Error ? error.message : String(error);
@@ -99,6 +119,20 @@ async function doCreateSession(): Promise<void> {
     // agent id when the shell does not report one.
     agentId.value = handle.agentId ?? 'main';
   } catch (error) {
+    fail(error);
+  } finally {
+    busy.value = null;
+  }
+}
+
+async function doEnsureConnected(): Promise<void> {
+  busy.value = 'ensure';
+  errorMsg.value = '';
+  try {
+    connectionState.value = await bridge.EnsureConnected();
+  } catch (error) {
+    // The shell could not be reached at all — treat it as a dead connection.
+    connectionState.value = 'disconnected';
     fail(error);
   } finally {
     busy.value = null;
@@ -211,6 +245,7 @@ function turnStatusVariant(status: TurnStatus): 'info' | 'success' | 'warning' |
 }
 
 let offEvent: (() => void) | null = null;
+let offConnection: (() => void) | null = null;
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.key === 'Escape') emit('close');
@@ -230,15 +265,27 @@ watch(
 onMounted(() => {
   try {
     offEvent = bridge.onEvent(handleEvent);
+    offConnection = bridge.onConnectionState((state) => {
+      connectionState.value = state;
+    });
   } catch (error) {
     fail(error);
   }
   document.addEventListener('keydown', onKeydown);
+  // Seed the connection dot with the same EnsureConnected() round trip the
+  // reconnect button (and the desktop client's boot) runs.
+  void doEnsureConnected();
+  void nextTick(() => {
+    const el = promptRef.value?.$el;
+    if (el instanceof HTMLTextAreaElement) el.focus();
+  });
 });
 
 onUnmounted(() => {
   offEvent?.();
   offEvent = null;
+  offConnection?.();
+  offConnection = null;
   document.removeEventListener('keydown', onKeydown);
 });
 </script>
@@ -252,6 +299,7 @@ onUnmounted(() => {
           <Badge :variant="transport === 'wails' ? 'info' : 'warning'" size="sm">
             {{ transport === 'wails' ? 'Wails shell' : 'browser dev mock' }}
           </Badge>
+          <Badge :variant="connectionVariant" size="sm" dot>{{ connectionLabel }}</Badge>
           <Badge v-if="running" variant="info" size="sm" dot>turn running</Badge>
         </div>
         <IconButton size="sm" label="Close demo" @click="emit('close')">
@@ -277,6 +325,10 @@ onUnmounted(() => {
                 <Icon name="plus" size="sm" />
                 <span>CreateSession()</span>
               </Button>
+              <Button variant="secondary" size="sm" :loading="busy === 'ensure'" @click="doEnsureConnected">
+                <Icon name="refresh" size="sm" />
+                <span>EnsureConnected()</span>
+              </Button>
             </div>
 
             <div v-if="helloInfo" class="ddb-kv">
@@ -293,7 +345,16 @@ onUnmounted(() => {
             </div>
 
             <div class="ddb-prompt">
-              <Textarea v-model="promptText" :rows="3" placeholder="Prompt text for Submit()" />
+              <!-- ⌘/Ctrl+Enter submits (the listeners fall through to the
+                   native <textarea> root of ui/Textarea). -->
+              <Textarea
+                ref="promptRef"
+                v-model="promptText"
+                :rows="3"
+                placeholder="Prompt text for Submit() — ⌘/Ctrl+Enter to send"
+                @keydown.meta.enter.prevent="doSubmit"
+                @keydown.ctrl.enter.prevent="doSubmit"
+              />
               <div class="ddb-actions">
                 <Button size="sm" :loading="busy === 'submit'" @click="doSubmit">
                   <Icon name="send" size="sm" />
@@ -317,10 +378,13 @@ onUnmounted(() => {
 
           <Card>
             <template #head>Streamed turns</template>
-            <p v-if="!turns.length" class="ddb-hint">
-              Submit a prompt — streamed events render here (identical under the
-              Wails shell and the browser dev mock).
-            </p>
+            <EmptyState
+              v-if="!turns.length"
+              title="No streamed turns yet"
+              hint="Submit a prompt — streamed events render here (identical under the Wails shell and the browser dev mock)."
+            >
+              <template #icon><Icon name="message" size="lg" /></template>
+            </EmptyState>
             <div v-for="turn in turns" :key="turn.turnId" class="ddb-turn">
               <div class="ddb-turn-head">
                 <span class="ddb-turn-id">turn #{{ turn.turnId }}</span>
@@ -354,10 +418,14 @@ onUnmounted(() => {
               <Badge variant="neutral" size="sm">{{ eventLog.length }}</Badge>
             </template>
             <div ref="logRef" class="ddb-log">
-              <p v-if="!eventLog.length" class="ddb-hint">
-                No events yet — frames from <code>runtime.EventsOn("kimi:event")</code>
-                (or the mock's equivalent) land here.
-              </p>
+              <EmptyState
+                v-if="!eventLog.length"
+                class="ddb-log-empty"
+                title="No events yet"
+                :hint="EVENT_LOG_HINT"
+              >
+                <template #icon><Icon name="bolt" size="lg" /></template>
+              </EmptyState>
               <div v-for="(entry, index) in eventLog" :key="index" class="ddb-log-row">
                 <Badge variant="neutral" size="sm">{{ entry.event.type }}</Badge>
                 <code class="ddb-code ddb-log-json">{{ preview(entry) }}</code>
@@ -458,11 +526,6 @@ onUnmounted(() => {
   font-size: var(--text-sm);
   color: var(--color-danger);
 }
-.ddb-hint {
-  margin: 0;
-  font-size: var(--text-sm);
-  color: var(--color-text-muted);
-}
 .ddb-turn {
   border-top: 1px solid var(--color-line);
   padding: var(--space-3) 0;
@@ -537,6 +600,10 @@ onUnmounted(() => {
   display: flex;
   flex-direction: column;
   gap: var(--space-1);
+}
+/* Stretch the empty state across the scroll area so it centers vertically. */
+.ddb-log-empty {
+  flex: 1;
 }
 .ddb-log-row {
   display: flex;
