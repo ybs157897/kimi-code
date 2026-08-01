@@ -14,6 +14,8 @@ import AuthMedia from './AuthMedia.vue';
 import AttachmentChip from './AttachmentChip.vue';
 import MoonSpinner from '../ui/MoonSpinner.vue';
 import Spinner from '../ui/Spinner.vue';
+import EmptyState from '../ui/EmptyState.vue';
+import Skeleton from '../ui/Skeleton.vue';
 import Icon from '../ui/Icon.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import { useConfirmDialog } from '../../composables/useConfirmDialog';
@@ -521,11 +523,34 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
        turns are left-aligned plain text with no role/name label, in order:
        thinking → message text → tool cards. -->
   <div class="chat">
+    <!-- Session transcript loading — a content-shaped skeleton ghost of the
+         user/assistant exchange (breathing Skeleton bars) instead of a bare
+         spinner, so a loading session already reads as transcript-shaped. -->
     <div v-if="sessionLoading" class="chat-loading">
-      <Spinner size="sm" />
+      <div class="chat-loading-skel" aria-hidden="true">
+        <div class="skel-msg skel-msg--a">
+          <Skeleton width="36%" height="10px" />
+          <Skeleton width="92%" height="10px" />
+          <Skeleton width="74%" height="10px" />
+        </div>
+        <div class="skel-msg skel-msg--u">
+          <Skeleton height="34px" />
+        </div>
+        <div class="skel-msg skel-msg--a">
+          <Skeleton width="84%" height="10px" />
+          <Skeleton width="48%" height="10px" />
+        </div>
+      </div>
       <span class="chat-loading-text">{{ t('conversation.loading') }}</span>
     </div>
-    <div v-else-if="turns.length === 0 && (!approvals || approvals.length === 0)" class="chat-empty" />
+
+    <!-- Empty conversation — design-system EmptyState with a start hint. -->
+    <div v-else-if="turns.length === 0 && (!approvals || approvals.length === 0)" class="chat-empty">
+      <EmptyState>
+        <template #icon><Icon name="chat-new" size="lg" /></template>
+        <span class="chat-empty-text">{{ t('composer.emptyConversation') }}</span>
+      </EmptyState>
+    </div>
 
     <div
       v-if="hasMoreMessages || loadingMore"
@@ -774,19 +799,49 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
   padding: 24px 16px;
   color: var(--faint);
   text-align: center;
+  /* One-shot mount entrance: the element is created by the v-else-if branch
+     and only patched in place afterwards (its content is static while shown),
+     so the CSS animation fires exactly once and never replays. */
+  animation: kimi-card-in var(--duration-slow) var(--ease-out) both;
 }
 .chat-empty-text { font-size: var(--ui-font-size-sm); }
 
 .chat-loading {
   flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 18px;
   padding: 24px 16px;
   color: var(--muted);
+  /* Same one-shot entrance as the empty state (element mounts once per
+     sessionLoading=true window and is static until it unmounts). */
+  animation: kimi-card-in var(--duration-slow) var(--ease-out) both;
 }
 .chat-loading-text { font-size: var(--ui-font-size-sm); }
+
+/* Content-shaped loading ghost: a miniature transcript — assistant text lines
+   on the left, one user bubble on the right — built from Skeleton bars. The
+   breathing loop lives in Skeleton.vue's own scoped styles. */
+.chat-loading-skel {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  width: 100%;
+  max-width: 520px;
+}
+.skel-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.skel-msg--a { align-self: flex-start; width: 72%; }
+.skel-msg--u { align-self: flex-end; width: 42%; }
+/* Echo the user bubble's asymmetric corner so the ghost reads as a bubble. */
+.skel-msg--u :deep(.ui-skeleton) {
+  border-radius: var(--radius-xl) var(--radius-xl) var(--radius-sm) var(--radius-xl);
+}
 
 /* ===================== Bubble layout ===================== */
 .chat {
