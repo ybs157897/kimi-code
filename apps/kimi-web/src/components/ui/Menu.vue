@@ -7,6 +7,7 @@
      to the trigger), and first-letter typeahead. -->
 <script setup lang="ts">
 import { nextTick, provide, ref, shallowRef, watch } from 'vue';
+import { menuNavIndex, menuTypeaheadIndex, type MenuNavKey } from '../../composables/useMenuKeyboard';
 import { menuContextKey, type MenuOrigin } from './menu-context';
 
 defineOptions({ inheritAttrs: false });
@@ -73,52 +74,44 @@ watch(
   { immediate: true },
 );
 
-/** Arrow navigation with wrap; when nothing inside the menu has focus yet,
- *  ArrowDown starts at the first item and ArrowUp at the last. */
-function moveFocus(delta: 1 | -1): void {
+/** Move focus to the item a navigation key targets (↑/↓ with wrap, Home/End);
+ *  when nothing inside the menu has focus yet, ArrowDown starts at the first
+ *  item and ArrowUp at the last. The index math lives in useMenuKeyboard. */
+function moveFocus(key: MenuNavKey): void {
   const items = enabledItems();
-  if (items.length === 0) return;
   const active = document.activeElement;
   const from = active instanceof HTMLElement ? items.indexOf(active) : -1;
-  const index =
-    from < 0 ? (delta > 0 ? 0 : items.length - 1) : (from + delta + items.length) % items.length;
-  const next = items[index];
+  const index = menuNavIndex(items.length, from, key);
+  const next = index === null ? undefined : items[index];
   if (next) focusItem(next);
 }
 
 /** First-letter typeahead: focus the next item whose label starts with the
- *  typed character (case-insensitive, wrapping past the end). */
+ *  typed character (case-insensitive, wrapping past the end). The match search
+ *  lives in useMenuKeyboard. */
 function typeahead(char: string): void {
   const items = enabledItems();
-  if (items.length === 0) return;
-  const needle = char.toLowerCase();
   const active = document.activeElement;
   const from = active instanceof HTMLElement ? items.indexOf(active) : -1;
-  for (let step = 1; step <= items.length; step += 1) {
-    const candidate = items[(Math.max(from, 0) + step) % items.length];
-    if (candidate && (candidate.textContent ?? '').trimStart().toLowerCase().startsWith(needle)) {
-      focusItem(candidate);
-      return;
-    }
-  }
+  const index = menuTypeaheadIndex(
+    items.map((item) => item.textContent ?? ''),
+    from,
+    char,
+  );
+  const next = index === null ? undefined : items[index];
+  if (next) focusItem(next);
 }
 
 function onKeydown(event: KeyboardEvent): void {
   if (event.ctrlKey || event.metaKey || event.altKey) return;
-  if (event.key === 'ArrowDown') {
+  if (
+    event.key === 'ArrowDown' ||
+    event.key === 'ArrowUp' ||
+    event.key === 'Home' ||
+    event.key === 'End'
+  ) {
     event.preventDefault();
-    moveFocus(1);
-  } else if (event.key === 'ArrowUp') {
-    event.preventDefault();
-    moveFocus(-1);
-  } else if (event.key === 'Home') {
-    event.preventDefault();
-    const first = enabledItems()[0];
-    if (first) focusItem(first);
-  } else if (event.key === 'End') {
-    event.preventDefault();
-    const last = enabledItems().at(-1);
-    if (last) focusItem(last);
+    moveFocus(event.key);
   } else if (event.key === 'Enter' || event.key === ' ') {
     const items = enabledItems();
     const active = document.activeElement;
