@@ -1,7 +1,9 @@
 <!-- apps/kimi-web/src/components/ui/Dialog.vue -->
 <!-- Design-system §03 Dialog: one canonical dialog replacing the 6 hand-written
      ones. radius xl + shadow xl, head(title/desc/close) / body / foot(right).
-     Includes focus trap, Esc-to-close, and optional overlay-click-to-close. -->
+     Includes focus trap, Esc-to-close, and optional overlay-click-to-close.
+     Enters via keyframe animation, exits via a <Transition> (scrim fade +
+     panel scale/fade); focus is restored once the leave completes. -->
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue';
 import { openDialogCount } from '../../composables/dialogStack';
@@ -65,6 +67,19 @@ function resolveInitialFocus(): HTMLElement | null {
   return panel.value?.contains(initialFocus) ? initialFocus : null;
 }
 
+function restoreFocus() {
+  if (previouslyFocused instanceof HTMLElement) {
+    previouslyFocused.focus();
+  }
+  previouslyFocused = null;
+}
+
+/** <Transition> hook: the panel has finished animating out — hand focus back
+ *  to the element that was focused before the dialog opened. */
+function onAfterLeave() {
+  restoreFocus();
+}
+
 function onKeydown(event: KeyboardEvent) {
   if (!props.open) return;
   if (event.key === 'Escape' && props.closeOnEsc) {
@@ -100,17 +115,20 @@ watch(
   async (isOpen) => {
     if (isOpen) {
       openDialogCount.value += 1;
-      previouslyFocused = document.activeElement;
+      // Guarded: if the dialog reopens while its leave transition is still
+      // running, the deferred restore hasn't fired yet and `previouslyFocused`
+      // still holds the true origin element — don't overwrite it with whatever
+      // happens to be focused mid-transition.
+      if (!previouslyFocused) previouslyFocused = document.activeElement;
       await nextTick();
       const initial = resolveInitialFocus();
       const list = focusables();
       (initial ?? list[0] ?? panel.value)?.focus();
     } else {
       openDialogCount.value = Math.max(0, openDialogCount.value - 1);
-      if (previouslyFocused instanceof HTMLElement) {
-        previouslyFocused.focus();
-        previouslyFocused = null;
-      }
+      // Focus restore is deferred to the <Transition>'s `after-leave` hook
+      // (onAfterLeave) so focus only moves back once the panel has finished
+      // animating out.
     }
   },
   // Run immediately so callers that mount with `open` already true (Login,
@@ -125,38 +143,46 @@ if (typeof window !== 'undefined') {
 }
 onBeforeUnmount(() => {
   if (typeof window !== 'undefined') window.removeEventListener('keydown', onKeydown);
-  // Release this dialog's slot if it unmounts while still open (e.g. the
-  // parent v-if's it away before `open` flips to false).
-  if (props.open) openDialogCount.value = Math.max(0, openDialogCount.value - 1);
+  if (props.open) {
+    // Release this dialog's slot if it unmounts while still open (e.g. the
+    // parent v-if's it away before `open` flips to false).
+    openDialogCount.value = Math.max(0, openDialogCount.value - 1);
+  } else {
+    // Unmounting mid-leave: `after-leave` will never fire, so restore focus
+    // here instead of dropping it.
+    restoreFocus();
+  }
 });
 </script>
 
 <template>
   <Teleport to="body">
-    <div v-if="open" class="ui-dialog__overlay" @mousedown="onOverlayClick">
-      <div
-        ref="panel"
-        class="ui-dialog"
-        :class="[`ui-dialog--${size}`, { 'ui-dialog--flush': !padded, 'ui-dialog--fixed-height': height === 'fixed' }]"
-        role="dialog"
-        aria-modal="true"
-        tabindex="-1"
-      >
-        <div v-if="title || $slots.head" class="ui-dialog__head">
-          <slot name="head">
-            <div class="ui-dialog__titles">
-              <div v-if="title" class="ui-dialog__title">{{ title }}</div>
-              <div v-if="description" class="ui-dialog__desc">{{ description }}</div>
-            </div>
-          </slot>
-          <IconButton class="ui-dialog__close" size="sm" label="Close" @click="close">
-            <Icon name="close" size="md" />
-          </IconButton>
+    <Transition name="ui-dialog" @after-leave="onAfterLeave">
+      <div v-if="open" class="ui-dialog__overlay" @mousedown="onOverlayClick">
+        <div
+          ref="panel"
+          class="ui-dialog"
+          :class="[`ui-dialog--${size}`, { 'ui-dialog--flush': !padded, 'ui-dialog--fixed-height': height === 'fixed' }]"
+          role="dialog"
+          aria-modal="true"
+          tabindex="-1"
+        >
+          <div v-if="title || $slots.head" class="ui-dialog__head">
+            <slot name="head">
+              <div class="ui-dialog__titles">
+                <div v-if="title" class="ui-dialog__title">{{ title }}</div>
+                <div v-if="description" class="ui-dialog__desc">{{ description }}</div>
+              </div>
+            </slot>
+            <IconButton class="ui-dialog__close" size="sm" label="Close" @click="close">
+              <Icon name="close" size="md" />
+            </IconButton>
+          </div>
+          <div class="ui-dialog__body"><slot /></div>
+          <div v-if="$slots.foot" class="ui-dialog__foot"><slot name="foot" /></div>
         </div>
-        <div class="ui-dialog__body"><slot /></div>
-        <div v-if="$slots.foot" class="ui-dialog__foot"><slot name="foot" /></div>
       </div>
-    </div>
+    </Transition>
   </Teleport>
 </template>
 
@@ -188,6 +214,23 @@ onBeforeUnmount(() => {
   overflow: hidden;
   animation: kimi-card-in var(--duration-slow) var(--ease-out);
 }
+/* Exit: the scrim fades while the panel scales/fades out (--duration-base,
+   --ease-out). Enter is still owned by the keyframe animations above; the
+   `animation: none` overrides stop the already-finished enter animations from
+   hijacking Vue's leave-end detection (it would otherwise wait for an
+   `animationend` that already fired). */
+.ui-dialog-leave-active {
+  animation: none;
+  transition: opacity var(--duration-base) var(--ease-out);
+}
+.ui-dialog-leave-active .ui-dialog {
+  animation: none;
+  transition: opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+.ui-dialog-leave-to { opacity: 0; }
+.ui-dialog-leave-to .ui-dialog { opacity: 0; transform: scale(0.98); }
+
 .ui-dialog--md { width: min(440px, 100%); }
 .ui-dialog--lg { width: min(640px, 100%); }
 .ui-dialog--xl { width: min(var(--p-content-max), 100%); }
