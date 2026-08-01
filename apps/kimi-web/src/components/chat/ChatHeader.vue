@@ -270,6 +270,7 @@ function startArchive(): void {
       :label="t('header.options')"
       :aria-expanded="menuOpen"
       aria-haspopup="menu"
+      aria-controls="chat-header-menu"
       @click.stop="toggleMenu($event)"
     >
       <Icon name="dots-horizontal" size="md" />
@@ -277,6 +278,7 @@ function startArchive(): void {
 
     <!-- Fixed more menu -->
     <Menu
+      id="chat-header-menu"
       ref="menuRef"
       :open="menuOpen"
       :origin="menuOrigin"

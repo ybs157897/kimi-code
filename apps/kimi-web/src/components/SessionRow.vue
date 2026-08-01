@@ -266,6 +266,9 @@ defineExpose({ closeMenu });
           :class="{ open: menuOpen }"
           size="sm"
           :label="t('sidebar.options')"
+          aria-haspopup="menu"
+          :aria-expanded="menuOpen"
+          :aria-controls="`session-menu-${session.id}`"
           @click.stop="toggleMenu($event)"
         >
           <Icon name="dots-horizontal" />
@@ -277,6 +280,7 @@ defineExpose({ closeMenu });
          the `overflow: hidden` on the collapsing `.group-sessions` list. -->
     <Teleport to="body">
       <Menu
+        :id="`session-menu-${session.id}`"
         ref="menuRef"
         :open="menuOpen"
         :origin="menuOrigin"

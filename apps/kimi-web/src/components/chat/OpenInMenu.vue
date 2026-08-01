@@ -211,12 +211,16 @@ async function copyPath(): Promise<void> {
       :class="{ open: menuOpen }"
       :disabled="!hasWorkDir"
       :label="t('header.chooseOpenApp')"
+      aria-haspopup="menu"
+      :aria-expanded="menuOpen"
+      aria-controls="open-in-menu"
       @click.stop="openMenu"
     >
       <Icon name="chevron-down" size="sm" />
     </IconButton>
 
     <Menu
+      id="open-in-menu"
       ref="menuRef"
       :open="menuOpen"
       :origin="menuOrigin"

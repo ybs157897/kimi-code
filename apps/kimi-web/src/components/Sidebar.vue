@@ -767,6 +767,7 @@ onBeforeUnmount(() => {
                 :label="t('sidebar.options')"
                 aria-haspopup="menu"
                 :aria-expanded="sectionMenuOpen"
+                aria-controls="sidebar-section-menu"
                 @click.stop="toggleSectionMenu($event)"
               >
                 <Icon name="dots-horizontal" />
@@ -878,6 +879,7 @@ onBeforeUnmount(() => {
     </Menu>
     <!-- Workspace sort menu (position:fixed, anchored to the sort button) -->
     <Menu
+      id="sidebar-section-menu"
       ref="sectionMenuRef"
       :open="sectionMenuOpen"
       :origin="sectionMenuOrigin"
