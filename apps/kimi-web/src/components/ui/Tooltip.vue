@@ -32,6 +32,22 @@ const GAP = 6;
 const MARGIN = 8;
 const SHOW_DELAY = 150;
 
+/* Enter rise, keyed by the RESOLVED placement (position() may flip it under
+   viewport clamping): the bubble starts 2px toward the trigger and settles
+   into its resting spot, transform-origin on the side that meets it. */
+const RISE: Record<Placement, string> = {
+  top: 'translateY(2px)',
+  bottom: 'translateY(-2px)',
+  left: 'translateX(2px)',
+  right: 'translateX(-2px)',
+};
+const ORIGIN: Record<Placement, string> = {
+  top: '50% 100%',
+  bottom: '50% 0%',
+  left: '100% 50%',
+  right: '0% 50%',
+};
+
 const trigger = ref<HTMLElement>();
 const bubble = ref<HTMLElement>();
 const open = ref(false);
@@ -80,6 +96,8 @@ function position(): void {
     maxWidth: `${props.maxWidth}px`,
     top: `${Math.round(top)}px`,
     left: `${Math.round(left)}px`,
+    '--tip-origin': ORIGIN[place],
+    '--tip-rise': RISE[place],
   };
 }
 
@@ -189,8 +207,11 @@ onBeforeUnmount(() => {
   overflow: hidden;
   overflow-wrap: anywhere;
   pointer-events: none;
+  transform-origin: var(--tip-origin, 50% 100%);
   opacity: 0;
-  transition: opacity var(--duration-fast) var(--ease-out);
+  transform: var(--tip-rise, translateY(2px)) scale(0.98);
+  transition: opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
-.ui-tip__bubble.positioned { opacity: 1; }
+.ui-tip__bubble.positioned { opacity: 1; transform: none; }
 </style>

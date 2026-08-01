@@ -3,13 +3,16 @@
 <script setup lang="ts">
 withDefaults(defineProps<{
   elevated?: boolean;
+  /** Opt-in hover affordance (1px lift + soft shadow) for clickable cards. */
+  interactive?: boolean;
 }>(), {
   elevated: false,
+  interactive: false,
 });
 </script>
 
 <template>
-  <div class="ui-card" :class="{ 'is-elevated': elevated }">
+  <div class="ui-card" :class="{ 'is-elevated': elevated, 'is-interactive': interactive }">
     <div v-if="$slots.head" class="ui-card__head"><slot name="head" /></div>
     <div class="ui-card__body"><slot /></div>
     <div v-if="$slots.foot" class="ui-card__foot"><slot name="foot" /></div>
@@ -24,6 +27,13 @@ withDefaults(defineProps<{
   overflow: hidden;
 }
 .ui-card.is-elevated { box-shadow: var(--shadow-md); border-color: transparent; }
+/* Hover lift is opt-in (interactive prop) — static cards never move. Same
+   idiom as the clickable team cards: 1px rise + the soft md shadow. */
+.ui-card.is-interactive {
+  transition: transform var(--duration-fast) var(--ease-out),
+    box-shadow var(--duration-fast) var(--ease-out);
+}
+.ui-card.is-interactive:hover { transform: translateY(-1px); box-shadow: var(--shadow-md); }
 
 .ui-card__head {
   display: flex;

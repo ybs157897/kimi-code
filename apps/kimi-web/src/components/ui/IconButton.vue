@@ -47,7 +47,8 @@ defineExpose({ el });
   color: var(--color-text-muted);
   cursor: pointer;
   transition: background var(--duration-base) var(--ease-out),
-    color var(--duration-base) var(--ease-out);
+    color var(--duration-base) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
 /* Translucent text-mix instead of the sunken surface: stays visible on ANY
    backdrop — the sunken token equals the page bg in dark mode, which made
@@ -55,6 +56,7 @@ defineExpose({ el });
    (chat header, flat sidebar). */
 .ui-icon-button:hover:not(:disabled) { background: color-mix(in srgb, var(--color-text) 8%, transparent); color: var(--color-text); }
 .ui-icon-button:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
+.ui-icon-button:not(:disabled):active { transform: scale(0.98); }
 .ui-icon-button:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .ui-icon-button--sm { width: 26px; height: 26px; border-radius: var(--radius-sm); }
