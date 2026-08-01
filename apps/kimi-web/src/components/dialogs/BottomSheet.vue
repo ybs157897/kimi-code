@@ -2,10 +2,13 @@
 <!-- Reusable mobile bottom sheet: a fading scrim + a panel that slides up from -->
 <!-- the bottom (rounded top, grab handle). v-model controls open state; tapping -->
 <!-- the scrim or the grab handle closes it. Restyled to the unified v2 dialog -->
-<!-- look (tokened scrim, surface-raised panel, UI font). -->
+<!-- look (tokened scrim, surface-raised panel, UI font). Esc yields to any -->
+<!-- open design-system Dialog (dialogStack) and background scroll is locked -->
+<!-- while open. -->
 <script setup lang="ts">
 import { onUnmounted, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { openDialogCount } from '../../composables/dialogStack';
 
 const { t } = useI18n();
 
@@ -29,23 +32,46 @@ function close(): void {
   emit('close');
 }
 
-// Close on Escape while open (desktop keyboard / test convenience).
+// Close on Escape while open (desktop keyboard / test convenience). Any open
+// design-system Dialog (e.g. a ConfirmDialog stacked above the sheet in the
+// delete-workspace flow) owns Escape — bail out so one Esc doesn't close both.
 function onKeydown(e: KeyboardEvent): void {
+  if (openDialogCount.value > 0) return;
   if (e.key === 'Escape') close();
+}
+
+// Lock background scroll while the sheet is open; restore the previous inline
+// value on close and on unmount.
+let savedOverflow = '';
+function setScrollLock(locked: boolean): void {
+  if (locked) {
+    savedOverflow = document.documentElement.style.overflow;
+    document.documentElement.style.overflow = 'hidden';
+  } else {
+    document.documentElement.style.overflow = savedOverflow;
+    savedOverflow = '';
+  }
 }
 
 watch(
   () => props.modelValue,
   (open) => {
     if (typeof document === 'undefined') return;
-    if (open) document.addEventListener('keydown', onKeydown);
-    else document.removeEventListener('keydown', onKeydown);
+    if (open) {
+      document.addEventListener('keydown', onKeydown);
+      setScrollLock(true);
+    } else {
+      document.removeEventListener('keydown', onKeydown);
+      setScrollLock(false);
+    }
   },
   { immediate: true },
 );
 
 onUnmounted(() => {
-  if (typeof document !== 'undefined') document.removeEventListener('keydown', onKeydown);
+  if (typeof document === 'undefined') return;
+  document.removeEventListener('keydown', onKeydown);
+  setScrollLock(false);
 });
 </script>
 
@@ -164,5 +190,18 @@ onUnmounted(() => {
 .sheet-enter-from .sheet-panel,
 .sheet-leave-to .sheet-panel {
   transform: translateY(102%);
+}
+
+/* Reduced motion: drop the slide-up, keep the scrim/panel as a plain fade
+   (the root opacity transition above still runs). */
+@media (prefers-reduced-motion: reduce) {
+  .sheet-enter-active .sheet-panel,
+  .sheet-leave-active .sheet-panel {
+    transition: none;
+  }
+  .sheet-enter-from .sheet-panel,
+  .sheet-leave-to .sheet-panel {
+    transform: none;
+  }
 }
 </style>
