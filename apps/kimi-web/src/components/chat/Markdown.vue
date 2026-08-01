@@ -522,7 +522,12 @@ function citationChipLabel(seg: Extract<CodexSegment, { kind: 'citation' }>): st
       <!-- Hidden control directives render nothing -->
       <template v-if="seg.kind === 'hidden'" />
 
-      <!-- Plain / residual markdown → markstream -->
+      <!-- Plain / residual markdown → markstream.
+           `typewriter="precise"` (gated on `streaming`, same signal as
+           smooth-streaming) turns on markstream's built-in streaming caret: a
+           thin blinking bar positioned at the tail of the in-progress text.
+           markstream unmounts it on its own once the turn settles (no new
+           chunks for ~3s) or `final` flips, so done turns render no caret. -->
       <MarkdownRender
         v-else-if="seg.kind === 'md'"
         :content="seg.text"
@@ -536,6 +541,7 @@ function citationChipLabel(seg: Extract<CodexSegment, { kind: 'citation' }>): st
         :code-block-props="codeBlockProps"
         :final="final"
         :smooth-streaming="streaming"
+        :typewriter="streaming ? 'precise' : false"
         :batch-rendering="allowBatchRender"
         :defer-nodes-until-visible="false"
         @copy="copyCodeBlockFallback"
