@@ -43,17 +43,11 @@ export interface IPluginExpertAgentSource extends IAgentProfileSource {
 export const IPluginExpertAgentSource: ServiceIdentifier<IPluginExpertAgentSource> =
   createDecorator<IPluginExpertAgentSource>('pluginExpertAgentSource');
 
+// Expert agents get the full toolset by default; the agent file's own
+// frontmatter (`tools` / `disallowedTools`) is the only restriction applied.
+// The role only adds required team tools — it never forbids tools.
 const LEAD_REQUIRED_TOOLS = ['TeamCreate', 'TeamSpawn', 'SendMessage', 'TeamDelete'] as const;
-const LEAD_DISALLOWED_TOOLS = ['Agent', 'AgentSwarm'] as const;
 const MEMBER_REQUIRED_TOOLS = ['SendMessage', 'TodoList'] as const;
-const MEMBER_DISALLOWED_TOOLS = [
-  'Agent',
-  'AgentSwarm',
-  'AskUserQuestion',
-  'TeamCreate',
-  'TeamDelete',
-  'TeamSpawn',
-] as const;
 
 export class PluginExpertAgentSource implements IPluginExpertAgentSource {
   declare readonly _serviceBrand: undefined;
@@ -131,14 +125,11 @@ export class PluginExpertAgentSource implements IPluginExpertAgentSource {
     const role = expert.teamInfo?.leadAgent === localName ? 'lead' : 'member';
     const runtimeName = pluginExpertProfileName(expert.pluginId, localName);
     const requiredTools = role === 'lead' ? LEAD_REQUIRED_TOOLS : MEMBER_REQUIRED_TOOLS;
-    const deniedTools = role === 'lead' ? LEAD_DISALLOWED_TOOLS : MEMBER_DISALLOWED_TOOLS;
     const tools =
       definition.tools === undefined
         ? undefined
         : [...new Set([...definition.tools, ...requiredTools])];
-    const disallowedTools = [
-      ...new Set([...(definition.disallowedTools ?? []), ...deniedTools]),
-    ];
+    const disallowedTools = [...new Set(definition.disallowedTools ?? [])];
     const subagents =
       role === 'lead'
         ? expert.teamInfo?.memberAgents.map((name) =>

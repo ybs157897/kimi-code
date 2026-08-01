@@ -1,7 +1,7 @@
 {
   "name": "senior-developer",
   "version": "1.0.0",
-  "description": "Over 10 years of full-stack experience, proficient in multiple languages and frameworks, the technical backbone of the team.",
+  "description": "十余年全栈经验，精通多语言与框架，是团队的技术中坚。",
   "agents": ["./agents/senior-developer.md"],
   "skills": [
     "./skills/browser-use",
@@ -11,15 +11,15 @@
   ],
   "expertType": "agent",
   "agentName": "senior-developer",
-  "displayName": "Senior Developer",
-  "profession": "Senior Developer",
-  "displayDescription": "10+ years full-stack experience, proficient in multiple languages and frameworks, the technical backbone of the team.",
-  "tags": ["Senior Development", "Architecture Design", "Code Quality"],
+  "displayName": "资深开发专家",
+  "profession": "资深开发专家",
+  "displayDescription": "十余年全栈经验，精通多语言与框架，负责架构把关与代码质量提升。",
+  "tags": ["资深开发", "架构设计", "代码质量"],
   "categoryId": "02-Engineering",
-  "defaultInitPrompt": "Our team's technical capabilities need improvement, and we need guidance from senior developers and code quality control. Please, Senior Developer, help us elevate our team's technical level.",
+  "defaultInitPrompt": "团队技术能力需要提升，需要资深开发在架构与代码质量上把关，请协助提升团队技术水平。",
   "quickPrompts": [
-    "Our team's technical capabilities need improvement, and we need guidance from senior developers and code quality control.",
-    "Integrate Three.js for 3D interactive effects",
-    "Optimize advanced CSS layouts and animation implementation"
+    "团队技术能力需要提升，需要资深开发在架构与代码质量上把关。",
+    "接入 Three.js 做 3D 交互效果",
+    "优化高级 CSS 布局与动画实现"
   ]
 }

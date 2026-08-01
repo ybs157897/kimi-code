@@ -1,7 +1,7 @@
 {
   "name": "aicoding-architecture-expert-team",
   "version": "1.0.0",
-  "description": "A multi-role architecture expert team that turns project inputs into staged AICoding architecture deliverables.",
+  "description": "多角色架构专家团：把项目输入沉淀为分阶段的 AICoding 架构交付物。",
   "expertType": "team",
   "agentName": "aicoding-architecture-expert-team-lead",
   "agents": [
@@ -37,16 +37,16 @@
       "research-analyst"
     ]
   },
-  "displayName": "AICoding Architecture Expert Team",
-  "profession": "AICoding Architecture Expert Team",
-  "displayDescription": "Coordinates intake, research, business, system, platform, security and story design specialists to deliver a full architecture package.",
-  "tags": ["Architecture Design", "Document Delivery", "Expert Collaboration"],
+  "displayName": "AICoding 架构专家团",
+  "profession": "AICoding 架构专家团",
+  "displayDescription": "统筹需求摄入、调研、业务/系统/部署/安全架构与故事设计，交付完整架构包。",
+  "tags": ["架构设计", "文档交付", "专家协作"],
   "categoryId": "02-Engineering",
-  "defaultInitPrompt": "Start the AICoding Architecture Expert Team and generate a complete architecture package from my project context and materials.",
+  "defaultInitPrompt": "启动 AICoding 架构专家团，根据我的项目背景与材料生成完整架构交付包。",
   "quickPrompts": [
-    "Start the AICoding Architecture Expert Team and generate a complete architecture package from my project context and materials.",
-    "Parse my materials first, then give me the staged architecture delivery plan.",
-    "For the current system, produce high-level architecture, system design, deployment design, security design, and UserStory."
+    "启动 AICoding 架构专家团，根据我的项目背景与材料生成完整架构交付包。",
+    "先解析我提供的材料，再给出分阶段的架构交付计划。",
+    "针对当前系统产出高层架构、系统设计、部署设计、安全设计与 UserStory。"
   ],
   "members": [
     {

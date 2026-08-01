@@ -1,7 +1,7 @@
 {
   "name": "ai-data-copilot",
   "version": "1.0.0",
-  "description": "AI-native agentic data analysis team with autonomous SQL generation, code execution, RAG knowledge retrieval, and multi-source data insight capabilities",
+  "description": "AI 原生数据分析专家团：自主 SQL 生成、代码执行、RAG 知识检索与多源数据洞察。",
   "expertType": "team",
   "agentName": "copilot-team-lead",
   "agents": [
@@ -23,16 +23,16 @@
       "report-composer"
     ]
   },
-  "displayName": "AI Data Copilot",
-  "profession": "AI Data Copilot",
-  "displayDescription": "6-member AI-native data analysis team: natural language to SQL, Python data science, RAG knowledge QA, interactive dashboards, and report generation.",
-  "tags": ["Data Analysis", "SQL Generation", "Report Generation"],
+  "displayName": "AI 数据副驾",
+  "profession": "AI 数据副驾",
+  "displayDescription": "六人 AI 原生数据分析团：自然语言转 SQL、Python 数据科学、RAG 知识问答、交互仪表盘与报告生成。",
+  "tags": ["数据分析", "SQL 生成", "报告生成"],
   "categoryId": "04-DataAI",
-  "defaultInitPrompt": "Analyze this CSV file and generate a profiling report with key metrics and visualizations",
+  "defaultInitPrompt": "分析这份 CSV，生成包含关键指标与可视化的画像报告",
   "quickPrompts": [
-    "Analyze this CSV file and generate a profiling report with key metrics and visualizations",
-    "Connect to my database and write SQL to answer: what are the top 10 customers by revenue this quarter?",
-    "Read the uploaded documents and create a knowledge-based analysis report with data-driven insights"
+    "分析这份 CSV，生成包含关键指标与可视化的画像报告",
+    "连接我的数据库并写 SQL 回答：本季度收入最高的 10 个客户是谁？",
+    "阅读上传文档，基于知识库给出带数据支撑的分析报告"
   ],
   "members": [
     {

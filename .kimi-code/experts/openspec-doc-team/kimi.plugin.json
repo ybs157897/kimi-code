@@ -1,7 +1,7 @@
 {
   "name": "openspec-doc-team",
   "version": "1.1.0",
-  "description": "Professional document generation team: 4 roles (lead editor + researcher + generator + auditor) orchestrate a 6-phase workflow to produce enterprise-grade long documents.",
+  "description": "专业长文档生成专家团：总编辑 + 检索 + 生成 + 审核，六阶段工作流产出企业级长文。",
   "license": "MIT",
   "keywords": [
     "document-generation",
@@ -23,16 +23,16 @@
     "leadAgent": "doc-team-lead",
     "memberAgents": ["doc-researcher", "doc-generator", "doc-auditor"]
   },
-  "displayName": "Professional Document Generation Team",
-  "profession": "Enterprise-grade long document writing workshop",
-  "displayDescription": "4 roles collaborate across 6 phases (requirement analysis, retrieval, generation, audit loop, assembly, delivery) to produce compliance-ready long documents: construction design specs, technical proposals, bid docs, maintenance manuals, API/system docs, and more.",
-  "tags": ["Document Generation", "Long Document", "Enterprise Docs"],
+  "displayName": "专业文档生成团",
+  "profession": "专业文档生成团",
+  "displayDescription": "四角色协作六阶段（需求分析、检索、生成、审核闭环、汇编、交付），产出合规长文档：建施图说明、技术方案、投标文件、运维手册、API/系统文档等。",
+  "tags": ["文档生成", "长文档", "企业文档"],
   "categoryId": "10-ProjectQuality",
-  "defaultInitPrompt": "Generate an architectural construction drawing design specification for me",
+  "defaultInitPrompt": "帮我生成一份建筑施工图设计说明书",
   "quickPrompts": [
-    "Generate an architectural construction drawing design specification for me",
-    "Draft a technical proposal for a microservices-based e-commerce backend",
-    "Produce an API reference document from my OpenAPI spec"
+    "帮我生成一份建筑施工图设计说明书",
+    "起草一份基于微服务的电商后台技术方案",
+    "根据我的 OpenAPI 规范产出 API 参考文档"
   ],
   "members": [
     {
