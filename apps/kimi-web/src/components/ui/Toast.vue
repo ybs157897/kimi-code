@@ -1,26 +1,80 @@
 <!-- apps/kimi-web/src/components/ui/Toast.vue -->
 <!-- Design-system §03 Toast: floating notice = status icon + title + description
      + close. Variants color the icon (info / success / warning / danger). The
-     default slot carries extra body content (action links, detail panels…). -->
+     default slot carries extra body content (action links, detail panels…).
+     Motion is opt-in via `animated`: the toast then owns an enter/leave
+     <Transition> so a bare <Toast> animates on its own; consumers that bring
+     their own motion (e.g. the WarningToasts <TransitionGroup>) leave it off
+     and get the exact same static root as before. -->
 <script setup lang="ts">
+import { ref } from 'vue';
 import IconButton from './IconButton.vue';
 import Icon from './Icon.vue';
 
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   variant?: 'info' | 'success' | 'warning' | 'danger';
   title: string;
   message?: string;
   dismissLabel?: string;
+  /** Opt-in built-in enter/leave motion (default off). When on, the toast
+   *  fades/rises in on mount and animates its own close: the dismiss emit
+   *  fires only after the leave transition finishes, so a v-if-mounted toast
+   *  exits cleanly instead of popping. Keep it off when an outer
+   *  <Transition>/<TransitionGroup> already moves the toast. */
+  animated?: boolean;
 }>(), {
   variant: 'info',
   dismissLabel: 'Dismiss',
 });
 
-defineEmits<{ dismiss: [] }>();
+const emit = defineEmits<{ dismiss: [] }>();
+
+/** Visibility of the animated branch. The close button flips this instead of
+    emitting right away so the leave transition can run first — a parent v-if
+    would unmount the surface before the leave could run otherwise (same
+    contract as Menu's `open`). */
+const open = ref(true);
+
+function onDismissClick(): void {
+  if (props.animated) {
+    open.value = false;
+  } else {
+    emit('dismiss');
+  }
+}
+
+/** <Transition> hook: the toast has finished animating out — now tell the
+    consumer to unmount it. */
+function onAfterLeave(): void {
+  emit('dismiss');
+}
 </script>
 
 <template>
-  <div class="ui-toast" :class="`ui-toast--${variant}`">
+  <!-- Animated branch (opt-in): the toast owns its enter (appear) / leave. -->
+  <Transition v-if="animated" name="ui-toast" appear @after-leave="onAfterLeave">
+    <div v-show="open" class="ui-toast" :class="`ui-toast--${variant}`">
+      <span class="ui-toast__icon" aria-hidden="true">
+        <slot name="icon">
+          <Icon v-if="variant === 'success'" name="check" />
+          <Icon v-else-if="variant === 'danger'" name="close" />
+          <Icon v-else-if="variant === 'warning'" name="alert-triangle" />
+          <Icon v-else name="info" />
+        </slot>
+      </span>
+      <div class="ui-toast__body">
+        <div class="ui-toast__title">{{ title }}</div>
+        <div v-if="message" class="ui-toast__msg">{{ message }}</div>
+        <slot />
+      </div>
+      <IconButton class="ui-toast__close" size="sm" :label="dismissLabel" @click="onDismissClick">
+        <Icon name="close" size="sm" />
+      </IconButton>
+    </div>
+  </Transition>
+  <!-- Static branch (default): byte-identical to the pre-motion markup, so
+       outer motion owners like WarningToasts are unaffected. -->
+  <div v-else class="ui-toast" :class="`ui-toast--${variant}`">
     <span class="ui-toast__icon" aria-hidden="true">
       <slot name="icon">
         <Icon v-if="variant === 'success'" name="check" />
@@ -34,7 +88,7 @@ defineEmits<{ dismiss: [] }>();
       <div v-if="message" class="ui-toast__msg">{{ message }}</div>
       <slot />
     </div>
-    <IconButton class="ui-toast__close" size="sm" :label="dismissLabel" @click="$emit('dismiss')">
+    <IconButton class="ui-toast__close" size="sm" :label="dismissLabel" @click="onDismissClick">
       <Icon name="close" size="sm" />
     </IconButton>
   </div>
@@ -86,4 +140,18 @@ defineEmits<{ dismiss: [] }>();
 }
 .ui-toast--danger .ui-toast__msg { color: var(--color-danger); }
 .ui-toast__close { flex: none; margin: -3px -4px 0 0; }
+
+/* Built-in enter/leave (opt-in via `animated`): enter reuses the shared
+   kimi-card-in rise; leave fades and settles 4px down. --duration-base at
+   --ease-out matches the toast-stack tempo; reduced motion is covered by the
+   global kill switch in style.css. */
+.ui-toast-enter-active { animation: kimi-card-in var(--duration-base) var(--ease-out); }
+.ui-toast-leave-active {
+  transition: opacity var(--duration-base) var(--ease-out),
+    transform var(--duration-base) var(--ease-out);
+}
+.ui-toast-leave-to {
+  opacity: 0;
+  transform: translateY(4px);
+}
 </style>
