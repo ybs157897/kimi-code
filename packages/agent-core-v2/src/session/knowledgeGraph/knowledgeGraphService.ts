@@ -13,6 +13,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join, relative } from 'node:path';
 
@@ -58,6 +59,7 @@ interface GraphMeta {
   readonly builtAt: string;
   readonly gitHash: string | null;
   readonly stats: KnowledgeGraphBuildStats;
+  readonly fileHashes?: Record<string, string>;
 }
 
 function estimateComplexity(lineCount: number): 'simple' | 'moderate' | 'complex' {
@@ -91,6 +93,16 @@ export class KnowledgeGraphService implements IKnowledgeGraphService {
       `${GRAPH_DIR_NAME}/`,
     ]);
     const files = this.collectFiles(workDir, filter.isIgnored, options.maxFiles ?? DEFAULT_MAX_FILES);
+    const previousGraph = this.readPersistedGraph();
+    const previousMeta = this.readMeta();
+    const previousNodes = new Map(previousGraph?.nodes.map((node) => [node.id, node]));
+    const fileHashes: Record<string, string> = {};
+    let reusedFiles = 0;
+    options.onProgress?.({
+      phase: 'collecting',
+      processedFiles: files.length,
+      totalFiles: files.length,
+    });
 
     const plugin = new TreeSitterPlugin(builtinLanguageConfigs.filter((c) => c.treeSitter));
     await plugin.init();
@@ -100,22 +112,37 @@ export class KnowledgeGraphService implements IKnowledgeGraphService {
 
     let functions = 0;
     let classes = 0;
+    let processedFiles = 0;
+    let lastProgressAt = 0;
     for (const absPath of files) {
       const rel = relative(workDir, absPath);
       let content: string;
       try {
         content = readFileSync(absPath, 'utf8');
       } catch {
+        processedFiles += 1;
         continue;
+      }
+      const fileHash = hashContent(content);
+      fileHashes[rel] = fileHash;
+      const reusable = previousMeta?.fileHashes?.[rel] === fileHash;
+      const previousFile = reusable ? previousNodes.get(`file:${rel}`) : undefined;
+      const summaries: Record<string, string> = {};
+      if (reusable) {
+        reusedFiles += previousFile?.summary ? 1 : 0;
+        for (const node of previousNodes.values()) {
+          if (node.filePath !== rel || !node.summary) continue;
+          if (node.type === 'function' || node.type === 'class') summaries[node.name] = node.summary;
+        }
       }
       const { structure } = plugin.analyzeFileFull(absPath, content);
       const lineCount = content.split('\n').length;
       builder.addFileWithAnalysis(rel, structure, {
-        summary: '',
-        tags: [],
+        summary: previousFile?.summary ?? '',
+        tags: previousFile?.tags ?? [],
         complexity: estimateComplexity(lineCount),
-        summaries: {},
-        fileSummary: '',
+        summaries,
+        fileSummary: previousFile?.summary ?? '',
       });
       functions += structure.functions.length;
       classes += structure.classes.length;
@@ -127,6 +154,19 @@ export class KnowledgeGraphService implements IKnowledgeGraphService {
           builder.addImportEdge(rel, target);
         }
       }
+
+      processedFiles += 1;
+      if (
+        processedFiles === files.length ||
+        processedFiles - lastProgressAt >= Math.max(1, Math.ceil(files.length / 20))
+      ) {
+        lastProgressAt = processedFiles;
+        options.onProgress?.({
+          phase: 'parsing',
+          processedFiles,
+          totalFiles: files.length,
+        });
+      }
     }
 
     const graph = builder.build();
@@ -136,11 +176,17 @@ export class KnowledgeGraphService implements IKnowledgeGraphService {
       classes,
       edges: graph.edges.length,
       durationMs: Math.round(performance.now() - startedAt),
+      reusedFiles,
     };
 
     mkdirSync(this.dataDir, { recursive: true });
+    options.onProgress?.({
+      phase: 'persisting',
+      processedFiles: files.length,
+      totalFiles: files.length,
+    });
     writeFileSync(join(this.dataDir, GRAPH_FILE), JSON.stringify(graph));
-    const meta: GraphMeta = { builtAt: new Date().toISOString(), gitHash, stats };
+    const meta: GraphMeta = { builtAt: new Date().toISOString(), gitHash, stats, fileHashes };
     writeFileSync(join(this.dataDir, META_FILE), JSON.stringify(meta, null, 2));
 
     this.graph = graph;
@@ -319,6 +365,16 @@ export class KnowledgeGraphService implements IKnowledgeGraphService {
     }
   }
 
+  private readPersistedGraph(): KnowledgeGraph | null {
+    const graphPath = join(this.dataDir, GRAPH_FILE);
+    if (!existsSync(graphPath)) return null;
+    try {
+      return JSON.parse(readFileSync(graphPath, 'utf8')) as KnowledgeGraph;
+    } catch {
+      return null;
+    }
+  }
+
   private collectFiles(
     workDir: string,
     isIgnored: (rel: string) => boolean,
@@ -361,6 +417,10 @@ export class KnowledgeGraphService implements IKnowledgeGraphService {
       .map((c) => c.absPath)
       .sort();
   }
+}
+
+function hashContent(content: string): string {
+  return createHash('sha256').update(content).digest('hex');
 }
 
 let cachedExtensions: Set<string> | null = null;

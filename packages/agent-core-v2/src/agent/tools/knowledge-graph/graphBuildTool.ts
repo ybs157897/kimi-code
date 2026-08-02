@@ -3,18 +3,16 @@
  *
  * Delegates to the Session-scope `IKnowledgeGraphService` (`knowledgeGraph`
  * domain). Registered via the module-level `registerAgentToolService` at the
- * bottom of this file; activation is gated on the `knowledge-graph`
- * experimental flag through the `when` predicate. Bound at Agent scope.
+ * bottom of this file. Bound at Agent scope.
  */
 
-import { IFlagService } from '#/app/flag/flag';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import type { ToolExecution } from '#/tool/toolContract';
 
-import { KNOWLEDGE_GRAPH_FLAG_ID } from '#/session/knowledgeGraph/flag';
 import {
   IKnowledgeGraphService,
+  type KnowledgeGraphBuildProgress,
   type KnowledgeGraphBuildStats,
 } from '#/session/knowledgeGraph/knowledgeGraph';
 
@@ -28,15 +26,16 @@ import DESCRIPTION from './graph-build.md?raw';
 
 function renderStats(stats: KnowledgeGraphBuildStats): string {
   return [
-    'Knowledge graph built.',
+    'Knowledge graph build completed successfully.',
     `- files analyzed: ${stats.files}`,
     `- functions: ${stats.functions}`,
     `- classes: ${stats.classes}`,
     `- edges: ${stats.edges}`,
     `- took: ${stats.durationMs} ms`,
+    stats.reusedFiles === undefined ? undefined : `- reused summaries: ${stats.reusedFiles}`,
     '',
     'Use GraphSearch to find files, functions, and classes by name or meaning.',
-  ].join('\n');
+  ].filter((line): line is string => line !== undefined).join('\n');
 }
 
 export class GraphBuildTool implements IGraphBuildTool {
@@ -51,11 +50,12 @@ export class GraphBuildTool implements IGraphBuildTool {
     return {
       description: 'Building workspace knowledge graph',
       approvalRule: this.name,
-      execute: async () => {
+      execute: async ({ onUpdate }) => {
         try {
           const stats = await this.knowledgeGraph.buildStatic({
             extraIgnorePatterns: args.extraIgnorePatterns,
             maxFiles: args.maxFiles,
+            onProgress: (progress) => onUpdate?.(renderProgress(progress)),
           });
           return { isError: false, output: renderStats(stats) };
         } catch (error) {
@@ -69,8 +69,25 @@ export class GraphBuildTool implements IGraphBuildTool {
   }
 }
 
+function renderProgress(progress: KnowledgeGraphBuildProgress) {
+  const phase =
+    progress.phase === 'collecting'
+      ? 'Collecting source files'
+      : progress.phase === 'parsing'
+        ? 'Parsing source files'
+        : 'Saving knowledge graph';
+  const count = `${progress.processedFiles}/${progress.totalFiles}`;
+  return {
+    kind: 'progress' as const,
+    text: `${phase} (${count})`,
+    percent:
+      progress.totalFiles > 0
+        ? Math.round((progress.processedFiles / progress.totalFiles) * 100)
+        : undefined,
+  };
+}
+
 registerAgentToolService(IGraphBuildTool, GraphBuildTool, {
   name: GRAPH_BUILD_TOOL_NAME,
   domain: 'knowledgeGraph',
-  when: (accessor) => accessor.get(IFlagService).enabled(KNOWLEDGE_GRAPH_FLAG_ID),
 });

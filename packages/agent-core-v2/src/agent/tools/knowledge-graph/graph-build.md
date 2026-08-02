@@ -7,3 +7,8 @@ Use this tool when:
 - `GraphSearch` reports the graph is missing or stale and structural understanding is needed.
 
 After building, prefer `GraphSearch` over broad file-by-file reading for architecture/location questions.
+
+For deep project understanding, hand off to the `knowledge-graph-expert-team`:
+the static builder establishes the graph, the semantic analyst enriches nodes
+in batches with `GraphSummarize`, and the reviewer validates meaning-based
+search.

@@ -60,6 +60,9 @@ pnpm run build:sidecar
 
 echo ""
 echo "==> 3/3: Building Go binary + Wails bundle..."
+# Keep the Wails-generated platform icons reproducible from the tracked source asset.
+mkdir -p build
+cp assets/appicon.png build/appicon.png
 wails build -tags packaged -skipbindings
 
 # ── Post-processing ─────────────────────────────────────────────────────

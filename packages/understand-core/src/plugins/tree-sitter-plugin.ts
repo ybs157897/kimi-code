@@ -1,5 +1,5 @@
 import { createRequire } from "node:module";
-import { dirname, resolve, extname } from "node:path";
+import { dirname, resolve, extname, join } from "node:path";
 import type {
   AnalyzerPlugin,
   StructuralAnalysis,
@@ -12,6 +12,14 @@ import { builtinExtractors } from "./extractors/index.js";
 
 // web-tree-sitter uses CJS internally; we need createRequire for .wasm resolution
 const require = createRequire(import.meta.url);
+const TREE_SITTER_ASSETS_ENV = "KIMI_TREE_SITTER_ASSETS_DIR";
+const WEB_TREE_SITTER_PATH_ENV = "KIMI_WEB_TREE_SITTER_PATH";
+
+function resolveGrammarPath(wasmPackage: string, wasmFile: string): string {
+  const assetRoot = process.env[TREE_SITTER_ASSETS_ENV];
+  if (assetRoot) return join(assetRoot, wasmPackage, wasmFile);
+  return require.resolve(`${wasmPackage}/${wasmFile}`);
+}
 
 type TreeSitterParser = import("web-tree-sitter").Parser;
 type TreeSitterLanguage = import("web-tree-sitter").Language;
@@ -129,7 +137,14 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
   async init(): Promise<void> {
     if (this._initialized) return;
 
-    const mod = await import("web-tree-sitter");
+    // In a SEA build, the bundler rewrites the static import to a relative
+    // chunk (`./web-tree-sitter.cjs`) that lives outside the virtual SEA
+    // module filesystem. The desktop host materializes that chunk and gives
+    // us its absolute path through the environment.
+    const packagedModulePath = process.env[WEB_TREE_SITTER_PATH_ENV];
+    const mod = packagedModulePath
+      ? (require(packagedModulePath) as typeof import("web-tree-sitter"))
+      : await import("web-tree-sitter");
     const ParserCls = mod.Parser;
     const LanguageCls = mod.Language;
 
@@ -145,8 +160,9 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
 
         const loadGrammar = async () => {
           try {
-            const wasmPath = require.resolve(
-              `${config.treeSitter!.wasmPackage}/${config.treeSitter!.wasmFile}`,
+            const wasmPath = resolveGrammarPath(
+              config.treeSitter!.wasmPackage,
+              config.treeSitter!.wasmFile,
             );
             const lang = await LanguageCls.load(wasmPath);
             this._languages.set(config.id, lang);
@@ -154,8 +170,9 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
             // Special handling for TypeScript: also load TSX grammar
             if (config.id === "typescript") {
               try {
-                const tsxWasm = require.resolve(
-                  `${config.treeSitter!.wasmPackage}/tree-sitter-tsx.wasm`,
+                const tsxWasm = resolveGrammarPath(
+                  config.treeSitter!.wasmPackage,
+                  "tree-sitter-tsx.wasm",
                 );
                 const tsxLang = await LanguageCls.load(tsxWasm);
                 this._languages.set("tsx", tsxLang);
@@ -177,14 +194,17 @@ export class TreeSitterPlugin implements AnalyzerPlugin {
       await Promise.all(loadPromises);
     } else {
       // Legacy fallback: load TS/JS grammars directly
-      const tsWasm = require.resolve(
-        "tree-sitter-typescript/tree-sitter-typescript.wasm",
+      const tsWasm = resolveGrammarPath(
+        "tree-sitter-typescript",
+        "tree-sitter-typescript.wasm",
       );
-      const tsxWasm = require.resolve(
-        "tree-sitter-typescript/tree-sitter-tsx.wasm",
+      const tsxWasm = resolveGrammarPath(
+        "tree-sitter-typescript",
+        "tree-sitter-tsx.wasm",
       );
-      const jsWasm = require.resolve(
-        "tree-sitter-javascript/tree-sitter-javascript.wasm",
+      const jsWasm = resolveGrammarPath(
+        "tree-sitter-javascript",
+        "tree-sitter-javascript.wasm",
       );
 
       const [tsLang, tsxLang, jsLang] = await Promise.all([

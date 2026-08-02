@@ -4,16 +4,13 @@
  * Delegates to the Session-scope `IKnowledgeGraphService` (`knowledgeGraph`
  * domain). When no graph exists yet the tool answers with guidance to call
  * `GraphBuild` instead of an error, so the agent can self-recover. Registered
- * via the module-level `registerAgentToolService`; activation is gated on the
- * `knowledge-graph` experimental flag. Bound at Agent scope.
+ * via the module-level `registerAgentToolService`. Bound at Agent scope.
  */
 
-import { IFlagService } from '#/app/flag/flag';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import type { ToolExecution } from '#/tool/toolContract';
 
-import { KNOWLEDGE_GRAPH_FLAG_ID } from '#/session/knowledgeGraph/flag';
 import {
   IKnowledgeGraphService,
   type KnowledgeGraphSearchHit,
@@ -81,5 +78,4 @@ export class GraphSearchTool implements IGraphSearchTool {
 registerAgentToolService(IGraphSearchTool, GraphSearchTool, {
   name: GRAPH_SEARCH_TOOL_NAME,
   domain: 'knowledgeGraph',
-  when: (accessor) => accessor.get(IFlagService).enabled(KNOWLEDGE_GRAPH_FLAG_ID),
 });

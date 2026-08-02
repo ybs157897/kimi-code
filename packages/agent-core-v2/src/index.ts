@@ -250,7 +250,6 @@ import '#/app/flag/flagRegistry';
 import '#/app/flag/flagRegistryService';
 import '#/app/flag/flagService';
 import '#/session/expertTeam/flag';
-import '#/session/knowledgeGraph/flag';
 export * from '#/app/flag/flagRegistry';
 export * from '#/app/flag/flagRegistryService';
 export * from '#/app/flag/flag';

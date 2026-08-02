@@ -4,16 +4,13 @@
  * Delegates to the Session-scope `IKnowledgeGraphService` (`knowledgeGraph`
  * domain). Three modes: list pending batches (no args), merge file analyses
  * (`analyses`), merge the project summary (`projectSummary`). Registered via
- * the module-level `registerAgentToolService`; activation is gated on the
- * `knowledge-graph` experimental flag. Bound at Agent scope.
+ * the module-level `registerAgentToolService`. Bound at Agent scope.
  */
 
-import { IFlagService } from '#/app/flag/flag';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import type { ToolExecution } from '#/tool/toolContract';
 
-import { KNOWLEDGE_GRAPH_FLAG_ID } from '#/session/knowledgeGraph/flag';
 import {
   IKnowledgeGraphService,
   type SummarizationStatus,
@@ -117,5 +114,4 @@ export class GraphSummarizeTool implements IGraphSummarizeTool {
 registerAgentToolService(IGraphSummarizeTool, GraphSummarizeTool, {
   name: GRAPH_SUMMARIZE_TOOL_NAME,
   domain: 'knowledgeGraph',
-  when: (accessor) => accessor.get(IFlagService).enabled(KNOWLEDGE_GRAPH_FLAG_ID),
 });

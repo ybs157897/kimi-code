@@ -57,7 +57,11 @@ export default defineConfig({
   },
   deps: {
     alwaysBundle: shouldAlwaysBundle,
-    neverBundle: ['cpu-features'],
+    // web-tree-sitter ships a carefully constructed CJS/WASM loader. Re-
+    // transpiling its ESM source into a CJS chunk changes the loader's local
+    // `require` binding and breaks Parser.init() in SEA. The desktop runtime
+    // materializes the package's official CJS file as a runtime asset instead.
+    neverBundle: ['cpu-features', 'web-tree-sitter'],
     onlyBundle: false,
   },
   outputOptions: {

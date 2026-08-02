@@ -3,6 +3,7 @@ import { chmod, copyFile, mkdir, rm, writeFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { basename, dirname, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
+import { RUNTIME_FILE_ASSETS, TREE_SITTER_WASM_ASSETS } from '../sidecar/runtime-assets.mjs';
 
 const execFileAsync = promisify(execFile);
 const require = createRequire(import.meta.url);
@@ -14,6 +15,9 @@ const blobPath = join(distDir, 'engine.blob');
 const seaConfigPath = join(distDir, 'sea-config.json');
 const executableName = process.platform === 'win32' ? 'kimi-desktop-engine.exe' : 'kimi-desktop-engine';
 const executablePath = join(runtimeDir, executableName);
+const understandCoreRequire = createRequire(
+  join(appRoot, '../../packages/understand-core/package.json'),
+);
 const seaFuse = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
 
 function requireNode24() {
@@ -55,6 +59,21 @@ async function main() {
   ]);
   assertNoUnresolvedImports(bundleResult);
 
+  const webTreeSitterPackageDir = dirname(understandCoreRequire.resolve('web-tree-sitter'));
+  const fileAssetSources = {
+    extensionHostApi: join(distDir, 'extension-host.cjs'),
+    jitiBabel: join(distDir, 'jiti-babel.cjs'),
+    webTreeSitter: join(webTreeSitterPackageDir, 'web-tree-sitter.cjs'),
+    webTreeSitterWasm: join(webTreeSitterPackageDir, 'web-tree-sitter.wasm'),
+  };
+  const assets = Object.fromEntries([
+    ...RUNTIME_FILE_ASSETS.map(({ id }) => [id, fileAssetSources[id]]),
+    ...TREE_SITTER_WASM_ASSETS.map(([pkg, file], index) => [
+      `treeSitterWasm${index}`,
+      understandCoreRequire.resolve(`${pkg}/${file}`),
+    ]),
+  ]);
+
   await writeFile(
     seaConfigPath,
     `${JSON.stringify(
@@ -69,8 +88,7 @@ async function main() {
         // jiti's self-contained babel transform. The sidecar materializes both
         // next to the home dir at startup.
         assets: {
-          extensionHostApi: join(distDir, 'extension-host.cjs'),
-          jitiBabel: join(distDir, 'jiti-babel.cjs'),
+          ...assets,
         },
       },
       null,

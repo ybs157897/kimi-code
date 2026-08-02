@@ -4,7 +4,7 @@
  * Fuzzy-searches the workspace knowledge graph (files, functions, classes)
  * and returns node locations so the agent can jump straight to the relevant
  * source with Read/Grep instead of scanning the tree. Read-only. Bound at
- * Agent scope; gated behind the `knowledge-graph` experimental flag.
+ * Agent scope.
  */
 
 import { z } from 'zod';

@@ -143,4 +143,20 @@ describe('KnowledgeGraphService', () => {
     const reloaded = createService(workDir);
     expect((await reloaded.search('login'))[0]!.summary).toBe('Validates credentials.');
   });
+
+  it('reuses summaries for files whose content did not change during a rebuild', async () => {
+    const service = createService(workDir);
+    await service.buildStatic();
+    await service.applyFileAnalyses([
+      { filePath: join('src', 'auth.ts'), fileSummary: 'Authentication entry points.' },
+    ]);
+
+    const rebuilt = await service.buildStatic();
+
+    expect(rebuilt.reusedFiles).toBe(1);
+    expect(await service.summarizationStatus()).toMatchObject({
+      totalFiles: 2,
+      summarizedFiles: 1,
+    });
+  });
 });

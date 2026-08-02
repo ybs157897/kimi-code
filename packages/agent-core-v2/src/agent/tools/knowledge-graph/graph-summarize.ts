@@ -6,8 +6,7 @@
  * for summaries; called with `analyses` / `projectSummary` it merges the
  * agent-produced JSON back onto the graph. The tool itself never calls an
  * LLM — the summarization loop is orchestrated by the agent (skill-guided,
- * subagent-parallel). Bound at Agent scope; gated behind the
- * `knowledge-graph` experimental flag.
+ * subagent-parallel). Bound at Agent scope.
  */
 
 import { z } from 'zod';

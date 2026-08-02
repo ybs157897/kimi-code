@@ -11,10 +11,6 @@ as edges. Building is fast, fully static (tree-sitter), and consumes no model
 tokens. The graph is persisted in the project config directory and survives
 session restarts.
 
-> Requires the `knowledge-graph` experimental flag
-> (`KIMI_CODE_EXPERIMENTAL_KNOWLEDGE_GRAPH=1`). Without it the GraphBuild /
-> GraphSearch tools are not available — tell the user how to enable the flag
-> instead of falling back to manual whole-tree scans.
 
 ## When to use
 
@@ -69,3 +65,20 @@ very large workspaces confirm scope first.
 
 Partial progress persists — an interrupted pass resumes where it left off.
 
+For a complete build, prefer the `knowledge-graph-expert-team` workflow when
+the directory expert package is available under `.kimi-desktop/experts/` or
+`.kimi-code/experts/`. The lead creates the team first, then runs these phases
+in order: `graph-builder` calls `GraphBuild`, the lead enters `AgentSwarm` and
+dispatches one `semantic-analyst` worker per grouped batch from a bounded
+`GraphSummarize` result, merges the arrays, and
+`graph-reviewer` checks representative architecture queries. Do not claim deep
+semantic completion after only `GraphBuild` succeeds. Every member must return
+authoritative findings to the lead with `SendMessage`.
+
+If the package is not installed, create it using the documented directory
+package layout: `kimi.plugin.json`, `agents/`, and `skills/` under
+`.kimi-desktop/experts/knowledge-graph-expert-team/`. The manifest declares
+`expertType: "team"`, one lead, and declared members. Create the runtime team
+with `TeamCreate`, launch members with `TeamSpawn`, and call `TeamDelete` only
+after all reports arrive. See the expert-team customization guide for the
+complete manifest and Agent file contract.

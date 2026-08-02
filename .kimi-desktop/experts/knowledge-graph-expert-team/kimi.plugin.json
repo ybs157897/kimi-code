@@ -1,0 +1,55 @@
+{
+  "name": "knowledge-graph-expert-team",
+  "version": "1.0.0",
+  "description": "Builds a structural knowledge graph and enriches it with deep semantic summaries.",
+  "expertType": "team",
+  "agentName": "knowledge-graph-expert-team-lead",
+  "agents": [
+    "./agents/knowledge-graph-expert-team-lead.md",
+    "./agents/graph-builder.md",
+    "./agents/semantic-analyst.md",
+    "./agents/graph-reviewer.md"
+  ],
+  "skills": ["./skills/knowledge-graph-team-bootstrap"],
+  "teamInfo": {
+    "leadAgent": "knowledge-graph-expert-team-lead",
+    "memberAgents": ["graph-builder", "semantic-analyst", "graph-reviewer"]
+  },
+  "displayName": "Knowledge Graph Expert Team",
+  "profession": "Codebase Knowledge Graph Team",
+  "displayDescription": "Builds the code graph, adds deep semantic summaries, and validates architecture search quality.",
+  "tags": ["knowledge graph", "architecture", "semantic analysis"],
+  "categoryId": "02-Engineering",
+  "defaultInitPrompt": "Create a complete knowledge graph for this workspace, enrich it with deep semantic analysis, and report the architecture findings.",
+  "quickPrompts": [
+    "Build and semantically enrich the knowledge graph for this project.",
+    "Refresh the graph, summarize the most important modules, and validate search quality.",
+    "Use the knowledge graph to explain the project architecture with file references."
+  ],
+  "members": [
+    {
+      "agent": "knowledge-graph-expert-team-lead",
+      "role": "lead",
+      "name": { "en": "Graph Lead", "zh": "图谱主理人" },
+      "profession": { "en": "Knowledge Graph Lead", "zh": "知识图谱主理人" }
+    },
+    {
+      "agent": "graph-builder",
+      "role": "member",
+      "name": { "en": "Graph Builder", "zh": "图谱构建师" },
+      "profession": { "en": "Static Graph Engineer", "zh": "静态图谱工程师" }
+    },
+    {
+      "agent": "semantic-analyst",
+      "role": "member",
+      "name": { "en": "Semantic Analyst", "zh": "语义分析师" },
+      "profession": { "en": "Deep Semantic Analyst", "zh": "深度语义分析师" }
+    },
+    {
+      "agent": "graph-reviewer",
+      "role": "member",
+      "name": { "en": "Graph Reviewer", "zh": "图谱审查师" },
+      "profession": { "en": "Graph Quality Reviewer", "zh": "图谱质量审查师" }
+    }
+  ]
+}

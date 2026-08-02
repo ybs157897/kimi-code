@@ -93,10 +93,10 @@ describe('systemPromptVars', () => {
     expect(systemPromptVars({}, { skillActive: true })['plugin_sections']).toBe('');
   });
 
-  it('defaults host-identity variables to the CLI text', () => {
+  it('defaults host-identity variables to the Dolynk text', () => {
     const vars = systemPromptVars({}, { skillActive: true });
 
-    expect(vars['product_name']).toBe('Kimi Code CLI');
+    expect(vars['product_name']).toBe('Dolynk');
     expect(vars['reply_style_guide']).toContain("render as Markdown in the user's terminal");
   });
 
@@ -219,9 +219,9 @@ describe('renderSystemPrompt', () => {
     expect(prompt).not.toMatch(/\$\{[A-Za-z_][A-Za-z0-9_]*\}/);
   });
 
-  it('renders the host identity from the context, defaulting to the CLI text', () => {
+  it('renders the host identity from the context, defaulting to the Dolynk text', () => {
     const fallback = renderSystemPrompt('', {}, { skillActive: true });
-    expect(fallback).toContain('You are Kimi Code CLI,');
+    expect(fallback).toContain('You are Dolynk,');
     expect(fallback).toContain("render as Markdown in the user's terminal");
 
     const overridden = renderSystemPrompt(
@@ -231,6 +231,6 @@ describe('renderSystemPrompt', () => {
     );
     expect(overridden).toContain('You are Kimi Desktop,');
     expect(overridden).toContain('GUI_STYLE');
-    expect(overridden).not.toContain('Kimi Code CLI');
+    expect(overridden).not.toContain('Dolynk');
   });
 });

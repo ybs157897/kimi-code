@@ -44,17 +44,28 @@ const LOGIN_HIT: KnowledgeGraphSearchHit = {
 
 describe('GraphBuildTool', () => {
   it('renders build stats on success', async () => {
+    const updates: unknown[] = [];
     const tool = new GraphBuildTool(
       mockService({
-        buildStatic: async () => ({ files: 12, functions: 34, classes: 5, edges: 60, durationMs: 42 }),
+        buildStatic: async (options) => {
+          options?.onProgress?.({ phase: 'parsing', processedFiles: 6, totalFiles: 12 });
+          updates.push('received');
+          return { files: 12, functions: 34, classes: 5, edges: 60, durationMs: 42 };
+        },
       }),
     );
     const execution = tool.resolveExecution({});
     if (!('execute' in execution)) throw new Error('expected runnable execution');
-    const result = await execution.execute(CTX);
+    const result = await execution.execute({ ...CTX, onUpdate: (update) => updates.push(update) });
     expect(result.isError).toBe(false);
+    expect(updates).toContainEqual({
+      kind: 'progress',
+      text: 'Parsing source files (6/12)',
+      percent: 50,
+    });
     expect(result.output).toContain('files analyzed: 12');
     expect(result.output).toContain('functions: 34');
+    expect(result.output).toContain('completed successfully');
   });
 
   it('reports failures as tool errors', async () => {

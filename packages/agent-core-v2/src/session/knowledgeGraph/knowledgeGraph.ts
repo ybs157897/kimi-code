@@ -21,6 +21,8 @@ export interface KnowledgeGraphBuildStats {
   readonly classes: number;
   readonly edges: number;
   readonly durationMs: number;
+  /** Files whose semantic summaries were reused from an unchanged prior build. */
+  readonly reusedFiles?: number;
 }
 
 export interface KnowledgeGraphStatus {
@@ -35,6 +37,14 @@ export interface KnowledgeGraphBuildOptions {
   readonly extraIgnorePatterns?: readonly string[];
   /** Hard cap on analyzed files (largest files are dropped first). */
   readonly maxFiles?: number;
+  /** Live status updates for long-running builds. */
+  readonly onProgress?: ((progress: KnowledgeGraphBuildProgress) => void) | undefined;
+}
+
+export interface KnowledgeGraphBuildProgress {
+  readonly phase: 'collecting' | 'parsing' | 'persisting';
+  readonly processedFiles: number;
+  readonly totalFiles: number;
 }
 
 export interface KnowledgeGraphSearchOptions {

@@ -33,6 +33,12 @@ import {
   type Scope,
 } from '@moonshot-ai/agent-core-v2';
 import { serveProductIpc, type ProductIpcHost } from './product/host.js';
+import {
+  RUNTIME_FILE_ASSETS,
+  TREE_SITTER_ASSETS_DIR,
+  TREE_SITTER_ASSETS_ENV,
+  TREE_SITTER_WASM_ASSETS,
+} from './runtime-assets.mjs';
 
 /** Env var carrying the local IPC endpoint to listen on (contract D). */
 const ENDPOINT_ENV = 'KIMI_DESKTOP_IPC_ENDPOINT';
@@ -46,11 +52,6 @@ const HOME_ENV = 'KIMI_DESKTOP_HOME';
  * project directory.
  */
 const PROJECT_CONFIG_DIR_NAME = '.kimi-desktop';
-/** Env var the extension loader reads for its host API module path. */
-const HOST_API_ENV = 'KIMI_EXTENSION_HOST_API';
-/** Name of the SEA asset that carries the bundled extension host API chunk. */
-const HOST_API_ASSET = 'extensionHostApi';
-
 function resolveDesktopHome(): string {
   const fromEnv = process.env[HOME_ENV];
   if (fromEnv !== undefined && fromEnv.length > 0) return fromEnv;
@@ -64,21 +65,13 @@ function resolveDesktopHome(): string {
  * materializes each next to the home dir once and points the consuming code at
  * it via env. Dev mode (tsx ESM over node_modules) skips this entirely.
  */
-const SEA_ASSETS: ReadonlyArray<{ asset: string; file: string; env: string }> = [
-  {
-    asset: HOST_API_ASSET,
-    file: 'extension-host.cjs',
-    env: HOST_API_ENV,
-  },
-  {
-    asset: 'jitiBabel',
-    file: 'jiti-babel.cjs',
-    env: 'KIMI_JITI_BABEL_PATH',
-  },
-];
-
 async function materializeSeaAssets(home: string): Promise<void> {
-  let sea: { isSea(): boolean; getAsset(name: string, encoding?: 'utf8'): string } | undefined;
+  let sea:
+    | {
+        isSea(): boolean;
+        getAsset(name: string, encoding?: 'utf8'): string | ArrayBuffer;
+      }
+    | undefined;
   try {
     // `node:sea` exists on Node 24; guard anyway so a non-SEA runtime never
     // trips over module availability.
@@ -87,22 +80,50 @@ async function materializeSeaAssets(home: string): Promise<void> {
     return;
   }
   if (sea === undefined || !sea.isSea()) return;
-  for (const { asset, file, env } of SEA_ASSETS) {
+  for (const { id, target: file, env } of RUNTIME_FILE_ASSETS) {
     try {
-      const source = sea.getAsset(asset, 'utf8');
+      const source = sea.getAsset(id, id.endsWith('Wasm') ? undefined : 'utf8');
       const target = join(home, file);
       try {
-        await writeFile(target, source, { flag: 'wx' });
+        await writeFile(
+          target,
+          typeof source === 'string' ? source : new Uint8Array(source),
+          { flag: 'wx' },
+        );
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-        const existing = await readFile(target, 'utf8').catch(() => '');
-        if (existing !== source) await writeFile(target, source);
+        if (typeof source === 'string') {
+          const existing = await readFile(target, 'utf8').catch(() => '');
+          if (existing !== source) await writeFile(target, source);
+        } else {
+          await writeFile(target, new Uint8Array(source));
+        }
       }
-      process.env[env] = target;
+      if (env !== undefined) process.env[env] = target;
     } catch (error) {
-      console.error(`desktop-sidecar: failed to materialize ${asset}:`, error);
+      throw new Error(`desktop-sidecar: failed to materialize runtime asset ${id}`, {
+        cause: error,
+      });
     }
   }
+  const grammarRoot = join(home, TREE_SITTER_ASSETS_DIR);
+  for (let index = 0; index < TREE_SITTER_WASM_ASSETS.length; index += 1) {
+    const wasmAsset = TREE_SITTER_WASM_ASSETS[index];
+    if (wasmAsset === undefined) continue;
+    const [wasmPackage, wasmFile] = wasmAsset;
+    const id = `treeSitterWasm${index}`;
+    const target = join(grammarRoot, wasmPackage, wasmFile);
+    try {
+      await mkdir(dirname(target), { recursive: true });
+      const asset = sea.getAsset(id);
+      await writeFile(target, typeof asset === 'string' ? asset : new Uint8Array(asset));
+    } catch (error) {
+      throw new Error(`desktop-sidecar: failed to materialize runtime asset ${id}`, {
+        cause: error,
+      });
+    }
+  }
+  process.env[TREE_SITTER_ASSETS_ENV] = grammarRoot;
 }
 
 function resolveEndpoint(): string {

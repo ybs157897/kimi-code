@@ -4,7 +4,7 @@
  * Runs the tree-sitter static extraction over the session workspace via the
  * `knowledgeGraph` domain service and persists the knowledge graph under the
  * project-config dir. Purely static analysis — no LLM tokens are consumed.
- * Bound at Agent scope; gated behind the `knowledge-graph` experimental flag.
+ * Bound at Agent scope.
  */
 
 import { z } from 'zod';
