@@ -1,0 +1,63 @@
+{
+  "name": "@moonshot-ai/understand-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Codebase knowledge-graph engine — static extraction (tree-sitter), graph building, search and staleness. Vendored from Understand-Anything (MIT).",
+  "license": "MIT",
+  "author": "Moonshot AI",
+  "homepage": "https://github.com/MoonshotAI/kimi-code/tree/main/packages/understand-core#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/MoonshotAI/kimi-code.git",
+    "directory": "packages/understand-core"
+  },
+  "bugs": {
+    "url": "https://github.com/MoonshotAI/kimi-code/issues"
+  },
+  "keywords": [
+    "kimi",
+    "knowledge-graph",
+    "tree-sitter",
+    "static-analysis",
+    "code-understanding"
+  ],
+  "files": [
+    "dist",
+    "assets"
+  ],
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./assets/*": "./assets/*"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@tree-sitter-grammars/tree-sitter-kotlin": "1.1.0",
+    "fuse.js": "^7.1.0",
+    "ignore": "^7.0.5",
+    "tree-sitter-c-sharp": "^0.23.1",
+    "tree-sitter-cpp": "^0.23.4",
+    "tree-sitter-go": "^0.25.0",
+    "tree-sitter-java": "^0.23.5",
+    "tree-sitter-javascript": "^0.25.0",
+    "tree-sitter-php": "^0.23.11",
+    "tree-sitter-python": "^0.25.0",
+    "tree-sitter-ruby": "^0.23.1",
+    "tree-sitter-rust": "^0.24.0",
+    "tree-sitter-scala": "^0.24.0",
+    "tree-sitter-typescript": "^0.23.2",
+    "web-tree-sitter": "^0.26.6",
+    "yaml": "^2.8.3",
+    "zod": "catalog:"
+  }
+}

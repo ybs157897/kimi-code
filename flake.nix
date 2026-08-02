@@ -76,6 +76,7 @@
         ./packages/protocol
         ./packages/telemetry
         ./packages/transcript
+        ./packages/understand-core
         ./apps/kimi-code
         ./apps/kimi-desktop
         ./apps/vscode
@@ -102,6 +103,7 @@
         "@moonshot-ai/protocol"
         "@moonshot-ai/kimi-telemetry"
         "@moonshot-ai/transcript"
+        "@moonshot-ai/understand-core"
         "@moonshot-ai/kimi-code"
         "kimi-code"
         "@moonshot-ai/kimi-desktop"

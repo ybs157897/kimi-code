@@ -152,6 +152,7 @@
     "apps/*/scripts/",
     "docs/smoke-archive/",
     "packages/pi-tui/",
+    "packages/understand-core/",
     "*.generated.ts"
   ]
 }

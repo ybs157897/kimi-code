@@ -140,6 +140,10 @@ const DOMAIN_LAYER = new Map([
   ['model', 2],
   ['sessionIndex', 2],
   ['sessionStore', 2],
+  // `knowledgeGraph` builds/searches the workspace tree-sitter knowledge
+  // graph (vendored `@moonshot-ai/understand-core` engine). It consumes only
+  // L1 session/workspace infrastructure; the graph tools reach it from L7.
+  ['knowledgeGraph', 2],
   // L3 — registries & capabilities
   ['tool', 3],
   ['skill', 3],

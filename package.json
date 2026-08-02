@@ -23,6 +23,7 @@
     "check:legacy-agent-core-refs": "node scripts/check-legacy-agent-core-refs.mjs",
     "lint:pkg": "pnpm --filter @moonshot-ai/kimi-code exec publint && npm_config_cache=${TMPDIR:-/tmp}/kimi-code-npm-cache pnpm --filter @moonshot-ai/kimi-code exec attw --pack . --profile node16",
     "sherif": "sherif",
+    "pretest": "pnpm --filter @moonshot-ai/understand-core build",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",

@@ -11,7 +11,8 @@
     "@moonshot-ai/vis-server",
     "@moonshot-ai/vis-web",
     "@moonshot-ai/kimi-inspect",
-    "@moonshot-ai/kimi-desktop"
+    "@moonshot-ai/kimi-desktop",
+    "@moonshot-ai/understand-core"
   ],
   "snapshot": {
     "useCalculatedVersion": true,
