@@ -257,7 +257,7 @@ function startArchive(): void {
           @click.stop
         />
       </Transition>
-      <Tooltip v-else-if="sessionTitle" :text="sessionTitle">
+      <Tooltip v-if="!renaming && sessionTitle" :text="sessionTitle">
         <span class="ch-ses">{{ sessionTitle }}</span>
       </Tooltip>
     </div>
