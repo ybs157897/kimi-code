@@ -733,6 +733,9 @@ export function toAppEvent(wire: WireEvent): AppEvent {
         taskId: w.payload.task_id,
         outputChunk: w.payload.output_chunk,
         stream: w.payload.stream,
+        // Desktop sidecar projects subagent transcript frames with a kind;
+        // daemon WS frames predate the field and simply omit it.
+        kind: w.payload.kind,
       };
 
     case 'event.task.completed':

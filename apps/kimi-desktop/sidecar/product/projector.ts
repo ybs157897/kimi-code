@@ -106,6 +106,7 @@ export class ProductProjector {
   subscribe(sessionId: string, agentId: string, push: (event: WireEvent) => void): IDisposable {
     const state = createState();
     const subs: IDisposable[] = [];
+    let disposed = false;
 
     const emit = (event: WireEvent): void => {
       try {
@@ -440,6 +441,84 @@ export class ProductProjector {
       return next;
     };
 
+    // ── subagent transcript → task progress ─────────────────────────────────
+    // The main-agent stream never carries a subagent's own transcript frames:
+    // `IEventBus` is bound per Agent scope (one EventBusService per agent), so a
+    // spawned subagent's `thinking.delta` / `assistant.delta` / `tool.*` frames
+    // publish on ITS event bus, not the requester's. Without a dedicated
+    // subscription here, `event.task.progress` is never emitted for subagents
+    // and the detail panel sits on "waiting for thinking or tool progress…"
+    // forever. Mirror the daemon projector's `projectSubagentProgress`: attach a
+    // per-subagent subscription and fold its frames into task progress events.
+    const subagentSubs = new Map<string, IDisposable>();
+
+    const attachSubagentTranscript = (subagentId: string): void => {
+      if (subagentSubs.has(subagentId)) return;
+      const inner: IDisposable[] = [];
+      const progress = (kind: 'line' | 'text' | 'thinking', chunk: string): void => {
+        emit(
+          frame('event.task.progress', {
+            task_id: subagentId,
+            output_chunk: chunk,
+            stream: 'stdout',
+            kind,
+          }),
+        );
+      };
+
+      let subEvents: ReturnType<ReturnType<Klient['session']>['agent']>['events'];
+      try {
+        // The subagent may already be gone by the time the spawned frame is
+        // projected (aborted between launch and registration); a failed
+        // transcript subscription must never take the main stream down.
+        subEvents = this.klient.session(sessionId).agent(subagentId).events;
+      } catch {
+        return;
+      }
+
+      // Streamed text / thinking: forward each delta so the reducer
+      // concatenates into `AppTask.text` / `AppTask.thinking`. Thinking-capable
+      // models often emit only `thinking.delta` for a long stretch — without
+      // projecting those, the panel stays blank until the first tool call or
+      // assistant token.
+      inner.push(
+        subEvents.on('thinking.delta', (raw) => {
+          const delta = str(raw as unknown as RawEvent, 'delta');
+          if (delta === undefined || delta.length === 0) return;
+          progress('thinking', delta);
+        }),
+        subEvents.on('assistant.delta', (raw) => {
+          const delta = str(raw as unknown as RawEvent, 'delta');
+          if (delta === undefined || delta.length === 0) return;
+          progress('text', delta);
+        }),
+        subEvents.on('tool.call.started', (raw) => {
+          const p = raw as unknown as RawEvent;
+          const name = str(p, 'name') ?? str(p, 'toolName') ?? 'tool';
+          const label = name.replace(/_\d+$/, '');
+          progress('line', `Calling ${label}`);
+        }),
+        subEvents.on('tool.progress', (raw) => {
+          const p = raw as unknown as RawEvent;
+          const update = (p['update'] ?? {}) as RawEvent;
+          const chunk = str(update, 'text') ?? str(update, 'message') ?? str(p, 'message');
+          if (chunk === undefined || chunk.length === 0) return;
+          progress('line', chunk);
+        }),
+      );
+      subagentSubs.set(subagentId, {
+        dispose: () => {
+          for (const sub of inner) sub.dispose();
+          inner.length = 0;
+        },
+      });
+    };
+
+    const detachSubagentTranscript = (subagentId: string): void => {
+      subagentSubs.get(subagentId)?.dispose();
+      subagentSubs.delete(subagentId);
+    };
+
     const onSubagentSpawned = (raw: RawEvent): void => {
       const subagentId = str(raw, 'subagentId');
       if (subagentId === undefined || subagentId.length === 0) return;
@@ -454,6 +533,7 @@ export class ProductProjector {
         run_in_background: raw['runInBackground'] === true,
       });
       emit(frame('event.task.created', { task }));
+      attachSubagentTranscript(subagentId);
     };
 
     const onSubagentStarted = (raw: RawEvent): void => {
@@ -496,6 +576,7 @@ export class ProductProjector {
           output_preview: outputPreview,
         }),
       );
+      detachSubagentTranscript(subagentId);
     };
 
     const onSubagentFailed = (raw: RawEvent): void => {
@@ -516,6 +597,7 @@ export class ProductProjector {
           output_preview: outputPreview,
         }),
       );
+      detachSubagentTranscript(subagentId);
     };
 
     const onTaskStarted = (raw: RawEvent): void => {
@@ -549,6 +631,10 @@ export class ProductProjector {
             run_in_background: true,
           });
           emit(frame('event.task.created', { task }));
+          // A background subagent's transcript lives on its own agent stream;
+          // attach it here too (idempotent) so progress survives when the
+          // `subagent.spawned` frame was missed or arrives later.
+          attachSubagentTranscript(agentId);
           return;
         }
         emit(
@@ -613,7 +699,19 @@ export class ProductProjector {
       }
       // No output_preview here: the command is already kept on the task as
       // `command`; re-previewing `$ <command>` would clobber real output.
-      emit(frame('event.task.completed', { task_id: taskId, status: wireStatus }));
+      // Background subagents key their row by the AGENT id (see onTaskStarted),
+      // not the task-registry id — emit the completed frame against that same
+      // id, otherwise the UI reducer can't find the row and the task stays
+      // "running" forever after the subagent finishes.
+      const kind = str(info, 'kind');
+      const agentId = str(info, 'agentId');
+      const completedTaskId =
+        kind === 'agent' && agentId !== undefined && agentId.length > 0 ? agentId : taskId;
+      emit(frame('event.task.completed', { task_id: completedTaskId, status: wireStatus }));
+      // Release the transcript subscription of a finished background subagent.
+      if (kind === 'agent' && agentId !== undefined && agentId.length > 0) {
+        detachSubagentTranscript(agentId);
+      }
     };
 
     const onShellOutput = (raw: RawEvent): void => {
@@ -754,8 +852,7 @@ export class ProductProjector {
 
     // ── attach subscriptions ────────────────────────────────────────────────
 
-    const agent = this.klient.session(sessionId).agent(agentId);
-    const agentEvents = agent.events;
+    const agent = this.klient.session(sessionId).agent(agentId);    const agentEvents = agent.events;
     subs.push(
       agentEvents.on('turn.started', onTurnStarted),
       agentEvents.on('turn.step.started', onTurnStepStarted),
@@ -795,13 +892,37 @@ export class ProductProjector {
       sessionEvents.on('metadata.changed', onMetadataChanged),
     );
 
-    let disposed = false;
+    // Recovered subagents (client re-subscribed after the spawn already fired,
+    // or a persisted agent restored from a snapshot) never re-broadcast
+    // `subagent.spawned`, so their transcript subscription would never attach
+    // and the detail panel would stay blank for the whole run. Sweep the
+    // session's registered agents once and attach any missing ones.
+    if (agentId === 'main') {
+      void this.klient
+        .session(sessionId)
+        .agents()
+        .then((agents) => {
+          if (disposed) return;
+          for (const id of Object.keys(agents)) {
+            // The registry includes the main agent itself; only subagents need
+            // a transcript subscription.
+            if (id === 'main') continue;
+            attachSubagentTranscript(id);
+          }
+        })
+        .catch(() => {
+          // Metadata read failure is non-fatal; live spawns still attach.
+        });
+    }
+
     return {
       dispose: () => {
         if (disposed) return;
         disposed = true;
         for (const sub of subs) sub.dispose();
         subs.length = 0;
+        for (const sub of subagentSubs.values()) sub.dispose();
+        subagentSubs.clear();
       },
     };
   }

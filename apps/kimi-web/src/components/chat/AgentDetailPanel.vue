@@ -12,6 +12,8 @@ import type { AppAgentTranscript } from '../../api/types';
 import type { AgentMember } from '../../types';
 import Badge from '../ui/Badge.vue';
 import PanelHeader from '../ui/PanelHeader.vue';
+import Markdown from './Markdown.vue';
+import ThinkingBlock from './ThinkingBlock.vue';
 
 const props = defineProps<{ member: AgentMember }>();
 
@@ -100,6 +102,13 @@ const showWaiting = computed(
   () =>
     !hasBody.value &&
     (props.member.phase === 'queued' || props.member.phase === 'working'),
+);
+
+/** True while the subagent is still producing output — drives Markdown /
+ *  ThinkingBlock `streaming` so live text animates and thinking stays expanded
+ *  until the run settles, matching the main conversation. */
+const live = computed(
+  () => props.member.phase === 'queued' || props.member.phase === 'working',
 );
 
 interface ProgressGroup {
@@ -198,11 +207,15 @@ watch(
       </div>
       <div v-if="liveThinking" class="ap-field">
         <span class="ap-field-label">{{ t('tasks.detailThinking') }}</span>
-        <div class="ap-field-body ap-live ap-thinking">{{ liveThinking }}</div>
+        <div class="ap-field-body ap-live">
+          <ThinkingBlock :text="liveThinking" :streaming="live" foldable />
+        </div>
       </div>
       <div v-if="liveText" class="ap-field">
         <span class="ap-field-label">{{ t('tasks.detailOutput') }}</span>
-        <div class="ap-field-body ap-live">{{ liveText }}</div>
+        <div class="ap-field-body ap-markdown">
+          <Markdown :text="liveText" :streaming="live" />
+        </div>
       </div>
       <div v-if="progressGroups.length > 0" class="ap-field">
         <span class="ap-field-label">{{ t('tasks.detailProgress') }}</span>
@@ -229,7 +242,9 @@ watch(
       </div>
       <div v-if="member.summary" class="ap-field">
         <span class="ap-field-label">{{ t('tasks.detailResult') }}</span>
-        <div class="ap-field-body">{{ member.summary }}</div>
+        <div class="ap-field-body ap-markdown">
+          <Markdown :text="member.summary" />
+        </div>
       </div>
       <div v-if="showWaiting" class="ap-waiting">{{ t('tasks.detailWaiting') }}</div>
     </div>
@@ -282,12 +297,18 @@ watch(
   line-height: 1.5;
 }
 .ap-live {
-  font-family: var(--font-mono);
-  font-size: var(--text-xs);
-  line-height: 1.55;
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  line-height: 1.5;
 }
-.ap-thinking {
-  color: var(--color-text-muted);
+/* Markdown-rendered sections use the main conversation's typography; the
+   container must not force pre-wrap on top of it. */
+.ap-markdown {
+  white-space: normal;
+}
+.ap-markdown :deep(.md) {
+  font-size: var(--text-sm);
+  line-height: 1.6;
 }
 .ap-progress {
   display: flex;

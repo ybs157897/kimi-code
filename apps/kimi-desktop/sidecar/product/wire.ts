@@ -777,6 +777,13 @@ type WireEventTaskProgress = WireEventBase<
     task_id: string;
     output_chunk: string;
     stream: 'stdout' | 'stderr';
+    /**
+     * `line` (default) appends a new progress line (tool-call / tool-progress).
+     * `text` concatenates onto the subagent's growing streamed output
+     * (`AppTask.text`); `thinking` onto `AppTask.thinking`. Mirrors the
+     * `taskProgress` AppEvent kind.
+     */
+    kind?: 'line' | 'text' | 'thinking';
   }
 >;
 

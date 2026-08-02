@@ -342,6 +342,62 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
     expect((state.questionsBySession[sessionId] ?? []).map((q) => q.questionId)).toContain('q-1');
   });
 
+  it('maps event.task.progress with kind through toAppEvent (subagent transcript projection)', () => {
+    const sessionId = 's-1';
+    const base = {
+      seq: 1,
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+    };
+    const appEvents = [
+      {
+        type: 'event.task.progress',
+        ...base,
+        payload: { task_id: 'sub-1', output_chunk: 'thinking…', stream: 'stdout', kind: 'thinking' },
+      },
+      {
+        type: 'event.task.progress',
+        ...base,
+        payload: { task_id: 'sub-1', output_chunk: 'Hello', stream: 'stdout', kind: 'text' },
+      },
+      {
+        // Legacy frames without kind keep the default `line` behavior.
+        type: 'event.task.progress',
+        ...base,
+        payload: { task_id: 'sub-1', output_chunk: 'Calling Read', stream: 'stdout' },
+      },
+    ] as unknown as WireEvent[];
+
+    let state = createInitialState();
+    // Seed the subagent task first — taskProgress only accumulates into
+    // text/thinking/outputLines for existing subagent tasks.
+    state = reduceAppEvent(
+      state,
+      {
+        type: 'taskCreated',
+        sessionId,
+        task: {
+          id: 'sub-1',
+          sessionId,
+          kind: 'subagent',
+          description: 'Sub',
+          status: 'running',
+          createdAt: new Date().toISOString(),
+        },
+      },
+      { sessionId, seq: 1 },
+    );
+    state = reduceAppEvent(state, toAppEvent(appEvents[0]!), { sessionId, seq: 2 });
+    state = reduceAppEvent(state, toAppEvent(appEvents[1]!), { sessionId, seq: 3 });
+    state = reduceAppEvent(state, toAppEvent(appEvents[2]!), { sessionId, seq: 4 });
+
+    const task = (state.tasksBySession[sessionId] ?? []).find((t) => t.id === 'sub-1');
+    // kind=thinking → AppTask.thinking; kind=text → AppTask.text; kindless → outputLines.
+    expect(task?.thinking).toContain('thinking…');
+    expect(task?.text).toContain('Hello');
+    expect(task?.outputLines).toContain('Calling Read');
+  });
+
   // ---------------------------------------------------------------------------
   // Slice 7 — skills, code extensions, session export, and the Proxy removal.
   // Every KimiWebApi member is now a real method on WailsKimiWebApi, so the

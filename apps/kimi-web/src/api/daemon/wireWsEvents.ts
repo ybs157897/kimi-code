@@ -185,6 +185,8 @@ type WireEventTaskProgress = WireEventBase<'event.task.progress', {
   task_id: string;
   output_chunk: string;
   stream: 'stdout' | 'stderr';
+  /** `line` (default) appends a progress line; `text`/`thinking` concatenate onto the subagent's growing streamed output/thinking. */
+  kind?: 'line' | 'text' | 'thinking';
 }>;
 type WireEventTaskCompleted = WireEventBase<'event.task.completed', {
   task_id: string;
