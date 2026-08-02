@@ -59,6 +59,8 @@ export interface DesktopConnectionState {
  * returns an error.
  */
 export interface WailsAppBindings {
+  /** Open the operating system's native folder picker; empty means cancelled. */
+  SelectDirectory(title: string, defaultDirectory: string): Promise<string>;
   /** Sidecar / IPC health. */
   Hello(): Promise<string>;
   /** klient global `sessions.list`, as a JSON page of session summaries. */

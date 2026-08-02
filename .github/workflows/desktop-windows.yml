@@ -51,6 +51,10 @@ jobs:
         # Cross-platform script; produces internal/sidecar/runtime/kimi-desktop-engine.exe here.
         run: pnpm --filter @moonshot-ai/kimi-desktop run build:sidecar
 
+      - name: Smoke-test packaged sidecar
+        # Starts the generated SEA and exercises authenticated IPC before packaging it.
+        run: pnpm --filter @moonshot-ai/kimi-desktop run smoke:sidecar
+
       - name: Bundle default experts
         # Generates the experts.tar.gz that the packaged build embeds via
         # go:embed (internal/appdata/experts.tar.gz).

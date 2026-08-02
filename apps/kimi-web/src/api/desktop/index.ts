@@ -23,6 +23,23 @@ export function isDesktopShellAvailable(): boolean {
   return window.go?.main?.App !== undefined && window.runtime !== undefined;
 }
 
+/**
+ * Open the native folder picker exposed by the Wails shell. This deliberately
+ * bypasses the daemon `/fs:browse` fallback: a local desktop workspace should
+ * be selected by the operating system, not browsed through the engine.
+ */
+export async function selectDesktopDirectory(
+  title: string,
+  defaultDirectory: string,
+): Promise<string | null> {
+  const app = typeof window === 'undefined' ? undefined : window.go?.main?.App;
+  if (app === undefined || window.runtime === undefined) {
+    throw new Error('native directory picker is unavailable outside the desktop shell');
+  }
+  const selected = await app.SelectDirectory(title, defaultDirectory);
+  return selected === '' ? null : selected;
+}
+
 let singleton: DesktopBridge | undefined;
 
 /**

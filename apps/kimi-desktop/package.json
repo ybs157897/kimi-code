@@ -6,7 +6,7 @@
   "description": "Wails desktop shell around the Kimi Code web UI.",
   "scripts": {
     "build:frontend": "pnpm --filter @moonshot-ai/kimi-web build && node scripts/copy-dist.mjs",
-    "build:sidecar": "node scripts/build-sidecar.mjs",
+    "build:sidecar": "pnpm --filter @moonshot-ai/understand-core build && node scripts/build-sidecar.mjs",
     "build": "pnpm run build:frontend && pnpm run build:sidecar && node scripts/bundle-experts.mjs && wails build -tags packaged -skipbindings && node scripts/package-macos.mjs",
     "dev": "pnpm run build:frontend && go run -tags desktop,production .",
     "typecheck": "go vet ./...",

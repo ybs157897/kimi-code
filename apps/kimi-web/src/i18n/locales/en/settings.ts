@@ -32,7 +32,7 @@ export default {
   providersHint: 'Add, remove, or refresh providers',
   manageProviders: 'Manage',
   modelsKicker: 'Models',
-  modelsTitle: 'Models & providers',
+  modelsTitle: 'Model settings',
   modelsDesc: 'Choose the default for new sessions and connect DeepSeek or any OpenAI / Anthropic-compatible service.',
   modelUsage: 'Usage',
   modelUsageHint: 'Choose the model for this session and the default for sessions you create later.',

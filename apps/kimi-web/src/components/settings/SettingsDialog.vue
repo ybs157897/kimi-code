@@ -12,16 +12,21 @@ import LanguageSwitcher from './LanguageSwitcher.vue';
 import { serverEndpointLabel } from '../../api/config';
 import { downloadTraceLog, isTraceEnabled } from '../../debug/trace';
 import type { Accent, ColorScheme } from '../../composables/useKimiWebClient';
-import type { AppConfig, AppModel, AppProvider } from '../../api/types';
+import type {
+  AppConfig,
+  AppModel,
+  AppProvider,
+  AppProviderDetail,
+  AppProviderInput,
+} from '../../api/types';
 import Dialog from '../ui/Dialog.vue';
 import Switch from '../ui/Switch.vue';
 import Button from '../ui/Button.vue';
-import Badge from '../ui/Badge.vue';
-import Card from '../ui/Card.vue';
 import Icon from '../ui/Icon.vue';
 import SegmentedControl from '../ui/SegmentedControl.vue';
 import Select from '../ui/Select.vue';
 import Tooltip from '../ui/Tooltip.vue';
+import ProviderManager from './ProviderManager.vue';
 
 const { t } = useI18n();
 
@@ -49,6 +54,11 @@ const props = defineProps<{
   models?: AppModel[];
   /** Configured providers, surfaced in the dedicated Models settings page. */
   providers?: AppProvider[];
+  providersLoading?: boolean;
+  providersUnavailable?: boolean;
+  loadProviderDetail: (id: string) => Promise<AppProviderDetail | null>;
+  saveProvider: (input: AppProviderInput, existingId?: string) => Promise<boolean>;
+  initialTab?: 'general' | 'models' | 'agent' | 'account' | 'advanced' | 'archived';
   /** True while POST /api/v1/config is saving. */
   configSaving?: boolean;
   /** Server version reported by GET /api/v1/meta. */
@@ -69,7 +79,9 @@ const emit = defineEmits<{
   login: [];
   logout: [];
   openOnboarding: [];
-  openProviders: [];
+  refreshProvider: [id: string];
+  deleteProvider: [id: string];
+  openProviderLogin: [platform: string];
   pickModel: [];
   updateConfig: [patch: Partial<AppConfig>];
   close: [];
@@ -77,7 +89,7 @@ const emit = defineEmits<{
 
 type SettingsTab = 'general' | 'models' | 'agent' | 'account' | 'advanced' | 'archived';
 
-const activeTab = ref<SettingsTab>('general');
+const activeTab = ref<SettingsTab>(props.initialTab ?? 'general');
 
 const tabs: { id: SettingsTab; labelKey: string }[] = [
   { id: 'general', labelKey: 'settings.tabs.general' },
@@ -372,6 +384,7 @@ function archiveTime(iso: string): string {
     height="fixed"
     :padded="false"
     inline
+    full-screen
     @close="emit('close')"
   >
     <div ref="dialogRef" class="sd">
@@ -398,9 +411,10 @@ function archiveTime(iso: string): string {
         </button>
       </nav>
 
-      <div class="body">
+      <div class="body" :class="{ 'body--models': activeTab === 'models' }">
         <header class="page-head">
-          <h1>{{ t('settings.title') }}</h1>
+          <h1>{{ activeTab === 'models' ? t('settings.modelsTitle') : t('settings.title') }}</h1>
+          <p v-if="activeTab === 'models'">{{ t('settings.modelsDesc') }}</p>
         </header>
         <Transition name="panel-swap" mode="out-in">
         <!-- General: Appearance + Notifications -->
@@ -528,38 +542,7 @@ function archiveTime(iso: string): string {
           id="settings-panel-models"
           aria-labelledby="settings-tab-models"
         >
-          <div class="panel-head">
-            <div class="panel-kicker">{{ t('settings.modelsKicker') }}</div>
-            <h4 class="panel-title">{{ t('settings.modelsTitle') }}</h4>
-            <p class="panel-desc">{{ t('settings.modelsDesc') }}</p>
-          </div>
-
-          <div class="model-summary-grid">
-            <Card>
-              <div class="model-summary">
-                <span class="model-summary__icon"><Icon name="sparkles" size="md" /></span>
-                <span class="model-summary__copy">
-                  <span class="model-summary__label">{{ t('settings.defaultModel') }}</span>
-                  <span class="model-summary__value mono">
-                    {{ config?.defaultModel ?? t('settings.noDefaultModel') }}
-                  </span>
-                </span>
-              </div>
-            </Card>
-            <Card>
-              <div class="model-summary">
-                <span class="model-summary__icon"><Icon name="globe" size="md" /></span>
-                <span class="model-summary__copy">
-                  <span class="model-summary__label">{{ t('settings.availableModels') }}</span>
-                  <span class="model-summary__value">
-                    {{ t('settings.modelCount', { count: models?.length ?? 0 }) }}
-                  </span>
-                </span>
-              </div>
-            </Card>
-          </div>
-
-          <section class="sec">
+          <section class="sec model-usage-card">
             <div class="sec-head">
               <div>
                 <h3 class="sec-title">{{ t('settings.modelUsage') }}</h3>
@@ -569,7 +552,7 @@ function archiveTime(iso: string): string {
                 {{ t('settings.chooseModel') }}
               </Button>
             </div>
-            <div class="row">
+            <div class="row model-usage-field model-usage-field--default">
               <span class="rlabel">
                 {{ t('settings.defaultModel') }}
                 <span class="hint">{{ t('settings.defaultModelHint') }}</span>
@@ -591,7 +574,7 @@ function archiveTime(iso: string): string {
               </div>
               <span v-else class="rvalue mono">{{ config?.defaultModel ?? t('settings.noDefaultModel') }}</span>
             </div>
-            <div class="row">
+            <div class="row model-usage-field model-usage-field--secondary">
               <span class="rlabel">
                 {{ t('settings.secondaryModel') }}
                 <span class="hint">{{ t('settings.secondaryModelHint') }}</span>
@@ -614,38 +597,19 @@ function archiveTime(iso: string): string {
             </div>
           </section>
 
-          <section class="sec">
-            <div class="sec-head">
-              <div>
-                <h3 class="sec-title">{{ t('settings.modelAccess') }}</h3>
-                <p class="sec-copy">{{ t('settings.modelAccessHint') }}</p>
-              </div>
-              <Button variant="primary" size="sm" @click="emit('openProviders')">
-                <Icon name="settings" size="sm" />
-                {{ t('settings.manageProviders') }}
-              </Button>
-            </div>
-            <div v-if="providers && providers.length > 0" class="provider-preview">
-              <div v-for="provider in providers.slice(0, 4)" :key="provider.id" class="provider-preview__row">
-                <span class="provider-preview__name">{{ provider.id }}</span>
-                <span class="provider-preview__type mono">{{ provider.type }}</span>
-                <Badge
-                  :variant="provider.status === 'connected' ? 'success' : provider.status === 'error' ? 'danger' : 'neutral'"
-                  size="sm"
-                  dot
-                >
-                  {{ t(`providers.status.${provider.status}`) }}
-                </Badge>
-              </div>
-            </div>
-            <div v-else class="model-empty">
-              <Icon name="globe" size="lg" />
-              <span>{{ t('settings.noProviders') }}</span>
-              <Button variant="primary" size="sm" @click="emit('openProviders')">
-                {{ t('settings.addFirstProvider') }}
-              </Button>
-            </div>
-          </section>
+          <ProviderManager
+            embedded
+            :providers="providers ?? []"
+            :models="models ?? []"
+            :loading="providersLoading"
+            :unavailable="providersUnavailable"
+            :load-detail="loadProviderDetail"
+            :save="saveProvider"
+            @refresh="emit('refreshProvider', $event)"
+            @delete="emit('deleteProvider', $event)"
+            @open-login="emit('openProviderLogin', $event)"
+            @close="emit('close')"
+          />
         </section>
 
         <!-- Account -->
@@ -875,8 +839,8 @@ function archiveTime(iso: string): string {
   display: flex;
   flex-direction: column;
   flex: none;
-  width: 148px;
-  padding: var(--space-2);
+  width: 220px;
+  padding: var(--space-5) var(--space-4);
   gap: 2px;
   overflow-y: auto;
 }
@@ -915,9 +879,10 @@ function archiveTime(iso: string): string {
 .tab.on { background: var(--color-accent-soft); color: var(--color-accent); font-weight: var(--weight-medium); }
 .tab:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
 
-.body { display: flex; flex-direction: column; overflow-y: auto; padding: var(--space-5) var(--space-8) var(--space-8); flex: 1; min-width: 0; }
+.body { display: flex; flex-direction: column; overflow-y: auto; padding: var(--space-6) var(--space-8) var(--space-8); flex: 1; min-width: 0; }
+.body--models { overflow: hidden; }
 .page-head,
-.panel { width: min(100%, 820px); margin-inline: auto; }
+.panel { width: 100%; margin-inline: 0; }
 .page-head { margin-bottom: var(--space-4); }
 .page-head h1 {
   margin: 0;
@@ -926,6 +891,14 @@ function archiveTime(iso: string): string {
   font-size: var(--text-2xl);
   font-weight: var(--weight-semibold);
   letter-spacing: -0.01em;
+}
+.page-head p {
+  max-width: 680px;
+  margin: var(--space-2) 0 0;
+  color: var(--color-text-muted);
+  font-family: var(--font-ui);
+  font-size: var(--text-base);
+  line-height: var(--leading-normal);
 }
 /* Section switch: quiet fade + a few-px rise, out-in keyed on the active tab. */
 .panel-swap-enter-active,
@@ -1035,51 +1008,46 @@ function archiveTime(iso: string): string {
 
 .actions { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-2); }
 
-.model-settings { padding-top: var(--space-3); }
-.model-summary-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: var(--space-3);
-}
-.model-summary {
+.model-settings {
   display: flex;
-  align-items: center;
-  gap: var(--space-3);
-}
-.model-summary__icon {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 32px;
-  height: 32px;
-  flex: none;
-  border-radius: var(--radius-md);
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
-}
-.model-summary__copy {
-  display: flex;
+  flex: 1;
+  min-height: 0;
   flex-direction: column;
+  padding-top: 0;
+}
+.model-usage-card {
+  display: grid;
+  grid-template-areas: "summary default secondary action";
+  grid-template-columns: minmax(220px, 1fr) minmax(210px, 300px) minmax(210px, 300px) auto;
+  align-items: end;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+  padding-block: var(--space-3);
+}
+.model-usage-card .sec-head { display: contents; }
+.model-usage-card .sec-head > div { grid-area: summary; align-self: center; }
+.model-usage-card .sec-head > .ui-button { grid-area: action; align-self: end; }
+.model-usage-field {
   min-width: 0;
-  gap: 2px;
+  min-height: 0;
+  padding: 0;
+  flex-direction: column;
+  align-items: stretch;
+  gap: var(--space-1);
 }
-.model-summary__label {
-  font-family: var(--font-ui);
-  font-size: var(--text-xs);
-  color: var(--color-text-muted);
+.model-usage-field--default { grid-area: default; }
+.model-usage-field--secondary { grid-area: secondary; }
+.model-usage-card .row + .row {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
 }
-.model-summary__value {
-  overflow: hidden;
-  color: var(--color-text);
-  font-family: var(--font-ui);
-  font-size: var(--text-base);
-  font-weight: var(--weight-medium);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.model-summary__value.mono {
-  font-family: var(--font-mono);
-  font-size: var(--text-sm);
+.model-usage-card .rlabel { gap: 0; font-size: var(--text-sm); }
+.model-usage-card .hint { display: none; }
+.model-usage-card .select-wrap { width: 100%; min-width: 0; max-width: none; }
+.model-settings > :deep(.provider-manager-surface) {
+  flex: 1;
+  min-height: 0;
 }
 .sec-copy {
   margin: var(--space-1) 0 0;
@@ -1088,51 +1056,16 @@ function archiveTime(iso: string): string {
   font-size: var(--text-sm);
   line-height: var(--leading-normal);
 }
-.provider-preview {
-  overflow: hidden;
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-md);
+@media (max-width: 1100px) {
+  .model-usage-card {
+    grid-template-areas:
+      "summary action"
+      "default secondary";
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    align-items: end;
+  }
+  .model-usage-card .sec-head > .ui-button { justify-self: end; }
 }
-.provider-preview__row {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(110px, 0.7fr) auto;
-  align-items: center;
-  gap: var(--space-3);
-  min-height: 44px;
-  padding: var(--space-2) var(--space-3);
-  border-top: 1px solid var(--color-line);
-}
-.provider-preview__row:first-child { border-top: none; }
-.provider-preview__row:hover { background: var(--color-surface-sunken); }
-.provider-preview__name {
-  overflow: hidden;
-  color: var(--color-text);
-  font-family: var(--font-ui);
-  font-size: var(--text-base);
-  font-weight: var(--weight-medium);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.provider-preview__type {
-  overflow: hidden;
-  color: var(--color-text-muted);
-  font-size: var(--text-xs);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.model-empty {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: var(--space-3);
-  min-height: 92px;
-  border: 1px dashed var(--color-line-strong);
-  border-radius: var(--radius-md);
-  color: var(--color-text-muted);
-  font-family: var(--font-ui);
-  font-size: var(--text-sm);
-}
-
 @media (max-width: 640px) {
   .sd { flex-direction: column; }
   .settings-tabs {
@@ -1149,6 +1082,7 @@ function archiveTime(iso: string): string {
   }
   .tab { white-space: nowrap; flex: none; }
   .body { padding: var(--space-4); }
+  .body--models { overflow-y: auto; }
   .page-head, .panel { width: 100%; }
   .row {
     align-items: flex-start;
@@ -1158,18 +1092,17 @@ function archiveTime(iso: string): string {
     width: 100%;
     max-width: none;
   }
-  .model-summary-grid { grid-template-columns: 1fr; }
   .model-settings .sec-head {
     align-items: flex-start;
     flex-direction: column;
   }
-  .provider-preview__row { grid-template-columns: minmax(0, 1fr) auto; }
-  .provider-preview__type { display: none; }
-  .model-empty {
-    align-items: flex-start;
-    flex-direction: column;
-    padding: var(--space-4);
+  .model-usage-card {
+    display: flex;
+    align-items: stretch;
   }
+  .model-usage-card .sec-head { display: flex; }
+  .model-usage-card .sec-head > .ui-button { align-self: stretch; }
+  .model-usage-card .hint { display: block; }
 }
 /* Archived-sessions tab */
 .setting-card { border: 1px solid var(--color-line); border-radius: var(--radius-xl); overflow: hidden; background: var(--color-bg); }

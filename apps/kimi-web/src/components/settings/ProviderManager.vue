@@ -2,7 +2,7 @@
 <!-- Provider settings surface: the list can be embedded page-level, while
      create/edit remains a focused dialog with per-model context sizes. -->
 <script setup lang="ts">
-import { onMounted, onUnmounted, reactive, ref } from 'vue';
+import { onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppModel, AppProvider, AppProviderDetail, AppProviderInput } from '../../api/types';
 import { useDialogFocus } from '../../composables/useDialogFocus';
@@ -22,8 +22,6 @@ import Banner from '../ui/Banner.vue';
 const { t } = useI18n();
 
 const dialogRef = ref<HTMLElement | null>(null);
-// Move focus into the dialog on open; restore it to the opener on close.
-useDialogFocus(dialogRef);
 
 const props = defineProps<{
   providers: AppProvider[];
@@ -39,6 +37,10 @@ const props = defineProps<{
   /** Create (existingId undefined) or replace a provider. True = saved. */
   save: (input: AppProviderInput, existingId?: string) => Promise<boolean>;
 }>();
+
+// Move focus into the standalone dialog on open; the parent Settings dialog
+// owns focus when this manager is embedded as its second/third-level content.
+if (!props.embedded) useDialogFocus(dialogRef);
 
 const emit = defineEmits<{
   refresh: [id: string];
@@ -180,6 +182,13 @@ async function openEdit(provider: AppProvider): Promise<void> {
 }
 
 function cancelForm(): void {
+  if (props.embedded) {
+    const fallback =
+      props.providers.find((provider) => provider.id === editingId.value) ?? props.providers[0];
+    if (fallback) void openEdit(fallback);
+    else formOpen.value = false;
+    return;
+  }
   formOpen.value = false;
 }
 
@@ -227,7 +236,14 @@ async function submitForm(): Promise<void> {
   formBusy.value = true;
   try {
     const saved = await props.save(input, editingId.value);
-    if (saved) formOpen.value = false;
+    if (saved) {
+      if (props.embedded) {
+        editingId.value = id;
+        hasStoredKey.value = true;
+      } else {
+        formOpen.value = false;
+      }
+    }
   } finally {
     formBusy.value = false;
   }
@@ -238,6 +254,7 @@ async function submitForm(): Promise<void> {
 // -------------------------------------------------------------------------
 
 function handleKeydown(e: KeyboardEvent): void {
+  if (props.embedded) return;
   if (e.key === 'Escape') {
     if (formOpen.value) { cancelForm(); return; }
     emit('close');
@@ -246,6 +263,29 @@ function handleKeydown(e: KeyboardEvent): void {
 
 onMounted(() => document.addEventListener('keydown', handleKeydown));
 onUnmounted(() => document.removeEventListener('keydown', handleKeydown));
+
+// The embedded settings layout always keeps a useful detail pane visible:
+// select the first configured provider, or present the add-provider form when
+// the catalog is empty. When a selected provider is deleted, move to the next
+// available row instead of leaving a dead detail view behind.
+watch(
+  [
+    () => props.embedded,
+    () => props.loading,
+    () => props.unavailable,
+    () => props.providers,
+  ],
+  ([embedded, loading, unavailable, providers]) => {
+    if (!embedded || loading || unavailable) return;
+    const selectedStillExists =
+      editingId.value !== undefined && providers.some((provider) => provider.id === editingId.value);
+    if (formOpen.value && (editingId.value === undefined || selectedStillExists)) return;
+    const first = providers[0];
+    if (first) void openEdit(first);
+    else openAdd();
+  },
+  { immediate: true },
+);
 
 // -------------------------------------------------------------------------
 // Status helpers
@@ -264,21 +304,22 @@ function statusLabel(status: AppProvider['status']): string {
 </script>
 
 <template>
-  <Dialog
-    :open="true"
-    :close-on-esc="false"
-    :title="embedded && !formOpen ? undefined : t('providers.title')"
-    size="xl"
-    height="fixed"
-    :inline="embedded && !formOpen"
+  <component
+    :is="embedded ? 'div' : Dialog"
+    :open="embedded ? undefined : true"
+    :close-on-esc="embedded ? undefined : false"
+    :title="embedded ? undefined : t('providers.title')"
+    :size="embedded ? undefined : 'xl'"
+    :height="embedded ? undefined : 'fixed'"
+    :class="{ 'provider-manager-surface': embedded }"
     @close="emit('close')"
   >
-    <div ref="dialogRef" class="pm">
-      <Button v-if="!formOpen" variant="ghost" size="sm" class="page-back-button" @click="emit('close')">
+    <div ref="dialogRef" class="pm" :class="{ 'pm--embedded': embedded }">
+      <Button v-if="!embedded && !formOpen" variant="ghost" size="sm" class="page-back-button" @click="emit('close')">
         <Icon name="undo" size="sm" />
         {{ t('providers.backToApp') }}
       </Button>
-      <div v-if="!formOpen" class="manager-head">
+      <div v-if="embedded || !formOpen" class="manager-head">
         <div>
           <div class="manager-kicker">{{ t('providers.accessKicker') }}</div>
           <p class="manager-copy">{{ t('providers.accessHint') }}</p>
@@ -288,7 +329,7 @@ function statusLabel(status: AppProvider['status']): string {
             <Icon name="sparkles" size="sm" />
             {{ t('providers.addDeepSeek') }}
           </Button>
-          <Button variant="primary" size="sm" @click="openAdd">
+          <Button v-if="!embedded" variant="primary" size="sm" @click="openAdd">
             <Icon name="plus" size="sm" />
             {{ t('providers.addCustom') }}
           </Button>
@@ -296,7 +337,7 @@ function statusLabel(status: AppProvider['status']): string {
       </div>
 
       <!-- Provider list -->
-      <div v-if="!formOpen" class="prov-list">
+      <div v-if="embedded || !formOpen" class="prov-list">
         <!-- Loading state — a content-shaped ghost of the provider rows
              (breathing lives in Skeleton.vue's own scoped styles). -->
         <div v-if="loading" class="prov-loading">
@@ -327,7 +368,17 @@ function statusLabel(status: AppProvider['status']): string {
         </EmptyState>
         <!-- Provider rows -->
         <template v-else>
-          <div v-for="p in providers" :key="p.id" class="prov-row">
+          <div
+            v-for="p in providers"
+            :key="p.id"
+            class="prov-row"
+            :class="{ 'prov-row--active': embedded && editingId === p.id && formOpen }"
+            :role="embedded ? 'button' : undefined"
+            :tabindex="embedded ? 0 : undefined"
+            @click="embedded && openEdit(p)"
+            @keydown.enter.prevent="embedded && openEdit(p)"
+            @keydown.space.prevent="embedded && openEdit(p)"
+          >
             <!-- Status dot -->
             <Tooltip :text="statusLabel(p.status)">
               <span
@@ -350,7 +401,7 @@ function statusLabel(status: AppProvider['status']): string {
               </span>
             </div>
             <!-- Actions -->
-            <div class="prov-actions">
+            <div v-if="!embedded" class="prov-actions">
               <Tooltip :text="t('providers.editTitle', { type: p.id })">
                 <Button variant="secondary" size="sm" :disabled="editLoading" @click="openEdit(p)">{{ t('providers.edit') }}</Button>
               </Tooltip>
@@ -363,12 +414,26 @@ function statusLabel(status: AppProvider['status']): string {
             </div>
           </div>
         </template>
+        <button
+          v-if="embedded && !loading && !unavailable"
+          type="button"
+          class="provider-add-row"
+          :class="{ 'provider-add-row--active': editingId === undefined && formOpen }"
+          @click="openAdd"
+        >
+          <Icon name="plus" size="sm" />
+          <span>{{ t('providers.addProvider') }}</span>
+        </button>
       </div>
 
       <!-- Add buttons / create-edit form -->
       <div v-if="!unavailable" class="add-section" :class="{ 'add-section--form': formOpen }">
         <template v-if="!formOpen">
-          <div class="add-btns">
+          <div v-if="embedded" class="detail-placeholder">
+            <Icon name="settings" size="lg" />
+            <span>{{ t('providers.selectProvider') }}</span>
+          </div>
+          <div v-else class="add-btns">
             <!-- OAuth login shortcuts for common platforms -->
             <Button variant="secondary" size="sm" @click="emit('openLogin', 'moonshot')">
               <Icon name="user" size="sm" />
@@ -389,9 +454,29 @@ function statusLabel(status: AppProvider['status']): string {
                 </div>
                 <p class="form-subtitle">{{ t('providers.accessHint') }}</p>
               </div>
-              <Button variant="ghost" size="sm" :disabled="formBusy" @click="cancelForm">
-                {{ t('common.cancel') }}
-              </Button>
+              <div class="form-head-actions">
+                <Button
+                  v-if="embedded && editingId !== undefined"
+                  variant="secondary"
+                  size="sm"
+                  :disabled="formBusy"
+                  @click="emit('refresh', editingId)"
+                >
+                  {{ t('providers.refresh') }}
+                </Button>
+                <Button
+                  v-if="embedded && editingId !== undefined"
+                  variant="danger-soft"
+                  size="sm"
+                  :disabled="formBusy"
+                  @click="onDeleteProvider(editingId)"
+                >
+                  {{ t('providers.delete') }}
+                </Button>
+                <Button variant="ghost" size="sm" :disabled="formBusy" @click="cancelForm">
+                  {{ t('common.cancel') }}
+                </Button>
+              </div>
             </div>
 
             <section class="form-section">
@@ -524,13 +609,105 @@ function statusLabel(status: AppProvider['status']): string {
       </div>
 
       <!-- Footer -->
-      <div class="footer-hint">{{ t('providers.escClose') }}</div>
+      <div v-if="!embedded" class="footer-hint">{{ t('providers.escClose') }}</div>
     </div>
-  </Dialog>
+  </component>
 </template>
 
 <style scoped>
 .pm { display: flex; flex-direction: column; gap: var(--space-4); }
+.provider-manager-surface {
+  display: block;
+  height: 100%;
+  min-width: 0;
+}
+.pm--embedded {
+  display: grid;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 0;
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-raised);
+}
+.pm--embedded .manager-head {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: var(--space-4) var(--space-5);
+}
+.pm--embedded .prov-list {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-3);
+  border-inline-end: 1px solid var(--color-line);
+  background: var(--color-surface);
+}
+.pm--embedded .add-section {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  overflow-y: auto;
+  padding: var(--space-5);
+  border-top: none;
+}
+.pm--embedded .prov-row {
+  width: 100%;
+  min-height: 50px;
+  padding: var(--space-3);
+  border: 0;
+  border-radius: var(--radius-md);
+  background: transparent;
+  text-align: start;
+  cursor: pointer;
+}
+.pm--embedded .prov-row:hover { background: var(--color-surface-sunken); }
+.pm--embedded .prov-row--active {
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.pm--embedded .prov-row:focus-visible {
+  outline: none;
+  box-shadow: var(--p-focus-ring);
+}
+.provider-add-row {
+  display: inline-flex;
+  width: 100%;
+  min-height: 40px;
+  align-items: center;
+  gap: var(--space-2);
+  margin-top: var(--space-2);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-raised);
+  color: var(--color-text);
+  font: inherit;
+  text-align: start;
+  cursor: pointer;
+}
+.provider-add-row:hover { border-color: var(--color-line-strong); }
+.provider-add-row--active {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+.provider-add-row:focus-visible {
+  outline: none;
+  box-shadow: var(--p-focus-ring);
+}
+.pm--embedded .prov-url,
+.pm--embedded .prov-meta,
+.pm--embedded .prov-models { display: none; }
+.pm--embedded .prov-proto {
+  display: block;
+  margin-top: 2px;
+  font-size: var(--text-xs);
+}
 
 .manager-head {
   display: flex;
@@ -723,6 +900,13 @@ function statusLabel(status: AppProvider['status']): string {
   padding-bottom: var(--space-3);
   border-bottom: 1px solid var(--color-line);
 }
+.form-head-actions {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
 .form-title {
   font-family: var(--font-ui);
   font-size: var(--text-base);
@@ -812,6 +996,16 @@ function statusLabel(status: AppProvider['status']): string {
   background: var(--color-surface-raised);
   z-index: 1;
 }
+.detail-placeholder {
+  display: flex;
+  min-height: 320px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: var(--space-3);
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+}
 
 /* Footer */
 .footer-hint {
@@ -853,5 +1047,43 @@ function statusLabel(status: AppProvider['status']): string {
   .api-key-control { align-items: stretch; flex-direction: column; }
   .api-key-control .ui-button { align-self: flex-start; }
   .model-row { grid-template-columns: 1fr 1fr 0.9fr auto; }
+}
+
+@media (max-width: 980px) {
+  .pm--embedded {
+    grid-template-columns: 1fr;
+    grid-template-rows: auto auto minmax(0, 1fr);
+  }
+  .pm--embedded .manager-head { grid-column: 1; }
+  .pm--embedded .prov-list {
+    grid-column: 1;
+    grid-row: 2;
+    flex-direction: row;
+    overflow-x: auto;
+    overflow-y: hidden;
+    border-inline-end: 0;
+    border-bottom: 1px solid var(--color-line);
+  }
+  .pm--embedded .prov-row {
+    min-width: 180px;
+    width: auto;
+  }
+  .pm--embedded .add-section {
+    grid-column: 1;
+    grid-row: 3;
+  }
+}
+
+@media (max-width: 640px) {
+  .pm--embedded {
+    min-height: 0;
+    border-radius: var(--radius-lg);
+  }
+  .pm--embedded .manager-head,
+  .pm--embedded .add-section { padding: var(--space-4); }
+  .form-head-actions { justify-content: flex-start; }
+  .model-row,
+  .model-row.model-row--head { grid-template-columns: 1fr; }
+  .model-row--head { display: none; }
 }
 </style>

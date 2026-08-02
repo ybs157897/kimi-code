@@ -14,7 +14,6 @@ import ToolDiffPanel from './components/chat/ToolDiffPanel.vue';
 import SideChatPanel from './components/chat/SideChatPanel.vue';
 import DiffView from './components/chat/DiffView.vue';
 import ModelPicker from './components/settings/ModelPicker.vue';
-import ProviderManager from './components/settings/ProviderManager.vue';
 import LoginDialog from './components/dialogs/LoginDialog.vue';
 import SettingsDialog from './components/settings/SettingsDialog.vue';
 import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.vue';
@@ -28,7 +27,7 @@ import Onboarding from './components/settings/Onboarding.vue';
 import GlobalLoading from './components/GlobalLoading.vue';
 import DebugPanel from './debug/DebugPanel.vue';
 import { isTraceEnabled } from './debug/trace';
-import { isDesktopDemoEnabled, isDesktopShellAvailable } from './api/desktop';
+import { isDesktopDemoEnabled, isDesktopShellAvailable, selectDesktopDirectory } from './api/desktop';
 import { useKimiWebClient } from './composables/useKimiWebClient';
 import { useConfirmDialog } from './composables/useConfirmDialog';
 import type { PromptAttachment } from './composables/useKimiWebClient';
@@ -382,12 +381,12 @@ const conversationPaneRef = ref<InstanceType<typeof ConversationPane> | null>(nu
 
 // Dialog visibility refs
 const showModelPicker = ref(false);
-const showProviders = ref(false);
 
 const showLogin = ref(false);
 const showAddWorkspace = ref(false);
 const showStatusPanel = ref(false);
 const showSettings = ref(false);
+const settingsInitialTab = ref<'general' | 'models'>('general');
 
 type SubmitPayload = {
   text: string;
@@ -407,7 +406,6 @@ const anyOverlayOpen = computed<boolean>(
   () =>
     openDialogCount.value > 0 ||
     showModelPicker.value ||
-    showProviders.value ||
     showLogin.value ||
     showAddWorkspace.value ||
     showStatusPanel.value ||
@@ -436,18 +434,19 @@ async function openModelPicker(): Promise<void> {
   modelsLoading.value = false;
 }
 
-async function openProviders(): Promise<void> {
+function openSettings(tab: 'general' | 'models' = 'general'): void {
+  settingsInitialTab.value = tab;
   providersLoading.value = true;
   providersUnavailable.value = false;
-  showProviders.value = true;
-  const loaded = await client.loadProviders();
-  providersUnavailable.value = !loaded && client.providers.value.length === 0;
-  providersLoading.value = false;
-}
-
-function openSettings(): void {
   showSettings.value = true;
-  void Promise.all([client.loadModels(), client.loadProviders()]);
+  void (async () => {
+    try {
+      const [, loadedProviders] = await Promise.all([client.loadModels(), client.loadProviders()]);
+      providersUnavailable.value = !loadedProviders && client.providers.value.length === 0;
+    } finally {
+      providersLoading.value = false;
+    }
+  })();
 }
 
 function openLogin(): void {
@@ -712,10 +711,37 @@ async function handleSubmit(payload: SubmitPayload): Promise<void> {
   }
   if (!client.activeSessionId.value && !wsId) {
     pendingWorkspaceSubmit.value = payload;
-    showAddWorkspace.value = true;
+    await openAddWorkspace();
     return;
   }
   void client.sendPrompt(payload.text, payload.attachments);
+}
+
+async function openAddWorkspace(): Promise<void> {
+  addWorkspaceError.value = null;
+  if (!desktopShellAvailable) {
+    showAddWorkspace.value = true;
+    return;
+  }
+
+  let root: string | null;
+  try {
+    root = await selectDesktopDirectory(
+      t('workspace.selectFolderTitle'),
+      client.visibleWorkspace.value?.root ?? client.status.value.cwd,
+    );
+  } catch (error) {
+    console.error('Failed to open the native workspace folder picker', error);
+    addWorkspaceError.value = t('workspace.nativePickerFailed');
+    showAddWorkspace.value = true;
+    return;
+  }
+
+  if (root === null) {
+    handleCloseAddWorkspace();
+    return;
+  }
+  await handleAddWorkspace(root);
 }
 
 async function handleAddWorkspace(root: string): Promise<void> {
@@ -834,7 +860,7 @@ function openPr(url: string): void {
         @create="handleCreateSession"
         @create-in-workspace="handleCreateSessionInWorkspace($event)"
         @select-workspace="client.openWorkspace($event)"
-        @add-workspace="showAddWorkspace = true"
+        @add-workspace="openAddWorkspace"
         @rename="(id, title) => client.renameSession(id, title)"
         @archive="confirmArchiveSession($event)"
         @fork="(id) => client.forkSession(id)"
@@ -935,7 +961,7 @@ function openPr(url: string): void {
           @open-changes="openDiffDetail()"
           @toggle-files="openFilesPanel()"
           @select-workspace="handleCreateSessionInWorkspace($event)"
-          @add-workspace="showAddWorkspace = true"
+          @add-workspace="openAddWorkspace"
           @open-pr="openPr"
           @submit="handleSubmit($event)"
           @steer="client.steerPrompt($event.text, $event.attachments)"
@@ -1131,7 +1157,7 @@ function openPr(url: string): void {
       :unavailable="modelsUnavailable"
       @select="handleSelectModel($event)"
       @toggle-star="client.toggleStarModel($event)"
-      @manage="() => { showModelPicker = false; openProviders(); }"
+      @manage="() => { showModelPicker = false; openSettings('models'); }"
       @close="showModelPicker = false"
     />
 
@@ -1152,6 +1178,11 @@ function openPr(url: string): void {
       :config="client.config.value"
       :models="client.models.value"
       :providers="client.providers.value"
+      :providers-loading="providersLoading"
+      :providers-unavailable="providersUnavailable"
+      :load-provider-detail="client.getProviderDetail"
+      :save-provider="client.saveProvider"
+      :initial-tab="settingsInitialTab"
       :config-saving="configSaving"
       :server-version="client.serverVersion.value"
       :backend="client.backend.value"
@@ -1167,25 +1198,11 @@ function openPr(url: string): void {
       @login="() => { showSettings = false; openLogin(); }"
       @logout="client.logout"
       @open-onboarding="() => { showSettings = false; openOnboarding(); }"
-      @open-providers="() => { showSettings = false; openProviders(); }"
+      @refresh-provider="handleRefreshProvider($event)"
+      @delete-provider="confirmDeleteProvider($event)"
+      @open-provider-login="() => { showSettings = false; openLogin(); }"
       @pick-model="() => { showSettings = false; openModelPicker(); }"
       @close="showSettings = false"
-    />
-
-    <!-- Provider Manager overlay -->
-    <ProviderManager
-      v-if="showProviders"
-      embedded
-      :providers="client.providers.value"
-      :models="client.models.value"
-      :loading="providersLoading"
-      :unavailable="providersUnavailable"
-      :load-detail="client.getProviderDetail"
-      :save="client.saveProvider"
-      @refresh="handleRefreshProvider($event)"
-      @delete="confirmDeleteProvider($event)"
-      @open-login="() => { showProviders = false; openLogin(); }"
-      @close="showProviders = false"
     />
 
     <!-- Status panel overlay (/status) — renders current client state, no daemon call -->
@@ -1250,7 +1267,7 @@ function openPr(url: string): void {
       @select="client.selectSession($event)"
       @create="handleCreateSession"
       @create-in-workspace="handleCreateSessionInWorkspace($event)"
-      @add-workspace="showAddWorkspace = true"
+      @add-workspace="openAddWorkspace"
       @rename="(id, title) => client.renameSession(id, title)"
       @archive="confirmArchiveSession($event)"
       @delete-workspace="confirmDeleteWorkspace($event)"

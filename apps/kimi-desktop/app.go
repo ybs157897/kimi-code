@@ -70,11 +70,14 @@ type sidecarProcess interface {
 
 type ipcDialer func(ctx context.Context, endpoint, token string) (ipcClient, error)
 
+type directoryPicker func(ctx context.Context, options runtime.OpenDialogOptions) (string, error)
+
 // App is registered via `Bind: []any{app}` in main.go and surfaced to the
 // webview as window.go.main.App.
 type App struct {
 	sidecar sidecarProcess
 	dialIPC ipcDialer
+	pickDir directoryPicker
 
 	ctx context.Context
 
@@ -117,12 +120,29 @@ func NewApp() *App {
 		dialIPC: func(ctx context.Context, endpoint, token string) (ipcClient, error) {
 			return ipcclient.Dial(ctx, endpoint, token)
 		},
+		pickDir:        runtime.OpenDirectoryDialog,
 		ready:          make(chan struct{}),
 		subs:           map[string]context.CancelFunc{},
 		productSubs:    map[string]productSub{},
 		productStreams: map[string]productStream{},
 		terminalSubs:   map[string]terminalSub{},
 	}
+}
+
+// SelectDirectory opens the operating system's native folder picker. Folder
+// browsing belongs to the desktop shell rather than the engine sidecar: the
+// webview can therefore add a local workspace even when the product transport
+// does not expose daemon filesystem-browsing endpoints. An empty result means
+// the user cancelled the dialog.
+func (a *App) SelectDirectory(title, defaultDirectory string) (string, error) {
+	if a.ctx == nil {
+		return "", errors.New("desktop runtime is not ready")
+	}
+	return a.pickDir(a.ctx, runtime.OpenDialogOptions{
+		Title:                title,
+		DefaultDirectory:     defaultDirectory,
+		CanCreateDirectories: true,
+	})
 }
 
 // startup is wired to wails OnStartup. It launches the sidecar and connects

@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/wailsapp/wails/v2/pkg/runtime"
+
 	"kimi-desktop/internal/ipcclient"
 )
 
@@ -85,6 +87,41 @@ func (c *fakeIPCClient) Done() <-chan struct{} {
 		c.observeOnce.Do(func() { close(c.managerObserved) })
 	}
 	return c.done
+}
+
+func TestSelectDirectoryUsesNativePickerOptions(t *testing.T) {
+	app := NewApp()
+	app.ctx = context.Background()
+
+	var got runtime.OpenDialogOptions
+	app.pickDir = func(_ context.Context, options runtime.OpenDialogOptions) (string, error) {
+		got = options
+		return `C:\workspace`, nil
+	}
+
+	path, err := app.SelectDirectory("Choose a workspace", `C:\projects`)
+	if err != nil {
+		t.Fatalf("SelectDirectory() error = %v", err)
+	}
+	if path != `C:\workspace` {
+		t.Fatalf("SelectDirectory() path = %q, want %q", path, `C:\workspace`)
+	}
+	if got.Title != "Choose a workspace" {
+		t.Fatalf("SelectDirectory() title = %q", got.Title)
+	}
+	if got.DefaultDirectory != `C:\projects` {
+		t.Fatalf("SelectDirectory() default directory = %q", got.DefaultDirectory)
+	}
+	if !got.CanCreateDirectories {
+		t.Fatal("SelectDirectory() did not allow creating directories")
+	}
+}
+
+func TestSelectDirectoryRejectsCallsBeforeStartup(t *testing.T) {
+	app := NewApp()
+	if _, err := app.SelectDirectory("Choose a workspace", ""); err == nil {
+		t.Fatal("SelectDirectory() before startup returned no error")
+	}
 }
 
 func TestAppLifecycleSignalsReadyAfterFirstBootAttempt(t *testing.T) {

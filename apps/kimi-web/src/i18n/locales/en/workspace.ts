@@ -23,9 +23,11 @@ export default {
   newInGroup: 'New session in this workspace',
   // Add-workspace dialog
   addTitle: 'Add workspace',
+  selectFolderTitle: 'Select workspace folder',
   recentLabel: 'Recent folders',
   cancel: 'Cancel',
   addFailed: "Couldn't open this folder. Check the path and try again.",
+  nativePickerFailed: "Couldn't open the system folder picker. Enter an absolute path instead.",
   // Folder browser
   openThisFolder: 'Open this folder',
   up: 'Up',

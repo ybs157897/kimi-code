@@ -10,6 +10,7 @@ export default {
   loading: '加载提供商中…',
   unavailable: 'daemon 暂不支持提供商管理',
   empty: '暂无提供商',
+  selectProvider: '选择一个提供商进行配置，或添加新的提供商。',
   status: {
     connected: '已连接',
     error: '错误',

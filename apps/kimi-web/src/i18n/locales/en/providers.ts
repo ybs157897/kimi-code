@@ -10,6 +10,7 @@ export default {
   loading: 'Loading providers…',
   unavailable: 'The daemon does not support provider management yet',
   empty: 'No providers yet',
+  selectProvider: 'Select a provider to configure, or add a new one.',
   status: {
     connected: 'Connected',
     error: 'Error',

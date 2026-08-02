@@ -31,6 +31,16 @@ async function run(file, args, options = {}) {
   });
   if (result.stdout) process.stdout.write(result.stdout);
   if (result.stderr) process.stderr.write(result.stderr);
+  return result;
+}
+
+function assertNoUnresolvedImports(result) {
+  const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+  if (output.includes('[UNRESOLVED_IMPORT]')) {
+    throw new Error(
+      'sidecar bundle contains unresolved imports; build its workspace dependencies first',
+    );
+  }
 }
 
 async function main() {
@@ -38,11 +48,12 @@ async function main() {
 
   const tsdownPackage = require.resolve('tsdown/package.json');
   const tsdownRun = resolve(dirname(tsdownPackage), 'dist/run.mjs');
-  await run(process.execPath, [
+  const bundleResult = await run(process.execPath, [
     tsdownRun,
     '--config',
     join(appRoot, 'tsdown.sidecar.config.ts'),
   ]);
+  assertNoUnresolvedImports(bundleResult);
 
   await writeFile(
     seaConfigPath,

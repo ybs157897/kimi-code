@@ -30,6 +30,8 @@ const props = withDefaults(defineProps<{
   stacked?: boolean;
   /** Render as a page-level surface without a scrim (for embedded settings). */
   inline?: boolean;
+  /** Let an inline page consume the entire application viewport. */
+  fullScreen?: boolean;
   /** Element (or selector / resolver) to receive focus when the dialog opens.
    *  Falls back to the first focusable element, then the dialog panel. */
   initialFocus?: HTMLElement | string | (() => HTMLElement | null | undefined);
@@ -41,6 +43,7 @@ const props = withDefaults(defineProps<{
   padded: true,
   stacked: false,
   inline: false,
+  fullScreen: false,
 });
 
 const emit = defineEmits<{
@@ -175,13 +178,25 @@ onBeforeUnmount(() => {
       <div
         v-if="open"
         class="ui-dialog__overlay"
-        :class="{ 'ui-dialog__overlay--stacked': stacked, 'ui-dialog__overlay--inline': inline }"
+        :class="{
+          'ui-dialog__overlay--stacked': stacked,
+          'ui-dialog__overlay--inline': inline,
+          'ui-dialog__overlay--full-screen': fullScreen,
+        }"
         @mousedown="onOverlayClick"
       >
         <div
           ref="panel"
           class="ui-dialog"
-          :class="[`ui-dialog--${size}`, { 'ui-dialog--flush': !padded, 'ui-dialog--fixed-height': height === 'fixed', 'ui-dialog--stacked': stacked }]"
+          :class="[
+            `ui-dialog--${size}`,
+            {
+              'ui-dialog--flush': !padded,
+              'ui-dialog--fixed-height': height === 'fixed',
+              'ui-dialog--stacked': stacked,
+              'ui-dialog--full-screen': fullScreen,
+            },
+          ]"
           role="dialog"
           aria-modal="true"
           tabindex="-1"
@@ -239,6 +254,17 @@ onBeforeUnmount(() => {
   box-shadow: none;
   background: transparent;
 }
+.ui-dialog__overlay--full-screen {
+  align-items: stretch;
+  overflow: hidden;
+  padding: 0;
+}
+.ui-dialog__overlay--full-screen .ui-dialog {
+  width: 100%;
+  min-height: 100%;
+  max-height: none;
+  margin: 0;
+}
 @keyframes kimi-dialog-overlay-in {
   from { opacity: 0; }
   to { opacity: 1; }
@@ -276,6 +302,7 @@ onBeforeUnmount(() => {
 .ui-dialog--lg { width: min(640px, 100%); }
 .ui-dialog--xl { width: min(var(--p-content-max), 100%); }
 .ui-dialog--fixed-height { height: min(680px, calc(100vh - var(--space-8) * 2)); }
+.ui-dialog--full-screen { height: 100%; }
 .ui-dialog--flush .ui-dialog__body { padding: 0; }
 .ui-dialog__head {
   display: flex;

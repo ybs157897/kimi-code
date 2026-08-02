@@ -11,7 +11,7 @@ import { toAppEvent } from '../daemon/mappers';
 import type { WireEvent } from '../daemon/wire';
 import type { AppEvent, AppSession, AppSessionSnapshot, KimiEventHandlers, KimiEventMeta } from '../types';
 import { WailsKimiWebApi, createWailsKimiWebApi } from './client';
-import { isDesktopShellAvailable, isDesktopTransportEnabled } from './index';
+import { isDesktopShellAvailable, isDesktopTransportEnabled, selectDesktopDirectory } from './index';
 import { MockDesktopBridge } from './mock';
 import type { DesktopBridge, ProductEventPayload, ProductStreamCursor } from './types';
 
@@ -974,6 +974,28 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
     vi.stubGlobal('location', { search: '?desktop_transport=0' });
     expect(isDesktopShellAvailable()).toBe(true);
     expect(isDesktopTransportEnabled()).toBe(false);
+  });
+
+  it('opens the native directory picker through the Wails binding', async () => {
+    const selectDirectory = vi.fn().mockResolvedValue('C:\\projects\\demo');
+    vi.stubGlobal('window', {
+      go: { main: { App: { SelectDirectory: selectDirectory } } },
+      runtime: {},
+    });
+
+    await expect(selectDesktopDirectory('Select workspace', 'C:\\projects')).resolves.toBe(
+      'C:\\projects\\demo',
+    );
+    expect(selectDirectory).toHaveBeenCalledWith('Select workspace', 'C:\\projects');
+  });
+
+  it('maps cancelling the native directory picker to null', async () => {
+    vi.stubGlobal('window', {
+      go: { main: { App: { SelectDirectory: vi.fn().mockResolvedValue('') } } },
+      runtime: {},
+    });
+
+    await expect(selectDesktopDirectory('Select workspace', '')).resolves.toBeNull();
   });
 
   // Slice 2 clean-boot methods (docs §12.3). Adding each as a real class method

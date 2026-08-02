@@ -32,7 +32,7 @@ export default {
   providersHint: '添加、删除或刷新提供商',
   manageProviders: '管理',
   modelsKicker: '模型',
-  modelsTitle: '模型与服务商',
+  modelsTitle: '模型设置',
   modelsDesc: '设置新会话默认模型，并管理 DeepSeek 或其他 OpenAI / Anthropic 兼容服务。',
   modelUsage: '使用',
   modelUsageHint: '选择当前会话使用的模型，以及之后新会话的默认模型。',

@@ -35,14 +35,19 @@ const TOKEN = 'smoke-token';
 // ---------------------------------------------------------------------------
 
 class IpcClient {
-  constructor(socketPath) {
-    this.socketPath = socketPath;
+  constructor(endpoint) {
+    this.endpoint = endpoint;
     this.nextId = 0;
     this.pending = new Map();
   }
 
   async connect() {
-    this.socket = connect(this.socketPath);
+    if (this.endpoint.startsWith('tcp://')) {
+      const url = new URL(this.endpoint);
+      this.socket = connect({ host: url.hostname, port: Number(url.port) });
+    } else {
+      this.socket = connect(this.endpoint);
+    }
     this.socket.setEncoding('utf8');
     this.rl = createInterface({ input: this.socket, crlfDelay: Infinity });
     this.rl.on('line', (line) => {
@@ -129,7 +134,8 @@ async function main() {
 
   const tmpRoot = await mkdtemp(join(tmpdir(), 'kimi-desktop-smoke-'));
   const home = join(tmpRoot, 'home');
-  const socketPath = join(tmpRoot, 'ipc.sock');
+  const requestedEndpoint =
+    process.platform === 'win32' ? 'tcp://127.0.0.1:0' : join(tmpRoot, 'ipc.sock');
   const workDir = join(tmpRoot, 'work');
   const extensionsDir = join(workDir, '.kimi-desktop', 'extensions');
   await mkdir(extensionsDir, { recursive: true });
@@ -158,7 +164,7 @@ async function main() {
     env: {
       ...process.env,
       KIMI_DESKTOP_HOME: home,
-      KIMI_DESKTOP_IPC_ENDPOINT: socketPath,
+      KIMI_DESKTOP_IPC_ENDPOINT: requestedEndpoint,
       KIMI_DESKTOP_IPC_TOKEN: TOKEN,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -167,7 +173,9 @@ async function main() {
   const readyPromise = new Promise((resolveReady, rejectReady) => {
     const onLine = (line) => {
       sidecarOutput += `${line}\n`;
-      if (line.includes('desktop-sidecar ready')) resolveReady();
+      const marker = 'desktop-sidecar ready ';
+      const markerIndex = line.indexOf(marker);
+      if (markerIndex >= 0) resolveReady(line.slice(markerIndex + marker.length).trim());
     };
     child.stdout.on('data', (chunk) => {
       for (const line of chunk.toString('utf8').split('\n')) {
@@ -184,8 +192,8 @@ async function main() {
 
   let client;
   try {
-    await withTimeout(readyPromise, 30_000, 'sidecar ready timeout');
-    client = new IpcClient(socketPath);
+    const endpoint = await withTimeout(readyPromise, 30_000, 'sidecar ready timeout');
+    client = new IpcClient(endpoint);
     await client.connect();
     client.hello(TOKEN);
 

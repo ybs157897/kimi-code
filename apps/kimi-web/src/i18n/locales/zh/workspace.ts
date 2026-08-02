@@ -23,9 +23,11 @@ export default {
   newInGroup: '在此工作区新建会话',
   // Add-workspace dialog
   addTitle: '添加工作区',
+  selectFolderTitle: '选择工作区文件夹',
   recentLabel: '最近的文件夹',
   cancel: '取消',
   addFailed: '无法打开此文件夹，请检查路径后重试。',
+  nativePickerFailed: '无法打开系统文件夹选择器，请输入绝对路径后重试。',
   // Folder browser
   openThisFolder: '打开此文件夹',
   up: '上一级',
