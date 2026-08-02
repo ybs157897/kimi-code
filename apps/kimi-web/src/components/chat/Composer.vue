@@ -22,7 +22,6 @@ import {
   commitLevel,
   effectiveThinkingLevel,
   effortLabel,
-  isThinkingOn,
   modelThinkingAvailability,
   segmentsFor,
 } from '../../lib/modelThinking';
@@ -32,6 +31,7 @@ import { useMentionMenu } from '../../composables/useMentionMenu';
 import { useComposerDraft } from '../../composables/useComposerDraft';
 import { useAttachmentUpload, type Attachment } from '../../composables/useAttachmentUpload';
 import { openFileAttachment } from '../../lib/openFileAttachment';
+import { builtinExpertTranslationKey } from '../../lib/expertTeamI18n';
 import type { PromptAttachment } from '../../composables/useKimiWebClient';
 import Spinner from '../ui/Spinner.vue';
 import Button from '../ui/Button.vue';
@@ -114,8 +114,8 @@ const emit = defineEmits<{
   togglePlan: [];
   toggleSwarm: [];
   toggleGoal: [];
-  refreshExpertTeams: [];
-  openExpertPicker: [];
+  selectExpertTeam: [pluginId: string];
+  clearExpertTeam: [];
   openBtw: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
@@ -127,6 +127,16 @@ const emit = defineEmits<{
 }>();
 
 const { t, locale } = useI18n();
+
+function expertTeamName(team: Pick<AppExpertTeamStatus, 'pluginId' | 'displayName'>): string {
+  const key = builtinExpertTranslationKey(team.pluginId, 'name');
+  return key === undefined ? team.displayName : t(key);
+}
+
+function expertTeamDescription(team: AppExpertTeam): string {
+  const key = builtinExpertTranslationKey(team.pluginId, 'description');
+  return key === undefined ? (team.description ?? t('status.expertPickerNoDesc')) : t(key);
+}
 
 // ---------------------------------------------------------------------------
 // Textarea + per-session draft persistence — see useComposerDraft.
@@ -247,6 +257,12 @@ const {
   textareaRef,
   autosize,
   searchFiles: () => props.searchFiles,
+  expertTeams: () => props.expertTeams.map((team) => ({
+    pluginId: team.pluginId,
+    name: expertTeamName(team),
+    description: expertTeamDescription(team),
+  })),
+  selectExpertTeam: (pluginId) => emit('selectExpertTeam', pluginId),
 });
 
 // ---------------------------------------------------------------------------
@@ -580,6 +596,7 @@ const hasUpload = computed(() => !!props.uploadImage);
 const dropdownOpen = ref(false);
 const permDropdownOpen = ref(false);
 const thinkDropdownOpen = ref(false);
+const activeModelGroupKey = ref('');
 const toolbarRef = ref<HTMLElement | null>(null);
 
 function anyToolbarDropdownOpen(): boolean {
@@ -589,6 +606,7 @@ function anyToolbarDropdownOpen(): boolean {
 function toggleDropdown(): void {
   dropdownOpen.value = !dropdownOpen.value;
   if (dropdownOpen.value) {
+    activeModelGroupKey.value = currentProvider.value || dropdownModelGroups.value[0]?.key || '';
     permDropdownOpen.value = false;
     thinkDropdownOpen.value = false;
     closeModes();
@@ -689,20 +707,10 @@ const activeThinkingSegment = computed(() => {
   const segs = thinkingSegments.value;
   return segs.includes(thinkingLevel.value) ? thinkingLevel.value : '';
 });
-const thinkingOn = computed(() => isThinkingOn(thinkingLevel.value));
 // Single-segment (always-on boolean) or unsupported models can't be changed.
 const thinkingReadonly = computed(
   () => thinkingAvailability.value === 'unsupported' || thinkingSegments.value.length <= 1,
 );
-// Footer-style suffix: effort models show the concrete level; boolean models
-// keep the plain "thinking" tag; off shows nothing.
-const thinkingSuffix = computed(() => {
-  if (!thinkingOn.value) return '';
-  const hasEfforts = (currentModel.value?.supportEfforts?.length ?? 0) > 0;
-  const level = thinkingLevel.value;
-  if (hasEfforts && level !== 'on') return t('composer.thinkingSuffixEffort', { level });
-  return t('composer.thinkingSuffix');
-});
 function setThinkingSegment(draft: string): void {
   if (thinkingReadonly.value) return;
   emit('setThinking', commitLevel(currentModel.value, draft));
@@ -725,13 +733,6 @@ const goalCanResume = computed(() => goalStatus.value === 'paused' || goalStatus
 // Expert teams — server-owned mode; the section renders only when the backend
 // reported at least one team (or one is still active after its package left).
 const expertOn = computed(() => props.expertTeamStatus !== null);
-const showExpertTeams = computed(() => props.expertTeams.length > 0 || expertOn.value);
-function openExpertPicker(): void {
-  // Re-scan before opening the card dialog — packages can appear while the
-  // session is open, and a failed first load leaves the catalog empty.
-  emit('refreshExpertTeams');
-  emit('openExpertPicker');
-}
 
 // Modes selector (plan / goal / swarm) — the popover that replaces the bare
 // "plan" pill. Plan/Swarm are real client toggles; goal reflects agent-driven
@@ -869,28 +870,52 @@ const permInfo = computed(() => PERM_MODES.find((p) => p.mode === props.status?.
 const permLabel = computed(() => (permInfo.value ? t(permInfo.value.labelKey) : ''));
 
 // ---------------------------------------------------------------------------
-// Model dropdown — current provider models + thinking + more
+// Model dropdown — favorites followed by provider groups.
 // ---------------------------------------------------------------------------
 
 const currentProvider = computed(() => {
   return currentModel.value?.provider ?? '';
 });
 
-const providerModels = computed(() => {
-  if (!currentProvider.value || !props.models?.length) return [];
-  return props.models.filter((m) => m.provider === currentProvider.value);
-});
-
 const starredSet = computed(() => new Set(props.starredIds ?? []));
 function isStarred(modelId: string): boolean {
   return starredSet.value.has(modelId);
 }
-const starredOtherModels = computed(() => {
+const starredModels = computed(() => {
   if (!props.models?.length) return [];
-  return props.models.filter(
-    (m) => isStarred(m.id) && m.provider !== currentProvider.value,
-  );
+  return props.models.filter((m) => isStarred(m.id));
 });
+const modelGroups = computed(() => {
+  const groups = new Map<string, AppModel[]>();
+  for (const model of props.models ?? []) {
+    const models = groups.get(model.provider) ?? [];
+    models.push(model);
+    groups.set(model.provider, models);
+  }
+
+  return [...groups.entries()]
+    .sort(([providerA], [providerB]) => {
+      if (providerA === currentProvider.value) return -1;
+      if (providerB === currentProvider.value) return 1;
+      return providerA.localeCompare(providerB);
+    })
+    .map(([provider, models]) => ({ provider, models }));
+});
+
+const dropdownModelGroups = computed(() => [
+  ...(starredModels.value.length > 0
+    ? [{ key: '__starred__', label: t('status.starredModels'), models: starredModels.value }]
+    : []),
+  ...modelGroups.value.map((group) => ({
+    key: group.provider,
+    label: group.provider,
+    models: group.models,
+  })),
+]);
+
+function activateModelGroup(groupKey: string): void {
+  activeModelGroupKey.value = groupKey;
+}
 
 function selectModel(modelId: string): void {
   emit('selectModel', modelId);
@@ -967,6 +992,18 @@ function selectModel(modelId: string): void {
         />
 
         <div class="input-row">
+          <span v-if="expertOn && props.expertTeamStatus" class="expert-mention">
+            <Icon name="team" size="sm" />
+            <span class="expert-mention__name">@{{ expertTeamName(props.expertTeamStatus) }}</span>
+            <button
+              type="button"
+              class="expert-mention__remove"
+              :aria-label="t('mention.removeExpertTeam', { name: expertTeamName(props.expertTeamStatus) })"
+              @click="emit('clearExpertTeam')"
+            >
+              <Icon name="close" size="sm" />
+            </button>
+          </span>
           <textarea
             ref="textareaRef"
             v-model="text"
@@ -1138,20 +1175,6 @@ function selectModel(modelId: string): void {
             </div>
           </div>
 
-          <!-- Expert-team picker entry — dedicated pill; teams are chosen in
-               ExpertTeamPicker, not inside the Modes menu. -->
-          <button
-            v-if="showExpertTeams"
-            type="button"
-            class="expert-pill"
-            :class="{ on: expertOn }"
-            @click.stop="openExpertPicker"
-          >
-            <Icon name="team" size="sm" />
-            <span v-if="expertOn" class="expert-pill-name">{{ props.expertTeamStatus?.displayName }}</span>
-            <span v-else class="expert-pill-name">{{ t('status.expertTeamsLabel') }}</span>
-          </button>
-
         </div>
 
         <!-- Right: ctx + model -->
@@ -1204,7 +1227,6 @@ function selectModel(modelId: string): void {
             @keydown.space.prevent="toggleDropdown"
           >
             <b>{{ status.model }}</b>
-            <span v-if="thinkingSuffix" class="think-suffix">{{ thinkingSuffix }}</span>
             <Icon class="cv" name="chevron-down" size="sm" />
           </span>
           <Tooltip v-if="running" :text="t('composer.interruptTitle')">
@@ -1228,8 +1250,7 @@ function selectModel(modelId: string): void {
           </button>
         </div>
 
-        <!-- Thinking dropdown — the same levels as the model menu's segmented
-             control, one row per level with a check on the active one. -->
+        <!-- Thinking dropdown — the single place for choosing a thinking level. -->
         <div v-if="thinkDropdownOpen && status" class="model-dropdown think-dropdown" role="menu" @click.stop>
           <div class="md-section">{{ t('status.thinkingLabel') }}</div>
           <button
@@ -1246,73 +1267,54 @@ function selectModel(modelId: string): void {
           </button>
         </div>
 
-        <!-- Model dropdown — current provider models + controls + more -->
+        <!-- Model dropdown — provider menu + side-opening model submenu. -->
         <div v-if="dropdownOpen && status" class="model-dropdown" role="menu" @click.stop>
-          <!-- Starred models from other providers -->
-          <div v-if="starredOtherModels.length > 0" class="md-section">{{ t('status.starredModels') }}</div>
-          <button
-            v-for="m in starredOtherModels"
-            :key="m.id"
-            class="md-row"
-            :class="{ 'is-current': m.id === status.modelId }"
-            role="menuitem"
-            @click="selectModel(m.id)"
+          <div
+            v-for="group in dropdownModelGroups"
+            :key="group.key"
+            class="md-group"
+            @mouseenter="activateModelGroup(group.key)"
           >
-            <span class="md-check"><Icon v-if="m.id === status.modelId" name="check" size="sm" /></span>
-            <span class="md-name">{{ m.displayName ?? m.model }}</span>
-            <span class="md-provider">{{ m.provider }}</span>
-            <Icon class="md-star" name="star" size="sm" />
-          </button>
-
-          <div v-if="starredOtherModels.length > 0" class="md-divider" />
-
-          <!-- Current provider models -->
-          <div v-if="providerModels.length > 0" class="md-section">{{ currentProvider }}</div>
-          <button
-            v-for="m in providerModels"
-            :key="m.id"
-            class="md-row"
-            :class="{ 'is-current': m.id === status.modelId }"
-            role="menuitem"
-            @click="selectModel(m.id)"
-          >
-            <span class="md-check"><Icon v-if="m.id === status.modelId" name="check" size="sm" /></span>
-            <span class="md-name">{{ m.displayName ?? m.model }}</span>
-            <Icon v-if="isStarred(m.id)" class="md-star" name="star" size="sm" />
-          </button>
-
-          <div v-if="providerModels.length > 0" class="md-divider" />
-
-          <!-- Thinking level — segmented control. Effort models show every
-               declared level; boolean models show On/Off; unsupported shows a note. -->
-          <div class="md-thinking" :class="{ 'is-readonly': thinkingReadonly }">
-            <span class="md-name">{{ t('status.thinkingLabel') }}</span>
-            <span
-              v-if="thinkingAvailability === 'unsupported'"
-              class="md-note"
-            >{{ t('status.modeNotSupported') }}</span>
-            <div
-              v-else
-              class="effort-segments"
-              role="group"
-              :aria-label="t('status.thinkingLabel')"
+            <button
+              type="button"
+              class="md-group-toggle"
+              :class="{ 'is-active': activeModelGroupKey === group.key }"
+              role="menuitem"
+              aria-haspopup="menu"
+              :aria-expanded="activeModelGroupKey === group.key"
+              @focus="activateModelGroup(group.key)"
+              @click="activateModelGroup(group.key)"
             >
+              <span class="md-group-name">{{ group.label }}</span>
+              <span class="md-group-count">{{ group.models.length }}</span>
+              <Icon class="md-group-chevron" name="chevron-right" size="sm" />
+            </button>
+
+            <div
+              v-if="activeModelGroupKey === group.key"
+              class="md-cascade-submenu"
+              role="menu"
+              :aria-label="group.label"
+            >
+              <div class="md-submenu-heading">
+                <span>{{ group.label }}</span>
+                <span>{{ group.models.length }}</span>
+              </div>
               <button
-                v-for="seg in thinkingSegments"
-                :key="seg"
-                type="button"
-                class="effort-seg"
-                :class="{ 'is-active': seg === activeThinkingSegment }"
-                :disabled="thinkingReadonly"
-                @click="setThinkingSegment(seg)"
-              >{{ thinkingSegmentLabel(seg) }}</button>
+                v-for="m in group.models"
+                :key="m.id"
+                class="md-row"
+                :class="{ 'is-current': m.id === status.modelId }"
+                role="menuitem"
+                @click="selectModel(m.id)"
+              >
+                <span class="md-check"><Icon v-if="m.id === status.modelId" name="check" size="sm" /></span>
+                <span class="md-name">{{ m.displayName ?? m.model }}</span>
+              </button>
             </div>
           </div>
 
-          <div class="md-divider" />
-          <div class="md-cache-note">{{ t('status.cacheNote') }}</div>
-
-          <div class="md-divider" />
+          <div v-if="starredModels.length > 0 || modelGroups.length > 0" class="md-divider" />
 
           <!-- More models → open full picker -->
           <button class="md-row md-row-more" role="menuitem" @click="closeDropdown(); emit('pickModel');">
@@ -1472,8 +1474,49 @@ function selectModel(modelId: string): void {
 .input-row {
   display: flex;
   align-items: flex-start;
+  flex-wrap: wrap;
   gap: var(--space-2);
 }
+
+.expert-mention {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: 28px;
+  max-width: min(260px, 70%);
+  padding: 2px 4px 2px var(--space-2);
+  border: 1px solid var(--color-accent-bd);
+  border-radius: var(--radius-md);
+  background: var(--color-accent-soft);
+  color: var(--color-accent-hover);
+  font-family: var(--font-ui);
+  font-size: var(--text-sm);
+  font-weight: var(--weight-medium);
+}
+
+.expert-mention__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.expert-mention__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  padding: 0;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: currentColor;
+  cursor: pointer;
+}
+
+.expert-mention__remove:hover { background: var(--p-selection); }
+.expert-mention__remove:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
 
 /* Expand toggle — top-right of the textarea */
 .expand-btn {
@@ -1508,6 +1551,7 @@ function selectModel(modelId: string): void {
      and an unset caret inherits that faint colour and nearly disappears. */
   caret-color: var(--color-text);
   flex: 1;
+  min-width: 180px;
   border: none;
   outline: none;
   resize: none;
@@ -1757,11 +1801,6 @@ function selectModel(modelId: string): void {
   min-width: 0;
   max-width: 280px;
 }
-.model-pill .think-suffix {
-  color: var(--color-accent);
-  font-weight: 500;
-  flex-shrink: 0;
-}
 .model-pill .cv {
   color: var(--faint);
   flex: none;
@@ -1787,6 +1826,7 @@ function selectModel(modelId: string): void {
   flex-direction: column;
   gap: 1px;
   font-family: var(--font-ui);
+  overflow: visible;
 }
 
 .md-section {
@@ -1796,6 +1836,92 @@ function selectModel(modelId: string): void {
   text-transform: uppercase;
   letter-spacing: 0;
   font-weight: var(--weight-semibold);
+}
+
+.md-group {
+  display: flex;
+  flex-direction: column;
+  position: static;
+}
+
+.md-group + .md-group {
+  border-top: 1px solid var(--line);
+}
+
+.md-group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  min-height: 32px;
+  padding: 6px 7px;
+  border: none;
+  border-radius: var(--radius-sm);
+  background: none;
+  color: var(--color-text);
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.md-group-toggle:hover {
+  background: var(--color-surface-sunken);
+}
+
+.md-group-toggle.is-active {
+  background: var(--color-accent-soft);
+}
+
+.md-group-chevron {
+  flex: none;
+  color: var(--muted);
+}
+
+.md-group-name {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: var(--weight-semibold);
+}
+
+.md-group-count {
+  flex: none;
+  color: var(--muted);
+  font-size: var(--ui-font-size-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.md-cascade-submenu {
+  position: absolute;
+  left: calc(100% + var(--space-1));
+  bottom: 0;
+  z-index: var(--z-dropdown);
+  width: 230px;
+  max-height: min(60vh, 520px);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 5px;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-raised);
+  box-shadow: var(--shadow-sm);
+}
+
+.md-submenu-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-3);
+  padding: 4px 7px 5px;
+  color: var(--muted);
+  font-size: var(--ui-font-size-xs);
+  font-weight: var(--weight-semibold);
+}
+
+.md-submenu-heading span:last-child {
+  font-variant-numeric: tabular-nums;
 }
 
 .md-row {
@@ -1862,83 +1988,6 @@ function selectModel(modelId: string): void {
   height: 1px;
   background: var(--line);
   margin: 3px 0;
-}
-
-/* Thinking level segmented control — sits inside the model dropdown. */
-.md-thinking {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 7px;
-  border-radius: var(--radius-sm);
-}
-.md-thinking .md-name {
-  font-family: var(--font-ui);
-  font-size: var(--ui-font-size);
-  color: var(--color-text);
-  flex: none;
-}
-.md-thinking .md-note {
-  margin-left: auto;
-}
-.effort-segments {
-  margin-left: auto;
-  display: inline-flex;
-  align-items: center;
-  gap: 1px;
-  padding: 2px;
-  background: var(--color-surface-sunken);
-  border: 1px solid var(--color-line);
-  border-radius: var(--radius-md);
-}
-.effort-seg {
-  appearance: none;
-  border: none;
-  background: none;
-  cursor: pointer;
-  font-family: var(--font-ui);
-  font-size: var(--ui-font-size-xs);
-  line-height: 1;
-  color: var(--color-text-muted);
-  padding: 4px 9px;
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-  transition: background 0.12s, color 0.12s, box-shadow 0.12s;
-}
-.effort-seg:hover:not(:disabled):not(.is-active) {
-  background: var(--color-surface-raised);
-  color: var(--color-text);
-}
-.effort-seg:focus-visible {
-  outline: 2px solid var(--color-accent);
-  outline-offset: -2px;
-}
-.effort-seg.is-active {
-  background: var(--color-accent);
-  color: var(--color-text-on-accent);
-  box-shadow: var(--shadow-xs);
-  font-weight: 500;
-}
-.effort-seg:disabled {
-  cursor: default;
-}
-.md-thinking.is-readonly .effort-segments {
-  opacity: 0.62;
-}
-.md-cache-note {
-  /* width:0 + min-width:100% — the note never widens the shrink-to-fit
-     dropdown, but always fills its width and wraps there naturally. */
-  width: 0;
-  min-width: 100%;
-  padding: 2px 7px 4px;
-  color: var(--muted);
-  font-size: var(--ui-font-size-xs);
-  line-height: 1.4;
-}
-.md-thinking.is-readonly .effort-seg.is-active {
-  background: var(--color-surface-raised);
-  color: var(--color-text-muted);
-  box-shadow: none;
 }
 
 /* Permission dropdown — anchored to the toolbar left side */
@@ -2052,33 +2101,6 @@ function selectModel(modelId: string): void {
   line-height: 16px;
 }
 .mode-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--color-accent); flex: none; }
-
-/* Expert-team picker entry pill — mirrors the mode-pill but keeps a team icon
-   so it reads as a distinct, dedicated entry point. */
-.expert-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 9px;
-  border: none;
-  background: none;
-  border-radius: 6px;
-  font-size: var(--ui-font-size);
-  font-family: var(--font-ui);
-  font-weight: var(--weight-medium);
-  color: var(--color-text);
-  cursor: pointer;
-  user-select: none;
-  transition: background 0.1s, color 0.15s;
-}
-.expert-pill:hover { background: var(--color-surface-sunken); }
-.expert-pill.on { background: var(--color-accent-soft); color: var(--color-accent-hover); }
-.expert-pill-name {
-  max-width: 140px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
 
 .modes-menu {
   position: fixed;
@@ -2374,18 +2396,13 @@ function selectModel(modelId: string): void {
   .md-section {
     font-size: var(--ui-font-size);
   }
-  .md-thinking {
-    flex-wrap: wrap;
-    row-gap: 6px;
-  }
-  .md-thinking .effort-segments {
-    margin-left: 0;
-    width: 100%;
-    justify-content: space-between;
-  }
-  .md-thinking .effort-seg {
-    flex: 1;
-    padding: 5px 6px;
+  .md-cascade-submenu {
+    position: static;
+    width: auto;
+    max-height: min(38vh, 280px);
+    margin: 2px 0;
+    border-radius: var(--radius-md);
+    box-shadow: none;
   }
   .pd-name {
     font-size: var(--ui-font-size);

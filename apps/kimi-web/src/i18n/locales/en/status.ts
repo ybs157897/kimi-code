@@ -35,6 +35,24 @@ export default {
   expertActive: 'Active',
   expertLead: 'Lead',
   expertQuickPrompt: 'Quick start',
+  builtinExperts: {
+    aiDataCopilot: {
+      name: 'AI Data Copilot',
+      description: 'A six-member AI-native data team for SQL, Python analysis, RAG research, dashboards, and reports.',
+    },
+    aiCodingArchitecture: {
+      name: 'AICoding Architecture Expert Team',
+      description: 'Coordinates research, business, system, platform, security, and product-story design into a complete architecture package.',
+    },
+    codeReview: {
+      name: 'Code Review Team',
+      description: 'A review lead coordinates correctness and code-quality specialists to inspect defects, structure, and test coverage.',
+    },
+    professionalDocument: {
+      name: 'Professional Document Generation Team',
+      description: 'Four specialists collaborate across research, drafting, review, assembly, and delivery of enterprise documents.',
+    },
+  },
   modeOff: 'Off',
   goalPlaceholder: 'What should the agent achieve?',
   goalStart: 'Start',

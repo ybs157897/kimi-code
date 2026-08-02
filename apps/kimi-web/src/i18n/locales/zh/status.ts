@@ -35,6 +35,24 @@ export default {
   expertActive: '已激活',
   expertLead: '主理人',
   expertQuickPrompt: '快速开始',
+  builtinExperts: {
+    aiDataCopilot: {
+      name: 'AI 数据副驾',
+      description: '六人 AI 原生数据分析团：自然语言转 SQL、Python 数据科学、RAG 知识问答、交互仪表盘与报告生成。',
+    },
+    aiCodingArchitecture: {
+      name: 'AICoding 架构专家团',
+      description: '统筹需求摄入、调研、业务、系统、部署与安全架构及故事设计，交付完整架构包。',
+    },
+    codeReview: {
+      name: '代码审查团',
+      description: '由审查主理人协调正确性审查员与代码质量审查员，系统检查缺陷、结构和测试覆盖。',
+    },
+    professionalDocument: {
+      name: '专业文档生成团',
+      description: '四角色协作完成需求分析、检索、生成、审核、汇编与交付，产出企业级长文档。',
+    },
+  },
   modeOff: '未启用',
   goalPlaceholder: '让智能体完成什么目标？',
   goalStart: '开始',

@@ -57,9 +57,12 @@ import RiCheckLine from '~icons/ri/check-line';
 import RiCloseLine from '~icons/ri/close-line';
 import RiCodeLine from '~icons/ri/code-line';
 import RiCollapseDiagonalLine from '~icons/ri/collapse-diagonal-line';
+import RiDeleteBinLine from '~icons/ri/delete-bin-line';
 import RiDownloadLine from '~icons/ri/download-line';
 import RiDraggable from '~icons/ri/draggable';
 import RiEqualizerLine from '~icons/ri/equalizer-line';
+import RiEyeLine from '~icons/ri/eye-line';
+import RiEyeOffLine from '~icons/ri/eye-off-line';
 import RiExpandDiagonalLine from '~icons/ri/expand-diagonal-line';
 import RiExternalLinkLine from '~icons/ri/external-link-line';
 import RiFileAddLine from '~icons/ri/file-add-line';
@@ -131,9 +134,12 @@ import RawCheckLine from '~icons/ri/check-line?raw';
 import RawCloseLine from '~icons/ri/close-line?raw';
 import RawCodeLine from '~icons/ri/code-line?raw';
 import RawCollapseDiagonalLine from '~icons/ri/collapse-diagonal-line?raw';
+import RawDeleteBinLine from '~icons/ri/delete-bin-line?raw';
 import RawDownloadLine from '~icons/ri/download-line?raw';
 import RawDraggable from '~icons/ri/draggable?raw';
 import RawEqualizerLine from '~icons/ri/equalizer-line?raw';
+import RawEyeLine from '~icons/ri/eye-line?raw';
+import RawEyeOffLine from '~icons/ri/eye-off-line?raw';
 import RawExpandDiagonalLine from '~icons/ri/expand-diagonal-line?raw';
 import RawExternalLinkLine from '~icons/ri/external-link-line?raw';
 import RawFileAddLine from '~icons/ri/file-add-line?raw';
@@ -181,6 +187,7 @@ export type IconName =
   | 'calendar-schedule'
   | 'calendar-todo'
   | 'close'
+  | 'trash'
   | 'check'
   | 'archive'
   | 'search'
@@ -194,6 +201,8 @@ export type IconName =
   | 'image'
   | 'settings'
   | 'sliders'
+  | 'eye'
+  | 'eye-off'
   | 'log-in'
   | 'chevron-down'
   | 'chevron-right'
@@ -269,6 +278,7 @@ export const ICONS: Record<IconName, IconEntry> = {
   'calendar-schedule': entry(RiCalendarScheduleLine, RawCalendarScheduleLine),
   'calendar-todo': entry(RiCalendarTodoLine, RawCalendarTodoLine),
   close: entry(RiCloseLine, RawCloseLine),
+  trash: entry(RiDeleteBinLine, RawDeleteBinLine),
   check: entry(RiCheckLine, RawCheckLine),
   archive: entry(RiArchiveLine, RawArchiveLine),
   search: entry(KimiSearch, RawKimiSearch),
@@ -282,6 +292,8 @@ export const ICONS: Record<IconName, IconEntry> = {
   image: entry(RiImageLine, RawImageLine),
   settings: entry(KimiSetting, RawKimiSetting),
   sliders: entry(RiEqualizerLine, RawEqualizerLine),
+  eye: entry(RiEyeLine, RawEyeLine),
+  'eye-off': entry(RiEyeOffLine, RawEyeOffLine),
   'log-in': entry(RiLoginBoxLine, RawLoginBoxLine),
   'chevron-down': entry(RiArrowDownSLine, RawArrowDownSLine),
   'chevron-right': entry(RiArrowRightSLine, RawArrowRightSLine),

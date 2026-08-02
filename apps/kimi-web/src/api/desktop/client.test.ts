@@ -1014,6 +1014,15 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
     expect(config.defaultModel).toBe('mock-model');
     expect(config.providers['mock']?.hasApiKey).toBe(true);
 
+    const updatedConfigPending = api.setConfig({
+      secondaryModel: { model: 'mock-model' },
+      experimental: { 'secondary-model': true },
+    });
+    await vi.advanceTimersByTimeAsync(100);
+    const updatedConfig = await updatedConfigPending;
+    expect(updatedConfig.secondaryModel).toEqual({ model: 'mock-model' });
+    expect(updatedConfig.experimental?.['secondary-model']).toBe(true);
+
     const workspaces = await workspacesPending;
     expect(workspaces.map((w) => w.id)).toContain('mock-workspace');
     expect(workspaces[0]?.root).toBe('/mock');

@@ -1,7 +1,7 @@
 export default {
   placeholder: 'Type a message…',
   send: 'Send ↵',
-  queueLabel: 'Queue',
+  queueLabel: 'Pending',
   placeholderRunning: 'Press Enter to queue · Ctrl+S to inject into the running turn',
   starting: 'Sending…',
   queueAutoDrain: 'sends automatically when the current turn ends',
@@ -25,10 +25,15 @@ export default {
   interruptTitle: 'Interrupt current operation',
   expandTitle: 'Expand input for multi-line editing',
   collapseTitle: 'Collapse input',
-  emptyConversationTitle: 'Kimi Code',
+  timeGreeting: {
+    earlyMorning: 'Good morning — where shall we begin?',
+    morning: 'Good morning — what shall we get done?',
+    noon: 'Good afternoon — want to take a short break first?',
+    afternoon: 'Good afternoon — what should we tackle next?',
+    evening: 'Good evening — what would you like to wrap up?',
+    lateNight: "It's getting late — want me to take it from here?",
+  },
   emptyConversation: 'No messages yet — type below to start the conversation',
   quickStartPlaceholder: 'Type a message to start a new conversation…',
-  thinkingSuffix: ' · thinking',
-  thinkingSuffixEffort: ' · {level}',
 
 } as const;

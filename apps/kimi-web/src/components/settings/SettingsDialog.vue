@@ -185,6 +185,22 @@ function setDefaultModel(value: string): void {
   emit('updateConfig', { defaultModel: value });
 }
 
+function setSecondaryModel(value: string): void {
+  const current = props.config?.secondaryModel?.model ?? '';
+  const enabled = value.length > 0;
+  if (
+    value === current &&
+    props.config?.experimental?.['secondary-model'] === enabled
+  ) return;
+  emit('updateConfig', {
+    secondaryModel: enabled ? { ...props.config?.secondaryModel, model: value } : {},
+    experimental: {
+      ...props.config?.experimental,
+      'secondary-model': enabled,
+    },
+  });
+}
+
 function setDefaultPermissionMode(mode: 'manual' | 'auto' | 'yolo'): void {
   if (mode === defaultPermissionMode.value) return;
   emit('updateConfig', { defaultPermissionMode: mode });
@@ -348,9 +364,22 @@ function archiveTime(iso: string): string {
 </script>
 
 <template>
-  <Dialog :open="true" :close-on-esc="false" :title="t('settings.title')" size="xl" height="fixed" :padded="false" @close="emit('close')">
+  <Dialog
+    :open="true"
+    :close-on-esc="false"
+    :title="undefined"
+    size="xl"
+    height="fixed"
+    :padded="false"
+    inline
+    @close="emit('close')"
+  >
     <div ref="dialogRef" class="sd">
       <nav class="settings-tabs" role="tablist" :aria-label="t('settings.title')" @keydown="onTabsKeydown">
+        <button type="button" class="back-button" @click="emit('close')">
+          <Icon name="undo" size="sm" />
+          <span>{{ t('settings.backToApp') }}</span>
+        </button>
         <button
           v-for="tb in tabs"
           :key="tb.id"
@@ -370,6 +399,9 @@ function archiveTime(iso: string): string {
       </nav>
 
       <div class="body">
+        <header class="page-head">
+          <h1>{{ t('settings.title') }}</h1>
+        </header>
         <Transition name="panel-swap" mode="out-in">
         <!-- General: Appearance + Notifications -->
         <section
@@ -518,9 +550,9 @@ function archiveTime(iso: string): string {
               <div class="model-summary">
                 <span class="model-summary__icon"><Icon name="globe" size="md" /></span>
                 <span class="model-summary__copy">
-                  <span class="model-summary__label">{{ t('settings.providers') }}</span>
+                  <span class="model-summary__label">{{ t('settings.availableModels') }}</span>
                   <span class="model-summary__value">
-                    {{ t('settings.providerCount', { count: providers?.length ?? 0 }) }}
+                    {{ t('settings.modelCount', { count: models?.length ?? 0 }) }}
                   </span>
                 </span>
               </div>
@@ -558,6 +590,27 @@ function archiveTime(iso: string): string {
                 </Select>
               </div>
               <span v-else class="rvalue mono">{{ config?.defaultModel ?? t('settings.noDefaultModel') }}</span>
+            </div>
+            <div class="row">
+              <span class="rlabel">
+                {{ t('settings.secondaryModel') }}
+                <span class="hint">{{ t('settings.secondaryModelHint') }}</span>
+              </span>
+              <div class="select-wrap">
+                <Select
+                  :model-value="config?.secondaryModel?.model ?? ''"
+                  :disabled="configSaving || modelGroups.length === 0"
+                  :aria-label="t('settings.secondaryModel')"
+                  @update:model-value="setSecondaryModel"
+                >
+                  <option value="">{{ t('settings.secondaryModelFollowDefault') }}</option>
+                  <optgroup v-for="group in modelGroups" :key="group.provider" :label="group.provider">
+                    <option v-for="model in group.options" :key="model.id" :value="model.id">
+                      {{ model.label }}
+                    </option>
+                  </optgroup>
+                </Select>
+              </div>
             </div>
           </section>
 
@@ -827,6 +880,25 @@ function archiveTime(iso: string): string {
   gap: 2px;
   overflow-y: auto;
 }
+.back-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: var(--space-2);
+  width: 100%;
+  margin-bottom: var(--space-3);
+  min-height: 36px;
+  padding: 6px 8px;
+  border: none;
+  border-radius: var(--radius-md);
+  background: transparent;
+  color: var(--color-text-muted);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: background var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+.back-button:hover { background: var(--color-surface-sunken); color: var(--color-text); }
+.back-button:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
 .tab {
   text-align: left;
   padding: 8px 10px;
@@ -843,8 +915,18 @@ function archiveTime(iso: string): string {
 .tab.on { background: var(--color-accent-soft); color: var(--color-accent); font-weight: var(--weight-medium); }
 .tab:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }
 
-.body { display: flex; flex-direction: column; overflow-y: auto; padding: var(--space-2) var(--space-5) var(--space-5) var(--space-6); flex: 1; min-width: 0; }
-.panel { display: block; }
+.body { display: flex; flex-direction: column; overflow-y: auto; padding: var(--space-5) var(--space-8) var(--space-8); flex: 1; min-width: 0; }
+.page-head,
+.panel { width: min(100%, 820px); margin-inline: auto; }
+.page-head { margin-bottom: var(--space-4); }
+.page-head h1 {
+  margin: 0;
+  color: var(--color-text);
+  font-family: var(--font-ui);
+  font-size: var(--text-2xl);
+  font-weight: var(--weight-semibold);
+  letter-spacing: -0.01em;
+}
 /* Section switch: quiet fade + a few-px rise, out-in keyed on the active tab. */
 .panel-swap-enter-active,
 .panel-swap-leave-active {
@@ -852,8 +934,14 @@ function archiveTime(iso: string): string {
 }
 .panel-swap-enter-from { opacity: 0; transform: translateY(6px); }
 .panel-swap-leave-to { opacity: 0; transform: translateY(-4px); }
-.sec { padding: var(--space-4) 0; border-bottom: 1px solid var(--color-line); }
-.sec:last-child { border-bottom: none; }
+.sec {
+  margin-bottom: var(--space-4);
+  padding: var(--space-4) var(--space-5);
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface-raised);
+}
+.sec:last-child { margin-bottom: 0; }
 .sec-head {
   display: flex;
   align-items: center;
@@ -885,6 +973,7 @@ function archiveTime(iso: string): string {
   min-height: 38px;
   padding: var(--space-1) 0;
 }
+.row + .row { margin-top: var(--space-2); padding-top: var(--space-3); border-top: 1px solid var(--color-line); }
 .rlabel {
   font-family: var(--font-ui);
   font-size: var(--text-base);
@@ -1053,7 +1142,14 @@ function archiveTime(iso: string): string {
     gap: var(--space-1);
     overflow-x: auto;
   }
+  .settings-tabs .back-button {
+    width: auto;
+    flex: none;
+    margin-bottom: 0;
+  }
   .tab { white-space: nowrap; flex: none; }
+  .body { padding: var(--space-4); }
+  .page-head, .panel { width: 100%; }
   .row {
     align-items: flex-start;
     flex-direction: column;

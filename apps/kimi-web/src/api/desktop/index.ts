@@ -6,11 +6,14 @@
 // docs/plan/desktop-product.md §3 M4).
 
 import { WailsDesktopBridge } from './bridge';
+import { isDesktopDevBackendSelected } from '../devBackend';
+import { DevDesktopBridge } from './devBridge';
 import { MockDesktopBridge } from './mock';
 import type { DesktopBridge } from './types';
 
 export * from './types';
 export { WailsDesktopBridge } from './bridge';
+export { DevDesktopBridge } from './devBridge';
 export { MockDesktopBridge } from './mock';
 export { WailsKimiWebApi, createWailsKimiWebApi } from './client';
 
@@ -28,7 +31,11 @@ let singleton: DesktopBridge | undefined;
  * for the page's lifetime.
  */
 export function getDesktopBridge(): DesktopBridge {
-  singleton ??= isDesktopShellAvailable() ? new WailsDesktopBridge() : new MockDesktopBridge();
+  singleton ??= isDesktopShellAvailable()
+    ? new WailsDesktopBridge()
+    : isDesktopDevBackendSelected()
+      ? new DevDesktopBridge()
+      : new MockDesktopBridge();
   return singleton;
 }
 
@@ -58,8 +65,8 @@ export function isDesktopTransportEnabled(): boolean {
       if (value === '1' || value === 'true') return true;
       if (value === '0' || value === 'false') return false;
     }
-    return isDesktopShellAvailable();
+    return isDesktopShellAvailable() || isDesktopDevBackendSelected();
   } catch {
-    return isDesktopShellAvailable();
+    return isDesktopShellAvailable() || isDesktopDevBackendSelected();
   }
 }

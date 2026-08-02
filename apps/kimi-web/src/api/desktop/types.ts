@@ -429,7 +429,7 @@ export interface DesktopTerminalEvent {
 
 export interface DesktopBridge {
   /** Which transport backs this bridge — informational (demo badge). */
-  readonly kind: 'wails' | 'mock';
+  readonly kind: 'wails' | 'dev' | 'mock';
   Hello(): Promise<DesktopHelloInfo>;
   ListSessions(): Promise<DesktopSessionListPage>;
   CreateSession(): Promise<DesktopSessionHandle>;

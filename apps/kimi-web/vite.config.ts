@@ -5,6 +5,7 @@ import { FileSystemIconLoader } from 'unplugin-icons/loaders';
 import { readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { fileURLToPath } from 'node:url';
+import { desktopBackendPlugin } from './vite/desktopBackendPlugin';
 
 const webPort = Number(process.env.WEB_PORT) || 5175;
 // Dev-proxy backend presets: `default` is the kap-server started by the root
@@ -15,6 +16,7 @@ const webPort = Number(process.env.WEB_PORT) || 5175;
 const backendPresets = {
   default: process.env.KIMI_BACKEND_DEFAULT_URL || 'http://127.0.0.1:58627',
   multi: process.env.KIMI_BACKEND_MULTI_URL || 'http://127.0.0.1:58628',
+  desktop: 'desktop://sidecar',
 } as const;
 type BackendName = keyof typeof backendPresets;
 // Where the dev proxy forwards server traffic. Defaults to the `default`
@@ -25,6 +27,7 @@ const serverTarget = process.env.KIMI_SERVER_URL || backendPresets.default;
 // and reads it directly per WS upgrade, so assigning `target` on the captured
 // options repoints the proxy without a dev-server restart (see the plugin).
 let currentBackendTarget = serverTarget;
+let currentBackendName: BackendName = 'default';
 let backendProxyOpts: { target?: unknown } | null = null;
 const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf-8')) as {
   version: string;
@@ -42,11 +45,16 @@ function backendSwitcherPlugin(): Plugin {
     res.setHeader('Content-Type', 'application/json');
     res.end(JSON.stringify(body));
   };
-  const state = (): { current: string; presets: typeof backendPresets } => ({
+  const state = (): { selected: BackendName; current: string; presets: typeof backendPresets } => ({
+    selected: currentBackendName,
     current: currentBackendTarget,
     presets: backendPresets,
   });
   const switchTo = (name: BackendName): void => {
+    currentBackendName = name;
+    // Desktop uses the direct product bridge below, not the HTTP proxy. Keep
+    // the last daemon target intact so switching back is immediate.
+    if (name === 'desktop') return;
     currentBackendTarget = backendPresets[name];
     // Repoint the live proxy. NOTE: vite's vendored http-proxy has no
     // `router` support — mutating the captured options object is the switch.
@@ -71,9 +79,11 @@ function backendSwitcherPlugin(): Plugin {
             } catch {
               name = undefined;
             }
-            if (name !== 'default' && name !== 'multi') {
+            if (name !== 'default' && name !== 'multi' && name !== 'desktop') {
               res.statusCode = 400;
-              sendJson(res, { error: 'expected { "name": "default" | "multi" }' });
+              sendJson(res, {
+                error: 'expected { "name": "default" | "multi" | "desktop" }',
+              });
               return;
             }
             switchTo(name as BackendName);
@@ -122,6 +132,7 @@ export default defineConfig({
   plugins: [
     vue(),
     backendSwitcherPlugin(),
+    desktopBackendPlugin(fileURLToPath(new URL('../..', import.meta.url))),
     Icons({
       compiler: 'vue3',
       // Local Kimi Design System icons (24×24 outlined, fill="currentColor"),

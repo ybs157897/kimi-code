@@ -19,6 +19,19 @@ export interface FileItem {
   name: string;
 }
 
+export type MentionItem =
+  | {
+      kind: 'expert-team';
+      pluginId: string;
+      name: string;
+      description: string;
+    }
+  | {
+      kind: 'file';
+      path: string;
+      name: string;
+    };
+
 export interface Session {
   id: string;
   title: string;
@@ -116,6 +129,7 @@ export type AgentPhase = 'queued' | 'working' | 'suspended' | 'completed' | 'fai
 
 export interface AgentMember {
   id: string;
+  sessionId?: string;
   toolCallId?: string;
   name: string;
   subagentType?: string;

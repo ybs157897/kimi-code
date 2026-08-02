@@ -54,18 +54,23 @@ if (isDev) {
 // build-time label when the dev endpoints are unavailable).
 const endpoint = computed(() => {
   if (!isDev) return '';
+  if (devBackend.value?.selected === 'desktop') return '.kimi-desktop';
   const current = devBackend.value?.current;
   return current ? shortOrigin(current) : serverEndpointLabel();
 });
-const backendNames: BackendName[] = ['default', 'multi'];
+const backendNames: BackendName[] = ['default', 'multi', 'desktop'];
 function presetUrl(name: BackendName): string {
   const url = devBackend.value?.presets[name] ?? '';
   return url ? shortOrigin(url) : '';
 }
 function isCurrentBackend(name: BackendName): boolean {
   const state = devBackend.value;
-  return state !== null && state.current === state.presets[name];
+  return state !== null && state.selected === name;
 }
+
+const backendKind = computed(() =>
+  devBackend.value?.selected === 'desktop' ? 'desktop' : props.backend,
+);
 
 const props = withDefaults(
   defineProps<{
@@ -686,10 +691,10 @@ onBeforeUnmount(() => {
               v-if="isDev"
               class="ch-backend"
               :clickable="devBackend !== null"
-              :title="t('sidebar.backendTitle', { backend, endpoint })"
+              :title="t('sidebar.backendTitle', { backend: backendKind, endpoint })"
               @click="toggleBackendMenu"
             >
-              <span class="ch-backend-kind" :class="`is-${backend}`">{{ backend }}</span>
+              <span class="ch-backend-kind" :class="`is-${backendKind}`">{{ backendKind }}</span>
               <span class="ch-backend-ep"> · {{ endpoint }}</span>
               <Icon v-if="devBackend !== null" name="chevron-down" size="sm" />
             </Pill>
@@ -719,6 +724,25 @@ onBeforeUnmount(() => {
           @click.stop="emit('addWorkspace')"
         >
           <Icon name="folder" />
+        </IconButton>
+        <button
+          v-if="isDev"
+          class="ch-backend backend-compact"
+          type="button"
+          :title="t('sidebar.backendTitle', { backend: backendKind, endpoint })"
+          @click.stop="toggleBackendMenu"
+        >
+          <Icon name="glob" size="sm" />
+          <span>{{ backendKind }}</span>
+          <Icon name="chevron-down" size="sm" />
+        </button>
+        <IconButton
+          v-if="!isMacosDesktop"
+          size="sm"
+          :label="t('sidebar.collapseSidebar')"
+          @click.stop="emit('collapse')"
+        >
+          <Icon name="panel-collapse" />
         </IconButton>
       </div>
 
@@ -1009,6 +1033,11 @@ onBeforeUnmount(() => {
   width: 100%;
   box-sizing: border-box;
 }
+/* Browser/Windows: remove the product-brand strip so navigation starts with
+   the primary action row. Its collapse control is kept in .btn-wrap below. */
+.side:not(.macos-desktop) .ch {
+  display: none;
+}
 /* macOS desktop: the window uses a hidden title bar, so the traffic lights
    float over the top-left of the sidebar and the resident toggle sits beside
    them. The header renders no content here (brand hidden) — it is purely a
@@ -1097,7 +1126,7 @@ onBeforeUnmount(() => {
   display: flex;
   align-items: center;
   gap: 8px;
-  padding: 0 var(--sb-inset);
+  padding: var(--space-2) var(--sb-inset) 0;
 }
 .btn-new-chat {
   display: flex;
@@ -1115,6 +1144,24 @@ onBeforeUnmount(() => {
   line-height: var(--leading-tight);
   cursor: pointer;
   text-align: left;
+}
+.backend-compact {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: none;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-muted);
+  font: 500 11px/1 var(--mono);
+  cursor: pointer;
+}
+.backend-compact:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
 }
 .btn-new-chat:hover { background: var(--sb-hover); }
 .btn-new-chat:focus-visible { outline: none; box-shadow: var(--p-focus-ring); }

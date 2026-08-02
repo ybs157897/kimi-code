@@ -2,7 +2,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
-import type { ChatTurn, ApprovalBlock, FilePreviewRequest, ToolMedia, QueuedPromptView, TurnAttachment } from '../../types';
+import type { ChatTurn, ApprovalBlock, FilePreviewRequest, ToolMedia, TurnAttachment } from '../../types';
 import ToolCall from './ToolCall.vue';
 import ToolGroup from './ToolGroup.vue';
 import Markdown from './Markdown.vue';
@@ -10,7 +10,6 @@ import ThinkingBlock from './ThinkingBlock.vue';
 import ActivityNotice from './ActivityNotice.vue';
 import CronNotice from './CronNotice.vue';
 import MessageTime from './MessageTime.vue';
-import AuthMedia from './AuthMedia.vue';
 import AttachmentChip from './AttachmentChip.vue';
 import MoonSpinner from '../ui/MoonSpinner.vue';
 import Spinner from '../ui/Spinner.vue';
@@ -108,12 +107,6 @@ const props = withDefaults(
      */
     toolDiffPanel?: boolean;
     /**
-     * Pending user messages queued while the session is busy. Rendered inline
-     * at the tail of the transcript (after the running turn) — click to edit,
-     * × to remove, drag the grip to reorder.
-     */
-    queued?: QueuedPromptView[];
-    /**
      * @deprecated No longer used — Composer is rendered by ConversationPane.
      */
   }>(),
@@ -128,7 +121,6 @@ const props = withDefaults(
     loadingMoreError: false,
     isFollowing: false,
     toolDiffPanel: false,
-    queued: () => [],
   },
 );
 
@@ -211,69 +203,7 @@ const emit = defineEmits<{
   editMessage: [payload: { text: string; attachments?: TurnAttachment[] }];
   /** Fetch the next older page of messages (triggered by top sentinel visibility or click). */
   loadOlderMessages: [];
-  /** Remove a queued message by index. */
-  unqueue: [index: number];
-  /** Load a queued message back into the composer for editing (and dequeue it). */
-  editQueued: [index: number];
-  /** Drag-to-reorder a queued message within the active session's queue. */
-  reorderQueue: [payload: { from: number; to: number }];
 }>();
-
-// ---- Inline queue (pending messages while running) ------------------------
-// Edit/remove are one-click; reorder is HTML5 drag-and-drop initiated from the
-// grip handle (the body stays a click-to-edit button).
-const dragFrom = ref<number | null>(null);
-const dragOver = ref<{ index: number; position: 'before' | 'after' } | null>(null);
-
-function hasAttachments(item: QueuedPromptView): boolean {
-  return (item.attachments?.length ?? 0) > 0;
-}
-
-function onQueueEdit(index: number): void {
-  // Image/video attachments round-trip through the composer now (the composer
-  // can hold fileIds), so a queued prompt can be loaded back for edit whether or
-  // not it carries media.
-  emit('editQueued', index);
-}
-
-function onQueueDragStart(index: number, event: DragEvent): void {
-  dragFrom.value = index;
-  if (!event.dataTransfer) return;
-  event.dataTransfer.effectAllowed = 'move';
-  event.dataTransfer.setData('text/plain', String(index));
-  // Use the whole row as the drag image instead of just the grip handle.
-  const row = (event.currentTarget as HTMLElement | null)?.closest<HTMLElement>('.q-turn');
-  if (row) event.dataTransfer.setDragImage(row, 24, 24);
-}
-
-function onQueueDragOver(index: number, event: DragEvent): void {
-  if (dragFrom.value === null) return;
-  event.preventDefault();
-  if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-  const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
-  const position = event.clientY < rect.top + rect.height / 2 ? 'before' : 'after';
-  dragOver.value = { index, position };
-}
-
-function onQueueDrop(index: number, event: DragEvent): void {
-  event.preventDefault();
-  const from = dragFrom.value;
-  const position = dragOver.value?.position ?? 'before';
-  dragFrom.value = null;
-  dragOver.value = null;
-  if (from === null) return;
-  // Convert the "before/after target row" into a final insertion index,
-  // adjusting for the source row being removed first on downward moves.
-  let to = position === 'before' ? index : index + 1;
-  if (from < to) to -= 1;
-  if (from === to) return;
-  emit('reorderQueue', { from, to });
-}
-
-function onQueueDragEnd(): void {
-  dragFrom.value = null;
-  dragOver.value = null;
-}
 
 // Id of the most recent user turn — the only one offered an "edit & resend"
 // affordance (undo only removes the latest exchange).
@@ -705,80 +635,6 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
       <MoonSpinner :fast="fastMoon" />
     </div>
 
-    <!-- Inline queue — pending user messages shown after the running turn.
-         Click to edit, × to remove, drag the grip to reorder. -->
-    <div v-if="queued.length > 0" class="q-stack">
-      <div class="q-head">
-        <span class="q-title">
-          <Icon name="mail" size="sm" />
-          {{ t('composer.queueLabel') }} · <b>{{ queued.length }}</b>
-        </span>
-        <span class="q-hint">{{ t('composer.queueAutoDrain') }}</span>
-      </div>
-      <div
-        v-for="(item, qi) in queued"
-        :key="qi"
-        class="u-turn q-turn"
-        :class="{
-          'q-dragging': dragFrom === qi,
-          'drop-before': dragOver?.index === qi && dragOver.position === 'before',
-          'drop-after': dragOver?.index === qi && dragOver.position === 'after',
-        }"
-        @dragover="onQueueDragOver(qi, $event)"
-        @drop="onQueueDrop(qi, $event)"
-      >
-        <div class="u-bub q-bub">
-          <span
-            class="q-grip"
-            :title="t('composer.queueDragTitle')"
-            draggable="true"
-            @dragstart="onQueueDragStart(qi, $event)"
-            @dragend="onQueueDragEnd"
-          >
-            <Icon name="grip" size="sm" />
-          </span>
-          <button
-            type="button"
-            class="q-body"
-            :title="t('composer.editQueued')"
-            @click="onQueueEdit(qi)"
-          >
-            <span v-if="item.text" class="u-text q-text">{{ item.text }}</span>
-            <span v-else class="q-text q-text-placeholder">
-              <Icon name="file" size="sm" />
-              {{ t('composer.queuedAttachments', { n: item.attachments?.length ?? 0 }) }}
-            </span>
-          </button>
-          <div v-if="hasAttachments(item)" class="q-imgs">
-            <template v-for="(att, ai) in item.attachments" :key="ai">
-              <span v-if="att.kind === 'file'" class="q-file">
-                <Icon name="file" size="sm" />
-                {{ att.name ?? att.fileId }}
-              </span>
-              <AuthMedia
-                v-else
-                :url="att.url"
-                :kind="att.kind"
-                :file-id="att.fileId"
-                media-class="q-img"
-                :controls="false"
-                muted
-              />
-            </template>
-          </div>
-          <span v-if="qi === 0" class="q-tag q-tag-next">{{ t('composer.queueNext') }}</span>
-          <span v-else class="q-tag q-tag-idx">#{{ qi + 1 }}</span>
-          <button
-            type="button"
-            class="q-rm"
-            :aria-label="t('composer.remove')"
-            @click.stop="emit('unqueue', qi)"
-          >
-            <Icon name="close" size="sm" />
-          </button>
-        </div>
-      </div>
-    </div>
   </div>
 
   <!-- Transient hint after clicking a file chip whose type can't be opened. -->
@@ -1282,197 +1138,6 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
 .a-msg {
   max-width: 100%;
   width: 100%;
-}
-
-/* ---- Inline queue: pending user messages at the tail of the transcript ----
-   Reuses .u-turn / .u-bub so the pending bubbles sit in the same right-aligned
-   column as real user turns; the .q-bub modifier swaps in a lower-emphasis
-   "not yet sent" treatment (surface fill + dashed border). */
-.chat > .q-stack {
-  margin-top: var(--chat-turn-gap);
-}
-.chat > .q-stack:first-child {
-  margin-top: 0;
-}
-.q-stack {
-  align-self: flex-end;
-  width: 100%;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.q-head {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  padding: 0 6px;
-  color: var(--color-text-faint);
-  font-size: var(--ui-font-size-xs);
-}
-.q-title {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-}
-.q-title b {
-  color: var(--color-accent-hover);
-  font-weight: var(--weight-medium);
-}
-.q-hint {
-  color: var(--color-text-faint);
-}
-.q-turn {
-  position: relative;
-}
-.q-bub {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: fit-content;
-  background: var(--color-surface-raised);
-  border: 1px dashed var(--color-accent-bd);
-  padding: 8px 8px 8px 6px;
-  transition: border-color 0.12s ease, background 0.12s ease;
-}
-.q-bub:hover {
-  border-color: var(--color-accent);
-  background: var(--color-accent-soft);
-}
-.q-grip {
-  flex: none;
-  display: inline-flex;
-  align-items: center;
-  padding: 2px;
-  color: var(--color-text-faint);
-  cursor: grab;
-  opacity: 0.7;
-}
-.q-grip:hover {
-  opacity: 1;
-}
-.q-grip:active {
-  cursor: grabbing;
-}
-.q-body {
-  flex: 1;
-  min-width: 0;
-  background: none;
-  border: none;
-  padding: 0;
-  margin: 0;
-  font: inherit;
-  color: var(--color-text);
-  text-align: left;
-  cursor: pointer;
-  opacity: 0.82;
-}
-.q-bub:hover .q-body {
-  opacity: 1;
-}
-.q-body:disabled {
-  cursor: default;
-}
-.q-text {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-.q-text-placeholder {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  color: var(--color-text-muted);
-}
-.q-imgs {
-  display: flex;
-  gap: 4px;
-  flex: none;
-}
-.q-img {
-  width: 28px;
-  height: 28px;
-  object-fit: cover;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-line);
-}
-.q-file {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  height: 28px;
-  padding: 0 6px;
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--color-line);
-  color: var(--color-text-muted);
-  font-size: calc(var(--ui-font-size) - 3px);
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.q-tag {
-  flex: none;
-  padding: 1px 6px;
-  border-radius: var(--radius-full);
-  font-size: var(--ui-font-size-xs);
-  font-weight: var(--weight-medium);
-  line-height: 1.4;
-  white-space: nowrap;
-}
-.q-tag-next {
-  color: var(--color-accent-hover);
-  background: var(--color-accent-soft);
-  border: 1px solid var(--color-accent-bd);
-}
-.q-tag-idx {
-  color: var(--color-text-faint);
-  background: var(--color-surface-sunken);
-  border: 1px solid var(--color-line);
-}
-.q-rm {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: none;
-  border: none;
-  border-radius: var(--radius-sm);
-  color: var(--color-text-faint);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
-}
-.q-bub:hover .q-rm,
-.q-bub:focus-within .q-rm,
-.q-rm:focus-visible {
-  opacity: 1;
-}
-.q-rm:hover {
-  background: var(--color-danger-soft);
-  color: var(--color-danger);
-}
-/* Drag reorder: dim the row being dragged, show an insertion line on the target. */
-.q-turn.q-dragging .q-bub {
-  opacity: 0.45;
-}
-.q-turn.drop-before::before,
-.q-turn.drop-after::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  height: 2px;
-  background: var(--color-accent);
-  border-radius: var(--radius-full);
-  z-index: 1;
-}
-.q-turn.drop-before::before {
-  top: -5px;
-}
-.q-turn.drop-after::after {
-  bottom: -5px;
 }
 
 </style>

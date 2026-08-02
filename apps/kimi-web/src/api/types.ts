@@ -672,11 +672,18 @@ export interface AppConfigProvider {
   hasApiKey: boolean;
 }
 
+export interface AppSecondaryModelConfig {
+  model?: string;
+  defaultEffort?: string;
+  [key: string]: unknown;
+}
+
 export interface AppConfig {
   providers: Record<string, AppConfigProvider>;
   defaultProvider?: string;
   defaultModel?: string;
   models?: Record<string, unknown>;
+  secondaryModel?: AppSecondaryModelConfig;
   thinking?: { enabled?: boolean; effort?: string };
   planMode?: boolean;
   yolo?: boolean;
@@ -789,6 +796,13 @@ export interface AppSessionWarning {
   severity: 'info' | 'warning' | 'error';
 }
 
+/** Display-ready content recovered from one agent's transcript. */
+export interface AppAgentTranscript {
+  thinking: string;
+  text: string;
+  progressLines: string[];
+}
+
 export interface KimiWebApi {
   getHealth(): Promise<{ status: 'ok'; uptimeSec: number }>;
   getMeta(): Promise<{ serverVersion: string; serverId: string; startedAt: string; capabilities: Record<string, boolean>; openInApps: string[]; dangerousBypassAuth: boolean; backend: 'v1' | 'v2' }>;
@@ -845,6 +859,12 @@ export interface KimiWebApi {
   activateExpertTeam(sessionId: string, pluginId: string): Promise<AppExpertTeamStatus>;
   deactivateExpertTeam(sessionId: string): Promise<void>;
   listTasks(sessionId: string, status?: AppTaskStatus): Promise<AppTask[]>;
+  /**
+   * Read one agent's transcript for detail-panel recovery. Optional because
+   * transports without an agent-scoped transcript surface still use live task
+   * progress events.
+   */
+  getAgentTranscript?(sessionId: string, agentId: string): Promise<AppAgentTranscript>;
   getTask(sessionId: string, taskId: string, input?: { withOutput?: boolean; outputBytes?: number }): Promise<AppTask>;
   cancelTask(sessionId: string, taskId: string): Promise<{ cancelled: true }>;
   listTerminals(sessionId: string): Promise<AppTerminal[]>;

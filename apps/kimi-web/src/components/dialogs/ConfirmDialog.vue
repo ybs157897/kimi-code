@@ -73,6 +73,7 @@ onBeforeUnmount(() => {
        header close button and Enter would cancel instead of confirm. -->
   <Dialog
     :open="open"
+    stacked
     :title="title"
     height="auto"
     initial-focus=".confirm-dialog__confirm"

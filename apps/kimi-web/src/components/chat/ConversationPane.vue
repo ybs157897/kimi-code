@@ -25,8 +25,19 @@ import Spinner from '../ui/Spinner.vue';
 import Tooltip from '../ui/Tooltip.vue';
 import { getVisibleWorkspaces } from '../../lib/workspacePicker';
 import { safeRemove, STORAGE_KEYS } from '../../lib/storage';
+import { timeGreetingPeriod } from '../../lib/timeGreeting';
 
 const { t } = useI18n();
+
+const localHour = ref(new Date().getHours());
+const emptyGreeting = computed(() =>
+  t(`composer.timeGreeting.${timeGreetingPeriod(localHour.value)}`),
+);
+let greetingClockTimer: ReturnType<typeof setInterval> | null = null;
+
+function syncGreetingClock(): void {
+  localHour.value = new Date().getHours();
+}
 
 const props = defineProps<{
   turns: ChatTurn[];
@@ -131,8 +142,8 @@ const emit = defineEmits<{
   togglePlan: [];
   toggleSwarm: [];
   toggleGoal: [];
-  refreshExpertTeams: [];
-  openExpertPicker: [];
+  selectExpertTeam: [pluginId: string];
+  clearExpertTeam: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
   compact: [];
@@ -276,8 +287,7 @@ const todoDoneCount = computed(() => (props.todos ?? []).filter((td) => td.statu
 const hasDockWork = computed(() =>
   bashTasks.value.length > 0 ||
   subagentTasks.value.length > 0 ||
-  (props.todos?.length ?? 0) > 0 ||
-  (props.queued?.length ?? 0) > 0,
+  (props.todos?.length ?? 0) > 0,
 );
 const dockPanel = ref<'bash' | 'subagent' | 'todos' | null>(null);
 const changesCount = computed(() => (props.gitInfo ? props.changes?.length ?? 0 : 0));
@@ -1155,6 +1165,8 @@ function onVisualViewportResize(): void {
 }
 
 onMounted(() => {
+  syncGreetingClock();
+  greetingClockTimer = setInterval(syncGreetingClock, 60_000);
   nextTick(() => {
     if (typeof MutationObserver === 'function') {
       contentObserver = new MutationObserver(onContentMutated);
@@ -1195,6 +1207,7 @@ onUnmounted(() => {
   if (stableFollowRaf) cancelRaf(stableFollowRaf);
   if (pinRaf) cancelRaf(pinRaf);
   if (abortToastTimer !== null) clearTimeout(abortToastTimer);
+  if (greetingClockTimer !== null) clearInterval(greetingClockTimer);
   if (copyConversationCopiedTimer !== null) {
     clearTimeout(copyConversationCopiedTimer);
     copyConversationCopiedTimer = null;
@@ -1277,7 +1290,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
             <div class="empty-hint">
               <span class="empty-hint-title" :class="{ 'is-starting': starting }">
                 <Spinner v-if="starting" size="sm" />
-                <span>{{ starting ? t('conversation.starting') : t('composer.emptyConversationTitle') }}</span>
+                <span>{{ starting ? t('conversation.starting') : emptyGreeting }}</span>
               </span>
               <span v-if="!starting" class="empty-hint-text">{{ t('composer.emptyConversation') }}</span>
               <!-- Workspace picker: choose where this new conversation starts.
@@ -1366,8 +1379,8 @@ defineExpose({ loadComposerForEdit, focusComposer });
               @toggle-plan="emit('togglePlan')"
               @toggle-swarm="emit('toggleSwarm')"
               @toggle-goal="emit('toggleGoal')"
-              @refresh-expert-teams="emit('refreshExpertTeams')"
-              @open-expert-picker="emit('openExpertPicker')"
+              @select-expert-team="emit('selectExpertTeam', $event)"
+              @clear-expert-team="emit('clearExpertTeam')"
               @open-btw="emit('command', '/btw')"
               @create-goal="emit('createGoal', $event)"
               @control-goal="emit('controlGoal', $event)"
@@ -1394,7 +1407,6 @@ defineExpose({ loadComposerForEdit, focusComposer });
               :loading-more-error="loadingMoreError"
               :is-following="following"
               :tool-diff-panel="true"
-              :queued="queued"
               @open-file="emit('openFile', $event)"
               @open-media="emit('openMedia', $event)"
               @copy-conversation-copied="handleCopyConversationCopied"
@@ -1404,9 +1416,6 @@ defineExpose({ loadComposerForEdit, focusComposer });
               @open-tool-diff="emit('openToolDiff', $event)"
               @edit-message="handleEditMessage"
               @load-older-messages="handleLoadOlderMessages"
-              @unqueue="emit('unqueue', $event)"
-              @edit-queued="handleEditQueued"
-              @reorder-queue="handleReorderQueue"
             />
           </template>
         </div>
@@ -1455,6 +1464,9 @@ defineExpose({ loadComposerForEdit, focusComposer });
         @dismiss="emit('dismiss', $event)"
         @approval="handleApproval"
         @cancel-task="emit('cancelTask', $event)"
+        @unqueue="emit('unqueue', $event)"
+        @edit-queued="handleEditQueued"
+        @reorder-queue="handleReorderQueue"
         @control-goal="emit('controlGoal', $event)"
         @submit="handleComposerSubmit"
         @steer="emit('steer', $event)"
@@ -1465,8 +1477,8 @@ defineExpose({ loadComposerForEdit, focusComposer });
         @toggle-plan="emit('togglePlan')"
         @toggle-swarm="emit('toggleSwarm')"
         @toggle-goal="emit('toggleGoal')"
-          @refresh-expert-teams="emit('refreshExpertTeams')"
-          @open-expert-picker="emit('openExpertPicker')"
+          @select-expert-team="emit('selectExpertTeam', $event)"
+          @clear-expert-team="emit('clearExpertTeam')"
           @open-btw="emit('command', '/btw')"
           @create-goal="emit('createGoal', $event)"
           @focus-goal="focusGoal"

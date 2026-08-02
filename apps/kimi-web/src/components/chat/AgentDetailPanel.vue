@@ -5,8 +5,10 @@
      streaming its progress here, and the progress list follows the bottom as long
      as the user hasn't scrolled up. -->
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue';
+import { computed, nextTick, onUnmounted, ref, watch } from 'vue';
 import { useI18n } from 'vue-i18n';
+import { getKimiWebApi } from '../../api';
+import type { AppAgentTranscript } from '../../api/types';
 import type { AgentMember } from '../../types';
 import Badge from '../ui/Badge.vue';
 import PanelHeader from '../ui/PanelHeader.vue';
@@ -19,16 +21,69 @@ const emit = defineEmits<{
 
 const { t } = useI18n();
 
+const recoveredTranscript = ref<AppAgentTranscript | null>(null);
+let transcriptTimer: ReturnType<typeof setInterval> | null = null;
+let transcriptRequest = 0;
+
+function stopTranscriptPolling(): void {
+  if (transcriptTimer !== null) {
+    clearInterval(transcriptTimer);
+    transcriptTimer = null;
+  }
+}
+
+async function refreshTranscript(): Promise<void> {
+  const api = getKimiWebApi();
+  const sessionId = props.member.sessionId;
+  if (!sessionId || !api.getAgentTranscript) return;
+  const request = ++transcriptRequest;
+  try {
+    const transcript = await api.getAgentTranscript(sessionId, props.member.id);
+    if (request === transcriptRequest) recoveredTranscript.value = transcript;
+  } catch {
+    // Live task progress remains the fallback on old servers/transports.
+  }
+}
+
+watch(
+  () => [props.member.sessionId, props.member.id, props.member.phase] as const,
+  ([sessionId, agentId, phase], previous) => {
+    stopTranscriptPolling();
+    transcriptRequest += 1;
+    if (!previous || previous[0] !== sessionId || previous[1] !== agentId) {
+      recoveredTranscript.value = null;
+    }
+    void refreshTranscript();
+    if (phase === 'queued' || phase === 'working') {
+      transcriptTimer = setInterval(() => void refreshTranscript(), 1000);
+    }
+  },
+  { immediate: true },
+);
+
+onUnmounted(() => {
+  transcriptRequest += 1;
+  stopTranscriptPolling();
+});
+
+function preferRecovered(recovered: string | undefined, live: string | undefined): string {
+  const recoveredText = recovered?.trimEnd() ?? '';
+  const liveText = live?.trimEnd() ?? '';
+  if (!recoveredText) return liveText;
+  if (!liveText || recoveredText.length >= liveText.length) return recoveredText;
+  return liveText;
+}
+
 const progressLines = computed(() =>
-  (props.member.outputLines ?? [])
+  [...(recoveredTranscript.value?.progressLines ?? []), ...(props.member.outputLines ?? [])]
     .map((line) => line.trimEnd())
-    .filter((line) => line.length > 0),
+    .filter((line, index, lines) => line.length > 0 && lines.indexOf(line) === index),
 );
 
 // The subagent's concatenated live output (assistant deltas). Trim trailing
 // whitespace for display; grows in real time as deltas stream in.
-const liveText = computed(() => (props.member.text ?? '').trimEnd());
-const liveThinking = computed(() => (props.member.thinking ?? '').trimEnd());
+const liveText = computed(() => preferRecovered(recoveredTranscript.value?.text, props.member.text));
+const liveThinking = computed(() => preferRecovered(recoveredTranscript.value?.thinking, props.member.thinking));
 
 const hasBody = computed(
   () =>

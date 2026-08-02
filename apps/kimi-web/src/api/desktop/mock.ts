@@ -102,6 +102,8 @@ export class MockDesktopBridge implements DesktopBridge {
   private productMsgSeq = 0;
   private productReqSeq = 0;
   private productDefaultModel = 'mock-model';
+  private productSecondaryModel: WireConfig['secondary_model'];
+  private productExperimental: Record<string, boolean> = {};
   /** Active expert-team snapshot per session (null/absent = standard agent). */
   private productExpertTeamBySession = new Map<string, WireExpertTeamSnapshot>();
   /** Legacy message history per session (for listMessages / snapshot). */
@@ -1246,12 +1248,24 @@ export class MockDesktopBridge implements DesktopBridge {
       providers,
       default_provider: 'mock',
       default_model: this.productDefaultModel,
+      secondary_model: this.productSecondaryModel,
+      experimental: this.productExperimental,
     };
   }
 
   private productSetConfig(raw: unknown): WireConfig {
     if (isRecord(raw) && typeof raw['default_model'] === 'string') {
       this.productDefaultModel = raw['default_model'];
+    }
+    if (isRecord(raw) && isRecord(raw['secondary_model'])) {
+      this.productSecondaryModel = raw['secondary_model'];
+    }
+    if (isRecord(raw) && isRecord(raw['experimental'])) {
+      this.productExperimental = Object.fromEntries(
+        Object.entries(raw['experimental']).filter(
+          (entry): entry is [string, boolean] => typeof entry[1] === 'boolean',
+        ),
+      );
     }
     return this.productGetConfig();
   }

@@ -1,11 +1,11 @@
 <!-- apps/kimi-web/src/components/chat/ThinkingBlock.vue -->
-<!-- 9e97773-style presentation: while this block is streaming it shows a live
-     5-line scrolling window; when the stream moves past it the window folds
-     into a one-paragraph teaser (the LAST paragraph of the thinking text).
-     There is NO inline expand any more — clicking anywhere on the block emits
-     `open`, and the parent shows the full text in the right-side panel. -->
+<!-- The thinking block stays expanded while it streams, then folds into a
+     compact status row. Historical thinking is folded by default and can be
+     expanded inline; clicking the body still opens the full side panel. -->
 <script setup lang="ts">
-import { computed, onMounted, ref, watch, nextTick } from 'vue';
+import { computed, nextTick, onMounted, ref, watch } from 'vue';
+import { useI18n } from 'vue-i18n';
+import Icon from '../ui/Icon.vue';
 
 const props = withDefaults(
   defineProps<{
@@ -22,20 +22,25 @@ const emit = defineEmits<{
   open: [];
 }>();
 
-// Live window while streaming, teaser afterwards. The 0.25s grid transition
-// between the two states (fa8b305) plays on the class flip.
-const paragraphs = computed(() =>
-  props.text
-    .split(/\n{2,}/)
-    .filter((p) => p.trim().length > 0),
+const { t } = useI18n();
+
+// Keep the live thinking body visible while streaming; completed blocks use
+// the compact status row until the user explicitly expands them.
+const isFoldable = computed(() => props.foldable && props.text.trim().length > 0);
+const expandedByUser = ref(false);
+const open = computed(() => props.streaming || expandedByUser.value);
+
+function toggleExpanded(): void {
+  if (props.streaming) return;
+  expandedByUser.value = !expandedByUser.value;
+}
+
+watch(
+  () => props.streaming,
+  (streaming) => {
+    if (streaming) expandedByUser.value = false;
+  },
 );
-
-/** Single-paragraph thinking has nothing to fold — show it straight. */
-const isFoldable = computed(() => props.foldable && paragraphs.value.length > 1);
-const open = computed(() => props.streaming || !isFoldable.value);
-
-/** Last non-empty paragraph, shown as the collapsed teaser. */
-const teaser = computed(() => paragraphs.value.at(-1) ?? '');
 
 const bodyEl = ref<HTMLElement | null>(null);
 
@@ -66,19 +71,25 @@ watch(
 
 <template>
   <div class="think" :class="{ mob: mobile }">
-    <!-- Foldable: live window above, last-paragraph teaser below; click opens
-         the full text in the right-side panel -->
+    <!-- Foldable: live content while streaming, status row after completion. -->
     <template v-if="isFoldable">
-      <div class="tc-wrap" :class="{ 'is-collapsed': !open }" @click="emit('open')">
+      <button
+        class="think-toggle"
+        type="button"
+        :aria-expanded="open"
+        :aria-label="open ? t('thinking.collapse') : t('thinking.expand')"
+        @click="toggleExpanded"
+      >
+        <span>{{ props.streaming ? t('thinking.processing') : t('thinking.completed') }}</span>
+        <Icon :class="{ open }" name="chevron-right" size="sm" />
+      </button>
+      <div v-if="open" class="tc-wrap" @click="emit('open')">
         <div class="tc-anim">
           <pre ref="bodyEl" class="tc">{{ text }}</pre>
         </div>
-        <div class="prev-anim">
-          <span class="prev">{{ teaser }}</span>
-        </div>
       </div>
     </template>
-    <!-- Single-paragraph or explicitly non-foldable: always show full content -->
+    <!-- Explicitly non-foldable blocks retain the old full-content behavior. -->
     <pre v-else ref="bodyEl" class="tc">{{ text }}</pre>
   </div>
 </template>
@@ -88,17 +99,38 @@ watch(
   margin: 0;
 }
 
-.tc-wrap {
-  display: grid;
-  grid-template-rows: 1fr 0fr;
-  transition: grid-template-rows var(--duration-slow) var(--ease-out);
+.think-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-1);
+  min-height: var(--p-ic-sm);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: var(--text-sm)/var(--leading-normal) var(--font-ui);
   cursor: pointer;
 }
-.tc-wrap.is-collapsed {
-  grid-template-rows: 0fr 1fr;
+
+.think-toggle:hover {
+  color: var(--color-text);
 }
-.tc-anim,
-.prev-anim {
+
+.think-toggle .kw-icon {
+  transition: transform var(--duration-fast) var(--ease-out);
+}
+
+.think-toggle .kw-icon.open {
+  transform: rotate(90deg);
+}
+
+.tc-wrap {
+  display: grid;
+  grid-template-rows: 1fr;
+  margin-top: var(--space-2);
+  cursor: pointer;
+}
+.tc-anim {
   /* min-height: 0 is required for the 0fr/1fr grid collapse to actually shrink
      below the tracks' content. Without it, an inner scroll container (`.tc`,
      overflow-y: auto) contributes its content as the automatic minimum, so the
@@ -108,22 +140,9 @@ watch(
   min-height: 0;
 }
 
-/* Hover hints clickability (opens the full text in the side panel) */
-.tc-wrap.is-collapsed:hover .prev {
-  color: var(--color-text);
-}
-.tc-wrap:not(.is-collapsed):hover .tc {
+/* Hover hints clickability (opens the full text in the side panel). */
+.tc-wrap:hover .tc {
   color: var(--color-text-muted);
-}
-
-.prev {
-  color: var(--color-text-faint);
-  font: var(--text-base)/var(--leading-relaxed) var(--font-ui);
-  font-weight: 425;
-  white-space: pre-wrap;
-  word-break: break-word;
-  display: block;
-  transition: color var(--duration-fast) var(--ease-out);
 }
 
 .tc {

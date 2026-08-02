@@ -1,7 +1,7 @@
 export default {
   placeholder: '输入消息…',
   send: '发送 ↵',
-  queueLabel: '队列',
+  queueLabel: '待发送',
   placeholderRunning: '输入会加入队列 · Ctrl+S 立即插入运行中的回合',
   starting: '正在发送…',
   queueAutoDrain: '当前回合结束后自动逐条发送',
@@ -25,10 +25,15 @@ export default {
   interruptTitle: '中断当前操作',
   expandTitle: '展开输入框进行多行编辑',
   collapseTitle: '收起输入框',
-  emptyConversationTitle: 'Kimi Code',
+  timeGreeting: {
+    earlyMorning: '早上好呀，今天想从哪里开始？',
+    morning: '上午好呀，今天想完成什么？',
+    noon: '中午好呀，要不要先休息一下',
+    afternoon: '下午好呀，接下来想推进什么？',
+    evening: '晚上好呀，今天还有什么想完成？',
+    lateNight: '夜深了，要不要把最后一点想法交给我？',
+  },
   emptyConversation: '还没有消息 —— 在下方输入开始对话',
   quickStartPlaceholder: '输入消息开始新对话…',
-  thinkingSuffix: ' · 思考',
-  thinkingSuffixEffort: ' · {level}',
 
 } as const;

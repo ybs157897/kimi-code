@@ -226,6 +226,7 @@ function normalizeToolOutput(output: unknown): string[] | undefined {
 export function toAgentMember(task: AppTask): AgentMember {
   return {
     id: task.id,
+    sessionId: task.sessionId,
     toolCallId: task.parentToolCallId,
     name: task.description,
     subagentType: task.subagentType,

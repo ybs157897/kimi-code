@@ -1,23 +1,23 @@
 <!-- apps/kimi-web/src/components/chat/MentionMenu.vue -->
-<!-- Popup list of file paths shown when user types @ in the Composer textarea. -->
+<!-- Unified popup for expert teams and file paths shown when the user types @. -->
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n';
 import { iconSvg } from '../../lib/icons';
 import Skeleton from '../ui/Skeleton.vue';
-import type { FileItem } from '../../types';
+import type { FileItem, MentionItem } from '../../types';
 
 // Re-exported for the .vue consumers (Composer / ChatDock / ConversationPane)
 // that import FileItem from this component.
 export type { FileItem };
 
 const props = defineProps<{
-  items: FileItem[];
+  items: MentionItem[];
   activeIndex: number;
   loading: boolean;
 }>();
 
 const emit = defineEmits<{
-  select: [item: FileItem];
+  select: [item: MentionItem];
   hover: [index: number];
 }>();
 
@@ -34,6 +34,7 @@ const ICON_CODE = iconSvg('code', 'sm');
 const ICON_DOC = iconSvg('file-text', 'sm');
 const ICON_IMAGE = iconSvg('image', 'sm');
 const ICON_GENERIC = iconSvg('file', 'sm');
+const ICON_TEAM = iconSvg('team', 'sm');
 
 const CODE_EXT = new Set([
   'ts', 'tsx', 'js', 'jsx', 'mjs', 'cjs', 'vue', 'json', 'py', 'go', 'rs',
@@ -57,6 +58,14 @@ function fileIcon(item: FileItem): string {
   if (IMAGE_EXT.has(ext)) return ICON_IMAGE;
   return ICON_GENERIC;
 }
+
+function itemIcon(item: MentionItem): string {
+  return item.kind === 'expert-team' ? ICON_TEAM : fileIcon(item);
+}
+
+function itemDetail(item: MentionItem): string {
+  return item.kind === 'expert-team' ? item.description : item.path;
+}
 </script>
 
 <template>
@@ -64,7 +73,7 @@ function fileIcon(item: FileItem): string {
     <!-- Loading state — item-shaped breathing Skeleton rows (the pulse loop
          lives in Skeleton.vue's own scoped styles); the searching label stays
          visually hidden for assistive tech. -->
-    <div v-if="props.loading" class="mention-loading">
+    <div v-if="props.loading && props.items.length === 0" class="mention-loading">
       <span class="mention-loading-label">{{ t('mention.searching') }}</span>
       <div class="mention-loading-row" aria-hidden="true">
         <Skeleton circle width="13px" height="13px" />
@@ -86,24 +95,34 @@ function fileIcon(item: FileItem): string {
     <!-- Empty state (not loading, no items) -->
     <div v-else-if="props.items.length === 0" class="mention-state dim">{{ t('mention.noMatch') }}</div>
 
-    <!-- File items -->
-    <div
-      v-for="(item, i) in props.items"
-      v-else
-      :key="item.path"
-      class="mention-item"
-      :class="{ active: i === props.activeIndex }"
-      role="option"
-      :aria-selected="i === props.activeIndex"
-      @mouseenter="emit('hover', i)"
-      @mousedown.prevent="emit('select', item)"
-    >
-      <!-- file-type glyph (line-SVG) -->
-      <!-- eslint-disable-next-line vue/no-v-html -->
-      <span class="mention-icon" v-html="fileIcon(item)" aria-hidden="true" />
-      <span class="mention-name">{{ item.name }}</span>
-      <span class="mention-path">{{ item.path }}</span>
-    </div>
+    <template v-else>
+      <template v-for="(item, i) in props.items" :key="item.kind === 'expert-team' ? item.pluginId : item.path">
+        <div
+          v-if="i === 0 || props.items[i - 1]?.kind !== item.kind"
+          class="mention-group-label"
+          role="presentation"
+        >
+          {{ item.kind === 'expert-team' ? t('mention.expertTeams') : t('mention.files') }}
+        </div>
+        <div
+          class="mention-item"
+          :class="[{ active: i === props.activeIndex }, `mention-item--${item.kind}`]"
+          role="option"
+          :aria-selected="i === props.activeIndex"
+          @mouseenter="emit('hover', i)"
+          @mousedown.prevent="emit('select', item)"
+        >
+          <!-- eslint-disable-next-line vue/no-v-html -->
+          <span class="mention-icon" v-html="itemIcon(item)" aria-hidden="true" />
+          <span class="mention-copy">
+            <span class="mention-name">{{ item.name }}</span>
+            <span class="mention-path">{{ itemDetail(item) }}</span>
+          </span>
+          <span v-if="item.kind === 'expert-team'" class="mention-action">{{ t('mention.activate') }}</span>
+        </div>
+      </template>
+      <div v-if="props.loading" class="mention-searching">{{ t('mention.searchingFiles') }}</div>
+    </template>
   </div>
 </template>
 
@@ -188,6 +207,35 @@ function fileIcon(item: FileItem): string {
   transition: background-color var(--duration-fast) var(--ease-out);
 }
 
+.mention-group-label {
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  color: var(--color-text-faint);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+  font-weight: var(--weight-medium);
+}
+
+.mention-copy {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  align-items: baseline;
+  gap: var(--space-2);
+}
+
+.mention-action {
+  flex: none;
+  color: var(--color-accent);
+  font-size: var(--text-xs);
+}
+
+.mention-searching {
+  padding: var(--space-2) var(--space-3);
+  color: var(--color-text-faint);
+  font-family: var(--font-ui);
+  font-size: var(--text-xs);
+}
+
 .mention-icon {
   display: inline-flex;
   align-items: center;
@@ -223,6 +271,8 @@ function fileIcon(item: FileItem): string {
   min-width: 80px;
   flex-shrink: 0;
 }
+
+.mention-item--expert-team .mention-name { min-width: 130px; }
 
 .mention-path {
   color: var(--color-text-muted);

@@ -20,7 +20,6 @@ import SettingsDialog from './components/settings/SettingsDialog.vue';
 import AddWorkspaceDialog from './components/dialogs/AddWorkspaceDialog.vue';
 import ConfirmDialogHost from './components/dialogs/ConfirmDialogHost.vue';
 import StatusPanel from './components/chat/StatusPanel.vue';
-import ExpertTeamPicker from './components/chat/ExpertTeamPicker.vue';
 import WarningToasts from './components/WarningToasts.vue';
 import MobileTopBar from './components/mobile/MobileTopBar.vue';
 import MobileSwitcherSheet from './components/mobile/MobileSwitcherSheet.vue';
@@ -53,6 +52,7 @@ import IconButton from './components/ui/IconButton.vue';
 import Icon from './components/ui/Icon.vue';
 import InternalBuildBanner from './components/InternalBuildBanner.vue';
 import { isMacosDesktop } from './lib/desktopFlag';
+import { builtinExpertTranslationKey } from './lib/expertTeamI18n';
 
 // Hydrate the server-transport credential (fragment token or localStorage)
 // BEFORE the client connects, so the first REST/WS calls already carry it.
@@ -80,6 +80,13 @@ provide(
   (toolCallId: string): SwarmMember[] => client.swarmMembersByToolCallId.value.get(toolCallId) ?? [],
 );
 const { t } = useI18n();
+
+const localizedExpertTeamName = computed(() => {
+  const team = client.expertTeamStatus.value;
+  if (team === null) return null;
+  const key = builtinExpertTranslationKey(team.pluginId, 'name');
+  return key === undefined ? team.displayName : t(key);
+});
 const { confirm } = useConfirmDialog();
 
 // KAP/daemon debug panel — opt-in via ?debug=1 or localStorage kimi-web.debug=1.
@@ -380,7 +387,6 @@ const showProviders = ref(false);
 const showLogin = ref(false);
 const showAddWorkspace = ref(false);
 const showStatusPanel = ref(false);
-const showExpertPicker = ref(false);
 const showSettings = ref(false);
 
 type SubmitPayload = {
@@ -947,8 +953,8 @@ function openPr(url: string): void {
           @toggle-plan="client.togglePlanMode()"
           @toggle-swarm="client.toggleSwarmMode()"
           @toggle-goal="client.toggleGoalMode()"
-          @refresh-expert-teams="client.refreshExpertTeams()"
-          @open-expert-picker="showExpertPicker = true"
+          @select-expert-team="client.activateExpertTeam($event)"
+          @clear-expert-team="client.deactivateExpertTeam()"
           @create-goal="client.createGoal($event)"
           @control-goal="client.controlGoal($event)"
           @refresh-git-status="client.activeSessionId.value && client.loadGitStatus(client.activeSessionId.value)"
@@ -1169,6 +1175,7 @@ function openPr(url: string): void {
     <!-- Provider Manager overlay -->
     <ProviderManager
       v-if="showProviders"
+      embedded
       :providers="client.providers.value"
       :models="client.models.value"
       :loading="providersLoading"
@@ -1188,19 +1195,9 @@ function openPr(url: string): void {
       :thinking="statusPanelThinking"
       :plan-mode="client.planMode.value"
       :swarm-mode="client.swarmMode.value"
-      :expert-team-name="client.expertTeamStatus.value?.displayName ?? null"
+      :expert-team-name="localizedExpertTeamName"
       :cost-usd="client.sessionCost.value"
       @close="showStatusPanel = false"
-    />
-
-    <!-- Expert-team picker dialog — card grid for browsing and activating teams -->
-    <ExpertTeamPicker
-      v-if="showExpertPicker"
-      :expert-teams="client.expertTeams.value"
-      :expert-team-status="client.expertTeamStatus.value"
-      @select="client.activateExpertTeam($event)"
-      @clear="client.deactivateExpertTeam()"
-      @close="showExpertPicker = false"
     />
 
     <!-- Add Workspace overlay (daemon folder browser + paste-path fallback) -->

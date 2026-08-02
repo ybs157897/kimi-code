@@ -12,6 +12,7 @@ import { mergeSnapshotMessages } from '../src/lib/snapshotMessages';
 import { keepLiveSubagents, mergeSnapshotSubagents } from '../src/lib/taskMerge';
 import { normalizeToolName, toolSummary } from '../src/lib/toolMeta';
 import { collapsePrompt, humanizeCron } from '../src/lib/cronHumanize';
+import { timeGreetingPeriod } from '../src/lib/timeGreeting';
 import {
   currentValidatedWorkspacePath,
   isWorkspacePathInput,
@@ -43,6 +44,26 @@ import {
   traceToJsonl,
   traceWsIn,
 } from '../src/debug/trace';
+
+describe('time-aware empty conversation greeting', () => {
+  it.each([
+    [0, 'lateNight'],
+    [4, 'lateNight'],
+    [5, 'earlyMorning'],
+    [8, 'earlyMorning'],
+    [9, 'morning'],
+    [11, 'morning'],
+    [12, 'noon'],
+    [13, 'noon'],
+    [14, 'afternoon'],
+    [17, 'afternoon'],
+    [18, 'evening'],
+    [22, 'evening'],
+    [23, 'lateNight'],
+  ] as const)('maps hour %i to %s', (hour, expected) => {
+    expect(timeGreetingPeriod(hour)).toBe(expected);
+  });
+});
 
 // The trace tests exercise its exported recording/serialization contract:
 // session exports receive only bounded, explicitly selected metadata.

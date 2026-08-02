@@ -1,7 +1,11 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "experimentalDecorators": true
+    "experimentalDecorators": true,
+    "baseUrl": "../../..",
+    "paths": {
+      "@moonshot-ai/understand-core": ["packages/understand-core/src/index.ts"]
+    }
   },
   "include": [
     "./**/*.ts",

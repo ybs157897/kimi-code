@@ -26,6 +26,10 @@ const props = withDefaults(defineProps<{
   /** When false, the body has no padding so the consumer controls layout
    *  (e.g. a full-bleed side-nav). */
   padded?: boolean;
+  /** Raise nested confirmations above an already-open modal. */
+  stacked?: boolean;
+  /** Render as a page-level surface without a scrim (for embedded settings). */
+  inline?: boolean;
   /** Element (or selector / resolver) to receive focus when the dialog opens.
    *  Falls back to the first focusable element, then the dialog panel. */
   initialFocus?: HTMLElement | string | (() => HTMLElement | null | undefined);
@@ -35,6 +39,8 @@ const props = withDefaults(defineProps<{
   size: 'md',
   height: 'auto',
   padded: true,
+  stacked: false,
+  inline: false,
 });
 
 const emit = defineEmits<{
@@ -164,13 +170,18 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <Teleport to="body">
+  <Teleport to="body" :disabled="inline">
     <Transition name="ui-dialog" @after-leave="onAfterLeave">
-      <div v-if="open" class="ui-dialog__overlay" @mousedown="onOverlayClick">
+      <div
+        v-if="open"
+        class="ui-dialog__overlay"
+        :class="{ 'ui-dialog__overlay--stacked': stacked, 'ui-dialog__overlay--inline': inline }"
+        @mousedown="onOverlayClick"
+      >
         <div
           ref="panel"
           class="ui-dialog"
-          :class="[`ui-dialog--${size}`, { 'ui-dialog--flush': !padded, 'ui-dialog--fixed-height': height === 'fixed' }]"
+          :class="[`ui-dialog--${size}`, { 'ui-dialog--flush': !padded, 'ui-dialog--fixed-height': height === 'fixed', 'ui-dialog--stacked': stacked }]"
           role="dialog"
           aria-modal="true"
           tabindex="-1"
@@ -205,6 +216,28 @@ onBeforeUnmount(() => {
   padding: var(--space-6);
   background: rgba(13, 17, 23, 0.45);
   animation: kimi-dialog-overlay-in var(--duration-base) var(--ease-out);
+}
+.ui-dialog__overlay--stacked {
+  z-index: var(--z-toast);
+}
+.ui-dialog__overlay--inline {
+  position: fixed;
+  inset: 0;
+  z-index: var(--z-modal);
+  align-items: flex-start;
+  overflow: auto;
+  padding: var(--space-6) var(--space-10);
+  background: var(--color-surface);
+}
+.ui-dialog__overlay--inline .ui-dialog {
+  width: min(100%, 1080px);
+  min-height: calc(100vh - var(--space-6) * 2);
+  max-height: none;
+  margin: auto;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: transparent;
 }
 @keyframes kimi-dialog-overlay-in {
   from { opacity: 0; }

@@ -1,5 +1,6 @@
 export default {
   title: 'Settings',
+  backToApp: 'Back to app',
   close: 'Close (Esc)',
   tabs: {
     general: 'General',
@@ -26,6 +27,8 @@ export default {
   uiFontSize: 'Font size',
   agentDefaults: 'Agent defaults',
   providers: 'Providers',
+  availableModels: 'Available models',
+  modelCount: '{count} available models',
   providersHint: 'Add, remove, or refresh providers',
   manageProviders: 'Manage',
   modelsKicker: 'Models',
@@ -43,6 +46,9 @@ export default {
   defaultModel: 'Default model',
   defaultModelHint: 'New sessions prefer this model',
   noDefaultModel: 'No default model',
+  secondaryModel: 'Subagent model',
+  secondaryModelHint: 'Used by new subagents; choose from configured models only',
+  secondaryModelFollowDefault: 'Follow default model',
   defaultPermission: 'Default permission',
   defaultPermissionHint: 'Only affects newly-created sessions',
   defaultThinking: 'Thinking by default',

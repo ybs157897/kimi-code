@@ -16,6 +16,7 @@ import QuestionCard from './QuestionCard.vue';
 import ApprovalCard from './ApprovalCard.vue';
 import TasksPane from './TasksPane.vue';
 import TodoCard from './TodoCard.vue';
+import QueuePanel from './QueuePanel.vue';
 import Icon from '../ui/Icon.vue';
 import Pill from '../ui/Pill.vue';
 
@@ -69,8 +70,8 @@ const emit = defineEmits<{
   togglePlan: [];
   toggleSwarm: [];
   toggleGoal: [];
-  refreshExpertTeams: [];
-  openExpertPicker: [];
+  selectExpertTeam: [pluginId: string];
+  clearExpertTeam: [];
   openBtw: [];
   createGoal: [objective: string];
   controlGoal: [action: 'pause' | 'resume' | 'cancel'];
@@ -87,6 +88,9 @@ const emit = defineEmits<{
   'close-dock-panel': [];
   /** A background subagent chip was clicked — open its live detail panel. */
   openAgent: [taskId: string];
+  unqueue: [index: number];
+  editQueued: [index: number];
+  reorderQueue: [payload: { from: number; to: number }];
 }>();
 
 const { t } = useI18n();
@@ -260,6 +264,13 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       </Pill>
     </div>
 
+    <QueuePanel
+      v-if="(queued?.length ?? 0) > 0"
+      :queued="queued ?? []"
+      @unqueue="emit('unqueue', $event)"
+      @edit-queued="emit('editQueued', $event)"
+      @reorder-queue="emit('reorderQueue', $event)"
+    />
     <QuestionCard
       v-if="pendingQuestion"
       :key="pendingQuestion.questionId"
@@ -307,8 +318,8 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       @toggle-plan="emit('togglePlan')"
       @toggle-swarm="emit('toggleSwarm')"
       @toggle-goal="emit('toggleGoal')"
-      @refresh-expert-teams="emit('refreshExpertTeams')"
-      @open-expert-picker="emit('openExpertPicker')"
+      @select-expert-team="emit('selectExpertTeam', $event)"
+      @clear-expert-team="emit('clearExpertTeam')"
       @open-btw="emit('openBtw')"
       @create-goal="emit('createGoal', $event)"
       @control-goal="emit('controlGoal', $event)"

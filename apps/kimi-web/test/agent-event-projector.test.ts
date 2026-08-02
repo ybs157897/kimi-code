@@ -5,6 +5,28 @@
 
 import { describe, expect, it } from 'vitest';
 import { classifyFrame, createAgentProjector, subagentProgressText } from '../src/api/daemon/agentEventProjector';
+import { normalizeAgentTranscript } from '../src/api/daemon/subagentTranscript';
+
+describe('normalizeAgentTranscript', () => {
+  it('recovers thinking, assistant text, and tool calls from a subagent transcript', () => {
+    expect(
+      normalizeAgentTranscript({
+        items: [{
+          kind: 'turn',
+          steps: [{ frames: [
+            { kind: 'thinking', text: 'Inspect the project.' },
+            { kind: 'text', role: 'assistant', text: '我先查看目录。' },
+            { kind: 'tool', name: 'Read', input: { path: 'src/main.ts' } },
+          ] }],
+        }],
+      }),
+    ).toEqual({
+      thinking: 'Inspect the project.',
+      text: '我先查看目录。',
+      progressLines: [expect.stringContaining('src/main.ts')],
+    });
+  });
+});
 
 describe('subagentProgressText', () => {
   it('drops turn.step.started as noise', () => {

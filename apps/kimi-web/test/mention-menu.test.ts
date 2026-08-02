@@ -21,14 +21,17 @@ function setup(initialText = '', searchFiles?: (q: string) => Promise<FileItem[]
     focus: () => {},
   };
   const text = ref(initialText);
+  const selectExpertTeam = vi.fn();
   const textareaRef = ref(textarea as unknown as HTMLTextAreaElement) as Ref<HTMLTextAreaElement | null>;
   const mention = useMentionMenu({
     text,
     textareaRef,
     autosize: () => {},
     searchFiles: () => searchFiles,
+    expertTeams: () => [],
+    selectExpertTeam,
   });
-  return { text, textarea, mention };
+  return { text, textarea, mention, selectExpertTeam };
 }
 
 describe('useMentionMenu — update', () => {
@@ -64,7 +67,7 @@ describe('useMentionMenu — update', () => {
     await vi.advanceTimersByTimeAsync(200);
     expect(searchFiles).toHaveBeenCalledWith('a');
     expect(mention.open.value).toBe(true);
-    expect(mention.items.value).toEqual([{ path: 'src/a.ts', name: 'a.ts' }]);
+    expect(mention.items.value).toEqual([{ kind: 'file', path: 'src/a.ts', name: 'a.ts' }]);
     expect(mention.loading.value).toBe(false);
     expect(mention.active.value).toBe(0);
   });
@@ -83,7 +86,7 @@ describe('useMentionMenu — select', () => {
   it('replaces the @token with the chosen path', async () => {
     const { text, textarea, mention } = setup('hello @a');
     textarea.value = 'hello @a';
-    mention.select({ path: 'src/a.ts', name: 'a.ts' });
+    mention.select({ kind: 'file', path: 'src/a.ts', name: 'a.ts' });
     expect(text.value).toBe('hello src/a.ts');
     expect(mention.open.value).toBe(false);
     await nextTick();
@@ -91,7 +94,22 @@ describe('useMentionMenu — select', () => {
 
   it('is a no-op when there is no @token', () => {
     const { text, mention } = setup('hello');
-    mention.select({ path: 'src/a.ts', name: 'a.ts' });
+    mention.select({ kind: 'file', path: 'src/a.ts', name: 'a.ts' });
     expect(text.value).toBe('hello');
+  });
+
+  it('activates the expert team when an expert mention is selected', () => {
+    const { text, textarea, mention, selectExpertTeam } = setup('ask @data');
+    textarea.value = 'ask @data';
+
+    mention.select({
+      kind: 'expert-team',
+      pluginId: 'ai-data-copilot',
+      name: 'AI 数据副驾',
+      description: '数据分析专家团',
+    });
+
+    expect(selectExpertTeam).toHaveBeenCalledWith('ai-data-copilot');
+    expect(text.value).toBe('ask ');
   });
 });

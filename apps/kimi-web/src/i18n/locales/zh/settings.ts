@@ -1,5 +1,6 @@
 export default {
   title: '设置',
+  backToApp: '返回应用',
   close: '关闭 (Esc)',
   tabs: {
     general: '通用',
@@ -26,6 +27,8 @@ export default {
   uiFontSize: '字体大小',
   agentDefaults: 'Agent 默认值',
   providers: '提供商',
+  availableModels: '可用模型',
+  modelCount: '{count} 个可用模型',
   providersHint: '添加、删除或刷新提供商',
   manageProviders: '管理',
   modelsKicker: '模型',
@@ -43,6 +46,9 @@ export default {
   defaultModel: '默认模型',
   defaultModelHint: '新会话会优先使用这个模型',
   noDefaultModel: '未设置默认模型',
+  secondaryModel: '子模型',
+  secondaryModelHint: '新建子 Agent 默认使用，只能从已配置模型中选择',
+  secondaryModelFollowDefault: '跟随默认模型',
   defaultPermission: '默认权限',
   defaultPermissionHint: '只影响之后新建的会话',
   defaultThinking: '默认开启思考',

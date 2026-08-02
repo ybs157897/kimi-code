@@ -1042,6 +1042,7 @@ export class WailsKimiWebApi implements KimiWebApi {
       defaultProvider: 'default_provider',
       defaultModel: 'default_model',
       models: 'models',
+      secondaryModel: 'secondary_model',
       thinking: 'thinking',
       planMode: 'plan_mode',
       yolo: 'yolo',

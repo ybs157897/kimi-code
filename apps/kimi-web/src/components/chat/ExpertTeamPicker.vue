@@ -5,6 +5,7 @@
 import { computed, ref } from 'vue';
 import { useI18n } from 'vue-i18n';
 import type { AppExpertTeam, AppExpertTeamStatus } from '../../api/types';
+import { builtinExpertTranslationKey } from '../../lib/expertTeamI18n';
 import Dialog from '../ui/Dialog.vue';
 import Icon from '../ui/Icon.vue';
 
@@ -37,6 +38,17 @@ function onCardClick(team: AppExpertTeam): void {
     emit('select', team.pluginId);
   }
 }
+
+function teamName(team: AppExpertTeam): string {
+  const key = builtinExpertTranslationKey(team.pluginId, 'name');
+  return key === undefined ? team.displayName : t(key);
+}
+
+function teamDescription(team: AppExpertTeam): string {
+  const key = builtinExpertTranslationKey(team.pluginId, 'description');
+  if (key !== undefined) return t(key);
+  return team.description || t('status.expertPickerNoDesc');
+}
 </script>
 
 <template>
@@ -58,11 +70,11 @@ function onCardClick(team: AppExpertTeam): void {
       >
         <div class="card-head">
           <span class="card-icon"><Icon name="team" size="sm" /></span>
-          <span class="card-name">{{ team.displayName }}</span>
+          <span class="card-name">{{ teamName(team) }}</span>
           <span v-if="isActive(team)" class="card-badge">{{ t('status.expertActive') }}</span>
         </div>
 
-        <p class="card-desc">{{ team.description || t('status.expertPickerNoDesc') }}</p>
+        <p class="card-desc">{{ teamDescription(team) }}</p>
       </button>
     </div>
 

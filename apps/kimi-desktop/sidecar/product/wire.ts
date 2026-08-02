@@ -376,6 +376,11 @@ export interface WireConfig {
   default_provider?: string;
   default_model?: string;
   models?: Record<string, unknown>;
+  secondary_model?: {
+    model?: string;
+    defaultEffort?: string;
+    [key: string]: unknown;
+  };
   thinking?: unknown;
   plan_mode?: boolean;
   yolo?: boolean;

@@ -6,6 +6,7 @@ import { buildRestUrl, buildWsUrl } from '../config';
 import { traceKeyEvent } from '../../debug/trace';
 import type {
   AppConfig,
+  AppAgentTranscript,
   AppExtensionCommand,
   AppExtensionReloadResult,
   AppExpertTeam,
@@ -72,6 +73,7 @@ import type {
   WireTerminal,
 } from './clientWire';
 import { DaemonHttpClient } from './http';
+import { normalizeAgentTranscript } from './subagentTranscript';
 import {
   toAppApprovalRequest,
   toAppConfig,
@@ -636,6 +638,14 @@ export class DaemonKimiWebApi implements KimiWebApi {
     return data.items.map(toAppTask);
   }
 
+  async getAgentTranscript(sessionId: string, agentId: string): Promise<AppAgentTranscript> {
+    const data = await this.http.get<unknown>(
+      `/sessions/${encodeURIComponent(sessionId)}/transcript`,
+      { agent_id: agentId },
+    );
+    return normalizeAgentTranscript(data);
+  }
+
   async getTask(
     sessionId: string,
     taskId: string,
@@ -1194,6 +1204,7 @@ export class DaemonKimiWebApi implements KimiWebApi {
       defaultProvider: 'default_provider',
       defaultModel: 'default_model',
       models: 'models',
+      secondaryModel: 'secondary_model',
       thinking: 'thinking',
       planMode: 'plan_mode',
       yolo: 'yolo',
