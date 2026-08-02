@@ -26,4 +26,6 @@ export interface WireTask {
   suspended_reason?: string;
   swarm_index?: number;
   run_in_background?: boolean;
+  /** Background-task registry id for an agent-id-keyed subagent row. */
+  background_task_id?: string;
 }

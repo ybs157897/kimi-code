@@ -238,6 +238,16 @@ describe('ProductProjector subagent transcript projection', () => {
     const subEvents = klient.session('s-1').agent('sub-1').events;
     expect(subEvents.listenerCount('thinking.delta')).toBe(1);
 
+    const created = pushed.find((event) => event.type === 'event.task.created') as
+      | (WireEvent & {
+          payload: { task: { id: string; background_task_id?: string } };
+        })
+      | undefined;
+    expect(created?.payload.task).toMatchObject({
+      id: 'sub-1',
+      background_task_id: 'task-1',
+    });
+
     // task.terminated carries the registry taskId — the completed frame must
     // still target the agentId-keyed row, otherwise the UI can never settle it.
     mainEvents.emit('task.terminated', {

@@ -398,6 +398,39 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
     expect(task?.outputLines).toContain('Calling Read');
   });
 
+  it('maps the background task id on a desktop subagent task', () => {
+    const sessionId = 's-1';
+    const event = {
+      type: 'event.task.created',
+      seq: 1,
+      session_id: sessionId,
+      timestamp: new Date().toISOString(),
+      payload: {
+        task: {
+          id: 'sub-1',
+          session_id: sessionId,
+          kind: 'subagent',
+          description: 'Sub',
+          status: 'running',
+          created_at: new Date().toISOString(),
+          run_in_background: true,
+          background_task_id: 'task-1',
+        },
+      },
+    } as unknown as WireEvent;
+
+    const mapped = toAppEvent(event);
+
+    expect(mapped).toMatchObject({
+      type: 'taskCreated',
+      task: {
+        id: 'sub-1',
+        runInBackground: true,
+        backgroundTaskId: 'task-1',
+      },
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // Slice 7 — skills, code extensions, session export, and the Proxy removal.
   // Every KimiWebApi member is now a real method on WailsKimiWebApi, so the

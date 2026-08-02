@@ -629,6 +629,7 @@ export class ProductProjector {
             started_at: startedAt,
             subagent_phase: 'queued',
             run_in_background: true,
+            background_task_id: taskId,
           });
           emit(frame('event.task.created', { task }));
           // A background subagent's transcript lives on its own agent stream;
@@ -852,7 +853,8 @@ export class ProductProjector {
 
     // ── attach subscriptions ────────────────────────────────────────────────
 
-    const agent = this.klient.session(sessionId).agent(agentId);    const agentEvents = agent.events;
+    const agent = this.klient.session(sessionId).agent(agentId);
+    const agentEvents = agent.events;
     subs.push(
       agentEvents.on('turn.started', onTurnStarted),
       agentEvents.on('turn.step.started', onTurnStepStarted),
