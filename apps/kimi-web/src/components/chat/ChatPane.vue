@@ -538,8 +538,13 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
               </div>
               <div v-if="turn.pluginCommand.args" class="skill-act-args">{{ turn.pluginCommand.args }}</div>
             </div>
-            <!-- User input renders verbatim (pre-wrap), never through Markdown -->
-            <div v-else class="u-text">{{ turn.text }}</div>
+            <!-- User input renders verbatim (pre-wrap), never through Markdown. -->
+            <div v-else class="u-content">
+              <div v-if="turn.expertTeam" class="u-expert-team">
+                @{{ turn.expertTeam.displayName }}
+              </div>
+              <div class="u-text">{{ turn.text }}</div>
+            </div>
           </div>
           <div v-if="turn.createdAt || canEditTurn(turn)" class="u-meta">
             <div v-if="canEditTurn(turn)" class="u-edit-wrap" :class="{ undoing: undoingTurnId === turn.id }">
@@ -789,6 +794,16 @@ function isStreamingRenderBlock(turn: ChatTurn, block: { sourceIndex: number }):
 /* User input is shown verbatim — preserve newlines, break long tokens. */
 .u-text {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.u-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.u-expert-team {
+  color: var(--color-accent-hover);
+  font-weight: 500;
   overflow-wrap: anywhere;
 }
 

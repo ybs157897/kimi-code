@@ -43,6 +43,10 @@ export const promptSubmissionSchema = z.object({
   swarm_mode: z.boolean().optional(),
   goal_objective: z.string().optional(),
   goal_control: z.enum(['pause', 'resume', 'cancel']).optional(),
+  expert_team: z.object({
+    plugin_id: z.string().min(1),
+    display_name: z.string().min(1),
+  }).optional(),
   // Client-managed session tool denylist: full-replace on every submit; the
   // bound profile's own deny always survives. Omit to keep the persisted
   // value, send `[]` to clear the client portion.

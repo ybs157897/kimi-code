@@ -9,6 +9,7 @@ import { createInitialState, reduceAppEvent } from '../daemon/eventReducer';
 import type { KimiClientState } from '../daemon/eventReducer';
 import { toAppEvent } from '../daemon/mappers';
 import type { WireEvent } from '../daemon/wire';
+import { DaemonApiError } from '../errors';
 import type { AppEvent, AppSession, AppSessionSnapshot, KimiEventHandlers, KimiEventMeta } from '../types';
 import { WailsKimiWebApi, createWailsKimiWebApi } from './client';
 import { isDesktopShellAvailable, isDesktopTransportEnabled, selectDesktopDirectory } from './index';
@@ -414,6 +415,7 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
           status: 'running',
           created_at: new Date().toISOString(),
           run_in_background: true,
+          agent_id: 'sub-1',
           background_task_id: 'task-1',
         },
       },
@@ -426,6 +428,7 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
       task: {
         id: 'sub-1',
         runInBackground: true,
+        agentId: 'sub-1',
         backgroundTaskId: 'task-1',
       },
     });
@@ -866,7 +869,12 @@ describe('WailsKimiWebApi (desktop product transport, first slice)', () => {
     await vi.advanceTimersByTimeAsync(100);
     await expect(cancelPending).resolves.toEqual({ cancelled: true });
 
-    const cancelAgain = expect(api.cancelTask(session.id, 'task-1')).rejects.toThrow(/40904/);
+    const cancelAgain = expect(api.cancelTask(session.id, 'task-1')).rejects.toEqual(
+      expect.objectContaining<Partial<DaemonApiError>>({
+        name: 'DaemonApiError',
+        code: 40904,
+      }),
+    );
     await vi.advanceTimersByTimeAsync(100);
     await cancelAgain;
   });

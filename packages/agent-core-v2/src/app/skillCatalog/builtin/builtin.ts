@@ -10,6 +10,7 @@
 import type { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import type { SkillDefinition } from '#/app/skillCatalog/types';
 import { CHECK_KIMI_CODE_DOCS_SKILL } from './check-kimi-code-docs';
+import { CREATE_EXPERT_TEAM_SKILL } from './create-expert-team';
 import { CUSTOM_THEME_SKILL } from './custom-theme';
 import { IMPORT_FROM_CC_CODEX_SKILL } from './import-from-cc-codex';
 import { KNOWLEDGE_GRAPH_SKILL } from './knowledge-graph';
@@ -27,6 +28,7 @@ export const BUILTIN_SKILLS: readonly SkillDefinition[] = [
   IMPORT_FROM_CC_CODEX_SKILL,
   UPDATE_CONFIG_SKILL,
   CUSTOM_THEME_SKILL,
+  CREATE_EXPERT_TEAM_SKILL,
   WRITE_GOAL_SKILL,
   CHECK_KIMI_CODE_DOCS_SKILL,
   KNOWLEDGE_GRAPH_SKILL,
@@ -43,6 +45,7 @@ export function registerBuiltinSkills(registry: InMemorySkillCatalog): void {
 
 export {
   CHECK_KIMI_CODE_DOCS_SKILL,
+  CREATE_EXPERT_TEAM_SKILL,
   CUSTOM_THEME_SKILL,
   IMPORT_FROM_CC_CODEX_SKILL,
   KNOWLEDGE_GRAPH_SKILL,

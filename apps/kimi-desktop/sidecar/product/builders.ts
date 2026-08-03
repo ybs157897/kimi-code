@@ -174,6 +174,7 @@ export function toWireTask(
     readonly startedAt: number;
     readonly endedAt: number | null;
     readonly command?: string;
+    readonly agentId?: string;
   },
   output?: { preview: string; bytes: number },
 ): WireTaskListItem {
@@ -215,6 +216,9 @@ export function toWireTask(
   };
   if (info.endedAt !== null && info.endedAt !== undefined) {
     item.completed_at = new Date(info.endedAt).toISOString();
+  }
+  if (info.kind === 'agent' && info.agentId !== undefined) {
+    item.agent_id = info.agentId;
   }
   if (info.kind === 'process' && info.command !== undefined) {
     item.command = info.command;

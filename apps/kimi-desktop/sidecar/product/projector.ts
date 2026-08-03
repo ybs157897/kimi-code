@@ -521,6 +521,7 @@ export class ProductProjector {
 
     const onSubagentSpawned = (raw: RawEvent): void => {
       const subagentId = str(raw, 'subagentId');
+      console.error(`[projector] subagent.spawned received: subagentId=${String(subagentId)}`);
       if (subagentId === undefined || subagentId.length === 0) return;
       const subagentName = str(raw, 'subagentName');
       const task = taskPatch(subagentId, {
@@ -560,6 +561,7 @@ export class ProductProjector {
 
     const onSubagentCompleted = (raw: RawEvent): void => {
       const subagentId = str(raw, 'subagentId');
+      console.error(`[projector] subagent.completed received: subagentId=${String(subagentId)}`);
       if (subagentId === undefined || subagentId.length === 0) return;
       const outputPreview = str(raw, 'resultSummary');
       const task = taskPatch(subagentId, {

@@ -48,6 +48,8 @@ const props = defineProps<{
   subagentTasks: TaskItem[];
   bashRunning: number;
   subagentRunning: number;
+  /** User-controlled expanded state of the persistent subagent roster. */
+  subagentStripExpanded: boolean;
   todoDoneCount: number;
   hasDockWork: boolean;
   todos?: TodoView[];
@@ -58,6 +60,8 @@ const props = defineProps<{
   /** True while the visible approval has a respond in flight. */
   approvalBusy?: boolean;
   mobile?: boolean;
+  /** The right-side subagent detail owns the roster while open. */
+  agentDetailOpen?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -118,6 +122,11 @@ function loadAttachmentsForEdit(atts: { fileId?: string; kind: 'image' | 'video'
 
 function focus(): void {
   composerRef.value?.focus();
+}
+
+function openSubagent(taskId: string): void {
+  emit('close-dock-panel');
+  emit('openAgent', taskId);
 }
 
 function onDocumentMouseDown(event: MouseEvent): void {
@@ -206,7 +215,7 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
             v-else-if="dockPanel === 'subagent'"
             :tasks="subagentTasks"
             @cancel="emit('cancelTask', $event)"
-            @open="emit('openAgent', $event)"
+            @open="openSubagent"
           />
           <TodoCard
             v-else-if="dockPanel === 'todos'"
@@ -222,13 +231,12 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       :force-expanded="goalExpandSignal"
       @control-goal="emit('controlGoal', $event)"
     />
-    <!-- Always-visible roster while background subagents run — the workbar
-         pill alone is easy to miss when the main agent is waiting on them.
-         Hidden while the dock panel already lists the same tasks. -->
+    <!-- Persistent roster for background subagents, including terminal rows.
+         The workbar's Sub Agent pill toggles this roster directly. -->
     <SubagentStrip
-      v-if="dockPanel !== 'subagent'"
+      v-if="subagentStripExpanded && !agentDetailOpen && subagentTasks.length > 0"
       :tasks="subagentTasks"
-      @open="emit('openAgent', $event)"
+      @open="openSubagent"
       @cancel="emit('cancelTask', $event)"
     />
     <div v-if="hasDockWork" ref="workbarRef" class="dock-workbar">
@@ -244,8 +252,7 @@ defineExpose({ loadForEdit, loadAttachmentsForEdit, focus });
       </Pill>
       <Pill
         v-if="subagentTasks.length > 0"
-        :active="dockPanel === 'subagent'"
-        :aria-pressed="dockPanel === 'subagent'"
+        :aria-expanded="subagentStripExpanded"
         @click="emit('toggle-dock-panel', 'subagent')"
       >
         <Icon name="sparkles" size="md" />

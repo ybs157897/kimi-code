@@ -795,12 +795,19 @@ export function messagesToTurns(
             commandName?: string;
             commandArgs?: string;
             trigger?: string;
+            expertTeam?: { pluginId?: string; displayName?: string };
           }
         | undefined;
       const isSkillActivation =
         origin?.kind === 'skill_activation' && origin?.trigger === 'user-slash';
       const isPluginCommand =
         origin?.kind === 'plugin_command' && origin?.trigger === 'user-slash';
+      const expertTeam =
+        origin?.kind === 'user' &&
+        typeof origin.expertTeam?.pluginId === 'string' &&
+        typeof origin.expertTeam.displayName === 'string'
+          ? { pluginId: origin.expertTeam.pluginId, displayName: origin.expertTeam.displayName }
+          : undefined;
 
       const textParts: string[] = [];
       const attachments: TurnAttachment[] = [];
@@ -884,6 +891,7 @@ export function messagesToTurns(
         pluginCommand: isPluginCommand
           ? { pluginId: origin.pluginId!, commandName: origin.commandName!, args: origin.commandArgs }
           : undefined,
+        expertTeam,
         createdAt: msg.createdAt,
       });
       continue;

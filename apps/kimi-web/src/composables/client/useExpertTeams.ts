@@ -110,12 +110,20 @@ export function useExpertTeams(rawState: ExtendedState, deps: UseExpertTeamsDeps
       draftModes.expertTeamPluginId = null;
       return;
     }
+    await deactivateExpertTeamForSession(sid);
+  }
+
+  async function deactivateExpertTeamForSession(sid: string): Promise<void> {
+    // Deactivation is idempotent from the composer's point of view. The core
+    // also consumes one-shot teams at turn.ended, so this request can race an
+    // already-completed server-side deactivation. Clear the local chip first
+    // and do not resurrect it from a stale status read in that race window.
+    rawState.expertTeamStatusBySession = {
+      ...rawState.expertTeamStatusBySession,
+      [sid]: null,
+    };
     try {
       await getKimiWebApi().deactivateExpertTeam(sid);
-      rawState.expertTeamStatusBySession = {
-        ...rawState.expertTeamStatusBySession,
-        [sid]: null,
-      };
     } catch (err) {
       pushOperationFailure('deactivateExpertTeam', err, { sessionId: sid });
     }
@@ -162,6 +170,7 @@ export function useExpertTeams(rawState: ExtendedState, deps: UseExpertTeamsDeps
     loadDraftExpertTeams,
     activateExpertTeam,
     deactivateExpertTeam,
+    deactivateExpertTeamForSession,
     applyDraftExpertTeam,
     refreshExpertTeams,
   };

@@ -97,6 +97,10 @@ export interface AgentFacade {
   prompt(input: {
     input: readonly ContentPart[];
     disabledTools?: readonly string[];
+    origin?: {
+      kind: 'user';
+      expertTeam?: { pluginId: string; displayName: string };
+    };
   }): Promise<PromptLaunchResult>;
   steer(input: { input: readonly ContentPart[] }): Promise<PromptLaunchResult>;
   cancel(input?: { turnId?: number }): Promise<void>;

@@ -267,6 +267,10 @@ export function toWirePromptSubmission(input: PromptSubmission): WirePromptSubmi
     swarm_mode: input.swarmMode,
     goal_objective: input.goalObjective,
     goal_control: input.goalControl,
+    expert_team: input.expertTeam === undefined ? undefined : {
+      plugin_id: input.expertTeam.pluginId,
+      display_name: input.expertTeam.displayName,
+    },
   };
 }
 
@@ -390,6 +394,7 @@ export function toAppTask(wire: WireTask): AppTask {
     // subagent it returns is a background subagent (foreground ones never
     // persist there) — hence the `?? true` fallback for that path.
     runInBackground: wire.run_in_background ?? (wire.kind === 'subagent' ? true : undefined),
+    agentId: wire.agent_id,
     backgroundTaskId: wire.background_task_id,
     // outputLines starts undefined; populated by eventReducer via task.progress events
   };

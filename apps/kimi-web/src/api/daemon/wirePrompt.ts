@@ -19,6 +19,7 @@ export interface WirePromptSubmission {
   swarm_mode?: boolean;
   goal_objective?: string;
   goal_control?: 'pause' | 'resume' | 'cancel';
+  expert_team?: { plugin_id: string; display_name: string };
 }
 
 export interface WirePromptSubmitResult {

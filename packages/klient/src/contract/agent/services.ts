@@ -120,7 +120,13 @@ const messageToolSchema = z.object({
 });
 
 const promptOriginSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('user') }),
+  z.object({
+    kind: z.literal('user'),
+    expertTeam: z.object({
+      pluginId: z.string(),
+      displayName: z.string(),
+    }).optional(),
+  }),
   z.object({
     kind: z.literal('skill_activation'),
     activationId: z.string(),

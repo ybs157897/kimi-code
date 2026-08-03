@@ -6,6 +6,10 @@ export type SkillSource = 'project' | 'user' | 'extra' | 'builtin';
 
 export interface UserPromptOrigin {
   readonly kind: 'user';
+  readonly expertTeam?: {
+    readonly pluginId: string;
+    readonly displayName: string;
+  };
 }
 
 export const USER_PROMPT_ORIGIN: UserPromptOrigin = { kind: 'user' };

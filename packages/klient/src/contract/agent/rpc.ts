@@ -48,6 +48,13 @@ export const promptPayloadSchema = z.object({
   // Mirrors `PromptPayload.disabledTools` in the engine (client-managed
   // session denylist, full-replace).
   disabledTools: z.array(z.string()).optional(),
+  origin: z.object({
+    kind: z.literal('user'),
+    expertTeam: z.object({
+      pluginId: z.string(),
+      displayName: z.string(),
+    }).optional(),
+  }).optional(),
 });
 
 /** Same shape as `SteerPayload` in the engine. */

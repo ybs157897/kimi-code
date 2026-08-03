@@ -123,6 +123,8 @@ const props = defineProps<{
   terminalOpen?: boolean;
   /** Whether the files explorer panel is open (header toggle pressed state). */
   filesOpen?: boolean;
+  /** Hide the persistent subagent roster while its right-side detail is open. */
+  agentDetailOpen?: boolean;
 }>();
 
 const emit = defineEmits<{
@@ -290,9 +292,15 @@ const hasDockWork = computed(() =>
   (props.todos?.length ?? 0) > 0,
 );
 const dockPanel = ref<'bash' | 'subagent' | 'todos' | null>(null);
+const subagentStripExpanded = ref(true);
 const changesCount = computed(() => (props.gitInfo ? props.changes?.length ?? 0 : 0));
 
 function toggleDockPanel(panel: 'bash' | 'subagent' | 'todos'): void {
+  if (panel === 'subagent') {
+    dockPanel.value = null;
+    subagentStripExpanded.value = !subagentStripExpanded.value;
+    return;
+  }
   dockPanel.value = dockPanel.value === panel ? null : panel;
 }
 
@@ -303,6 +311,14 @@ function closeDockPanel(): void {
 watch(hasDockWork, (hasWork) => {
   if (!hasWork) closeDockPanel();
 });
+
+watch(
+  () => props.sessionId,
+  () => {
+    subagentStripExpanded.value = true;
+    closeDockPanel();
+  },
+);
 
 function tocTitle(turn: ChatTurn): string {
   if (turn.role === 'compaction') return t('conversation.compactedPlain');
@@ -1449,6 +1465,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
         :subagent-tasks="subagentTasks"
         :bash-running="bashRunning"
         :subagent-running="subagentRunning"
+        :subagent-strip-expanded="subagentStripExpanded"
         :todo-done-count="todoDoneCount"
         :has-dock-work="hasDockWork"
         :todos="todos"
@@ -1457,6 +1474,7 @@ defineExpose({ loadComposerForEdit, focusComposer });
         :pending-approval="pendingApproval"
         :approval-busy="approvalBusy"
         :mobile="mobile"
+        :agent-detail-open="agentDetailOpen"
         @toggle-dock-panel="toggleDockPanel($event)"
         @close-dock-panel="closeDockPanel()"
         @open-agent="emit('openAgent', $event)"

@@ -43,6 +43,7 @@ export type PromptAttachment = {
 interface QueuedPrompt {
   text: string;
   attachments?: PromptAttachment[];
+  expertTeam?: Pick<AppExpertTeamStatus, 'pluginId' | 'displayName'>;
   id?: string;
 }
 

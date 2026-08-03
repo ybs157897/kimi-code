@@ -10,6 +10,7 @@
 import { getKimiWebApi } from '../../api';
 import { isDaemonApiError } from '../../api/errors';
 import type {
+  AppExpertTeamStatus,
   AppInFlightTurn,
   AppMessage,
   AppWorkspace,
@@ -75,6 +76,7 @@ export { type PersistSessionProfilePatch, type UseWorkspaceStateDeps } from './u
 export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceStateDeps) {
   const { t } = i18n.global;
   const { confirm } = useConfirmDialog();
+  const expertTeamTurns = new Set<string>();
   const {
     taskPoller,
     sideChat,
@@ -152,6 +154,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     loadDraftExpertTeams,
     activateExpertTeam,
     deactivateExpertTeam,
+    deactivateExpertTeamForSession,
     applyDraftExpertTeam,
     refreshExpertTeams,
   } = useExpertTeams(rawState, { pushOperationFailure, draftModes, draftExpertTeams });
@@ -876,6 +879,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     sid: string,
     text: string,
     attachments?: PromptAttachment[],
+    expertTeam?: Pick<AppExpertTeamStatus, 'pluginId' | 'displayName'>,
   ): Promise<'ok' | 'rejected' | 'uncertain'> {
     // Mark this session as having a prompt in flight BEFORE any await, so a racing
     // sendPrompt sees it and enqueues. Cleared when the main turn ends (or the
@@ -915,7 +919,10 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         role: 'user',
         content,
         createdAt: new Date().toISOString(),
-        metadata: { 'kimiWeb.optimisticUserMessage': true },
+        metadata: {
+          'kimiWeb.optimisticUserMessage': true,
+          origin: { kind: 'user', expertTeam },
+        },
       };
       updateSessionMessages(sid, (msgs) => [...msgs, optimisticMsg]);
 
@@ -948,6 +955,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         }
       }
 
+      if (expertTeam !== undefined) expertTeamTurns.add(sid);
       const result = await api.submitPrompt(sid, {
         content,
         model,
@@ -961,6 +969,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
         permissionMode: rawState.permission,
         planMode,
         swarmMode,
+        expertTeam,
       });
 
       // Goal mode is a one-shot flag: consumed by this send, then cleared.
@@ -999,6 +1008,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       // daemon's auto-title, so we let the daemon own it.
       return 'ok';
     } catch (err) {
+      if (expertTeam !== undefined) expertTeamTurns.delete(sid);
       // Submit failed — clear the in-flight flag so the next prompt isn't stuck
       // queued forever (turn.ended will never arrive), and roll back the
       // optimistic user message so the transcript doesn't show a delivered-
@@ -1021,13 +1031,20 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   async function sendPrompt(text: string, attachments?: PromptAttachment[]): Promise<void> {
     const sid = rawState.activeSessionId;
     if (!sid) return;
+    const activeExpertTeam = expertTeamTurns.has(sid)
+      ? undefined
+      : rawState.expertTeamStatusBySession[sid] ?? undefined;
+    const expertTeam = activeExpertTeam === undefined ? undefined : {
+      pluginId: activeExpertTeam.pluginId,
+      displayName: activeExpertTeam.displayName,
+    };
 
     // If the session is not idle OR a prompt is already in flight (submitted but
     // the WS turn.started hasn't arrived yet), enqueue instead of submitting
     // directly. The in-flight flag closes the window where two rapid prompts
     // would both submit and race.
     if (activity.value !== 'idle' || rawState.inFlightBySession[sid]) {
-      enqueue(text, attachments);
+      enqueue(text, attachments, expertTeam);
       return;
     }
 
@@ -1039,12 +1056,12 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     // entry. Submitting directly here would jump the queue AND leave the
     // stuck entries without a flush driver.
     if ((rawState.queuedBySession[sid]?.length ?? 0) > 0) {
-      enqueue(text, attachments);
+      enqueue(text, attachments, expertTeam);
       flushQueueHead(sid);
       return;
     }
 
-    await submitPromptInternal(sid, text, attachments);
+    await submitPromptInternal(sid, text, attachments, expertTeam);
   }
 
   /**
@@ -1198,13 +1215,17 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
   }
 
   /** Enqueue a message for the active session; flushed when activity returns to idle */
-  function enqueue(text: string, attachments?: PromptAttachment[]): void {
+  function enqueue(
+    text: string,
+    attachments?: PromptAttachment[],
+    expertTeam?: Pick<AppExpertTeamStatus, 'pluginId' | 'displayName'>,
+  ): void {
     const sid = rawState.activeSessionId;
     if (!sid) return;
     const current = rawState.queuedBySession[sid] ?? [];
     // The id keys the per-entry flush failure budget (removing/reordering
     // the head then resets the next entry's budget).
-    const entry = { text, attachments, id: nextQueueEntryId() };
+    const entry = { text, attachments, expertTeam, id: nextQueueEntryId() };
     rawState.queuedBySession = {
       ...rawState.queuedBySession,
       [sid]: [...current, entry],
@@ -1226,7 +1247,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     const [next, ...rest] = rawState.queuedBySession[sid] ?? [];
     if (next === undefined) return;
     rawState.queuedBySession = { ...rawState.queuedBySession, [sid]: rest };
-    void submitPromptInternal(sid, next.text, next.attachments).then((outcome) => {
+    void submitPromptInternal(sid, next.text, next.attachments, next.expertTeam).then((outcome) => {
       if (outcome === 'ok') {
         queueFlushFailures.delete(sid);
         return;
@@ -1291,7 +1312,14 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
    * old file attachments) spontaneously when a session was merely
    * re-opened after an earlier drain had failed.
    */
-  function finishPromptLocal(sid: string, opts?: { turnWasActive?: boolean }): boolean {
+  async function finishPromptLocal(
+    sid: string,
+    opts?: {
+      turnWasActive?: boolean;
+      mainTurnEnded?: boolean;
+      promptTerminatedBeforeTurn?: boolean;
+    },
+  ): Promise<boolean> {
     const wasInFlight = rawState.inFlightBySession[sid] === true;
     rawState.inFlightBySession = { ...rawState.inFlightBySession, [sid]: false };
     // Drop any cached prompt_id so a later skill activation (which has no
@@ -1305,6 +1333,19 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
       resetFastMoon();
     }
 
+    // A terminal snapshot can race the accepted prompt before turn.started.
+    // It may clear the generic in-flight flag, but must not consume the
+    // one-shot team until a real main turn ended (or the prompt was explicitly
+    // terminated before any turn could start).
+    const expertTeamTurnFinished =
+      opts?.mainTurnEnded === true ||
+      opts?.turnWasActive === true ||
+      opts?.promptTerminatedBeforeTurn === true ||
+      (rawState.turnActiveBySession[sid] ?? false);
+    if (expertTeamTurnFinished && expertTeamTurns.has(sid)) {
+      await finishExpertTeamTurnLocal(sid);
+    }
+
     const mayDrain =
       wasInFlight || opts?.turnWasActive === true || (rawState.turnActiveBySession[sid] ?? false);
     if (mayDrain) {
@@ -1312,6 +1353,15 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     }
 
     return wasInFlight;
+  }
+
+  /** Consume the expert team selected for the prompt whose main turn ended.
+   * Kept separate from generic prompt cleanup because transcript connections
+   * can suppress turnActiveChanged while the global sessionWorkChanged fact
+   * still delivers the authoritative main-turn boundary. */
+  async function finishExpertTeamTurnLocal(sid: string): Promise<void> {
+    if (!expertTeamTurns.delete(sid)) return;
+    await deactivateExpertTeamForSession(sid);
   }
 
   /**
@@ -1336,7 +1386,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     // facts still support a running main turn. Either terminal fact may also
     // reconcile the other tracker when a snapshot catches it stale.
     if (snapshot.inFlightTurn !== null && snapshot.busy) return;
-    finishPromptLocal(sid);
+    void finishPromptLocal(sid);
   }
 
   async function abortCurrentPrompt(): Promise<void> {
@@ -2052,6 +2102,7 @@ export function useWorkspaceState(rawState: ExtendedState, deps: UseWorkspaceSta
     selectSession,
     submitPromptInternal,
     finishPromptLocal,
+    finishExpertTeamTurnLocal,
     localTurnStartState,
     isLocalTurnSnapshotCurrent,
     afterLocalTurnStartsSettle,

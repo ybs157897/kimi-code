@@ -1,7 +1,7 @@
 <!-- apps/kimi-web/src/components/chat/SubagentStrip.vue -->
-<!-- Persistent "background subagents are running" card above the composer.
-     The dock pill alone is easy to miss; this keeps the live roster in the
-     dialog while TeamSpawn / Agent background work is in flight. -->
+<!-- Persistent background-subagent roster above the composer. The rows remain
+     after completion so this view and the inline task card expose the same
+     lifecycle state; only running rows offer cancellation. -->
 <script setup lang="ts">
 import { computed } from 'vue';
 import { useI18n } from 'vue-i18n';
@@ -23,6 +23,14 @@ const emit = defineEmits<{
 const { t } = useI18n();
 
 const running = computed(() => props.tasks.filter((task) => task.state === 'run'));
+const title = computed(() =>
+  running.value.length > 0
+    ? t('tasks.stripTitleRunning', {
+        count: props.tasks.length,
+        running: running.value.length,
+      })
+    : t('tasks.stripTitleDone', { count: props.tasks.length }),
+);
 
 function glyphStatus(state: TaskItem['state']): StatusGlyphStatus {
   if (state === 'run' || state === 'done' || state === 'fail') return state;
@@ -31,20 +39,18 @@ function glyphStatus(state: TaskItem['state']): StatusGlyphStatus {
 </script>
 
 <template>
-  <Card v-if="running.length > 0" class="subagent-strip" role="status">
+  <Card class="subagent-strip" role="status">
     <template #head>
       <div class="ss-head">
-        <span class="ss-spin" aria-hidden="true"><Spinner size="sm" /></span>
+        <span v-if="running.length > 0" class="ss-spin" aria-hidden="true"><Spinner size="sm" /></span>
         <Icon class="ss-icon" name="sparkles" size="md" />
-        <span class="ss-title">
-          {{ t('tasks.stripTitle', { count: running.length }) }}
-        </span>
+        <span class="ss-title">{{ title }}</span>
         <span class="ss-hint">{{ t('tasks.stripHint') }}</span>
       </div>
     </template>
 
     <TransitionGroup tag="ul" class="ss-list" name="ss-list">
-      <li v-for="task in running" :key="task.id" class="ss-row">
+      <li v-for="task in tasks" :key="task.id" class="ss-row">
         <button type="button" class="ss-main" @click="emit('open', task.id)">
           <StatusGlyph :status="glyphStatus(task.state)" />
           <span class="ss-name">{{ task.name }}</span>
@@ -52,6 +58,7 @@ function glyphStatus(state: TaskItem['state']): StatusGlyphStatus {
           <Icon class="ss-chevron" name="chevron-right" size="sm" />
         </button>
         <button
+          v-if="task.state === 'run'"
           type="button"
           class="ss-stop"
           @click.stop="emit('cancel', task.id)"

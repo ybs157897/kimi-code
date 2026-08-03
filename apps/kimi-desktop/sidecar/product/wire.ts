@@ -142,6 +142,7 @@ export interface WirePromptSubmission {
   swarm_mode?: boolean;
   goal_objective?: string;
   goal_control?: 'pause' | 'resume' | 'cancel';
+  expert_team?: { plugin_id: string; display_name: string };
 }
 
 export interface WirePromptSubmitResult {
@@ -441,6 +442,9 @@ export interface WireTask {
   suspended_reason?: string;
   swarm_index?: number;
   run_in_background?: boolean;
+  /** Agent identity carried by REST task rows so they can reconcile with the
+   *  agent-id-keyed live event row. */
+  agent_id?: string;
   /** Background-task registry id for this agent-id-keyed subagent row. */
   background_task_id?: string;
 }
@@ -545,6 +549,8 @@ export interface WireTaskListItem {
   completed_at?: string;
   output_preview?: string;
   output_bytes?: number;
+  agent_id?: string;
+  background_task_id?: string;
 }
 
 // Expert teams — mirrors apps/kimi-web/src/api/daemon/wire.ts

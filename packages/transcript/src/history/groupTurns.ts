@@ -314,6 +314,7 @@ function mapOrigin(message: HistoryMessage): TurnOrigin {
       // (`phase`, `isError`) lets a client renderer specialize later.
       return { kind: 'user', payload: origin };
     case 'user':
+      return { kind: 'user', payload: origin };
     case undefined:
       return { kind: 'user' };
     default:

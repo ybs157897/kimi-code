@@ -8,7 +8,7 @@
  * state through `wire`. Bound at Session scope.
  */
 
-import { Disposable } from '#/_base/di/lifecycle';
+import { Disposable, MutableDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope, ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
@@ -25,6 +25,7 @@ import {
   sessionExpertRoots,
 } from '#/app/plugin/directoryExperts';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IEventBus } from '#/app/event/eventBus';
 import {
   EXPERT_TEAMS_FLAG_ID,
   normalizePluginId,
@@ -74,6 +75,7 @@ export class SessionExpertTeamService
     new Emitter<ExpertTeamSnapshot | null>(),
   );
   readonly onDidChange = this.onDidChangeEmitter.event;
+  private readonly oneShotTurn = this._register(new MutableDisposable<IDisposable>());
 
   constructor(
     @IFlagService private readonly flags: IFlagService,
@@ -202,11 +204,13 @@ export class SessionExpertTeamService
       mainProfile.applyBindingSnapshot(snapshot.binding.previousProfile);
       throw error;
     }
+    this.armOneShotTurn(snapshot.binding.pluginId);
     this.fireSnapshot();
     return this.requireSnapshot();
   }
 
   async deactivate(): Promise<void> {
+    this.oneShotTurn.clear();
     const current = this.snapshot();
     if (current === null) return;
     if (current.team !== undefined) {
@@ -216,6 +220,24 @@ export class SessionExpertTeamService
     this.mainHandle().accessor.get(IAgentProfileService).applyBindingSnapshot(previous);
     this.mainWire().dispatch(expertTeamDeactivate({}));
     this.fireSnapshot();
+  }
+
+  private armOneShotTurn(pluginId: string): void {
+    let turnId: number | undefined;
+    this.oneShotTurn.value = this.mainHandle().accessor.get(IEventBus).subscribe((event) => {
+      if (event.type === 'turn.started') {
+        const origin = event.origin;
+        if (origin.kind === 'user' && origin.expertTeam?.pluginId === pluginId) {
+          turnId = event.turnId;
+        }
+        return;
+      }
+      if (event.type !== 'turn.ended' || event.turnId !== turnId) return;
+      this.oneShotTurn.clear();
+      void this.deactivate().catch((error) => {
+        this.log.error(`Failed to deactivate one-shot expert team "${pluginId}": ${String(error)}`);
+      });
+    });
   }
 
   createTeam(

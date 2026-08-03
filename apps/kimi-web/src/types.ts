@@ -288,6 +288,8 @@ export interface ChatTurn {
   /** Plugin command metadata: when a user turn was triggered by a plugin slash
       command (/plugin:command), this holds the command identity and args. */
   pluginCommand?: { pluginId: string; commandName: string; args?: string };
+  /** Expert team attached to this one user turn. */
+  expertTeam?: { pluginId: string; displayName: string };
   /** Cron fire metadata (role 'cron'): set when an agent turn was triggered by a
       scheduled reminder rather than a real user. Mirrors the TUI's
       CronTranscriptData. `missedCount` present means a missed-fire catch-up. */

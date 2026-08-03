@@ -11,7 +11,7 @@
  * support.
  */
 
-import type { AgentContextData } from '#/agent/contextMemory/types';
+import type { AgentContextData, UserPromptOrigin } from '#/agent/contextMemory/types';
 import type {
   GoalBudgetLimits,
   GoalBudgetReport,
@@ -118,6 +118,7 @@ export interface SessionSummary {
 export interface PromptPayload {
   readonly input: readonly ContentPart[];
   readonly disabledTools?: readonly string[];
+  readonly origin?: UserPromptOrigin;
 }
 export interface RunShellCommandPayload {
   readonly command: string;

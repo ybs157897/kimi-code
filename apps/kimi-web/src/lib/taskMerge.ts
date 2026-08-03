@@ -27,10 +27,16 @@ export function keepLiveSubagents(restBased: AppTask[], existing: AppTask[]): Ap
   const liveSubagents = existing.filter((t) => t.kind === 'subagent' && !restIds.has(t.id));
   if (liveSubagents.length === 0) return restBased;
   const restById = new Map(restBased.map((t) => [t.id, t] as const));
+  const restByAgentId = new Map(
+    restBased.flatMap((task) =>
+      task.agentId === undefined ? [] : ([[task.agentId, task]] as const),
+    ),
+  );
   const foldedRestIds = new Set<string>();
   const merged = liveSubagents.map((live) => {
     const rest =
-      live.backgroundTaskId !== undefined ? restById.get(live.backgroundTaskId) : undefined;
+      (live.backgroundTaskId !== undefined ? restById.get(live.backgroundTaskId) : undefined) ??
+      restByAgentId.get(live.id);
     if (rest === undefined) return live;
     foldedRestIds.add(rest.id);
     // True when the fold — not the event stream — is what makes the row terminal.
@@ -55,6 +61,8 @@ export function keepLiveSubagents(restBased: AppTask[], existing: AppTask[]): Ap
       // freeze the detail panel's Result.
       outputPreview: rest.outputPreview ?? live.outputPreview,
       outputBytes: rest.outputBytes ?? live.outputBytes,
+      agentId: live.agentId ?? rest.agentId,
+      backgroundTaskId: live.backgroundTaskId ?? rest.id,
     };
   });
   const rest = restBased.filter((t) => !foldedRestIds.has(t.id));

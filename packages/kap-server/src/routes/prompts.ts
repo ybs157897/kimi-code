@@ -319,7 +319,13 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           role: 'user',
           content: parts,
           toolCalls: [],
-          origin: { kind: 'user' },
+          origin: {
+            kind: 'user',
+            expertTeam: req.body.expert_team === undefined ? undefined : {
+              pluginId: req.body.expert_team.plugin_id,
+              displayName: req.body.expert_team.display_name,
+            },
+          },
         } });
         reply.send(okEnvelope(projectPromptHandle(handle), req.id));
       } catch (error) {

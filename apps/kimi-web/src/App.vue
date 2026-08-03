@@ -958,6 +958,7 @@ function openPr(url: string): void {
           :conversation-toc="client.conversationToc.value"
           :terminal-open="terminalDock.open.value"
           :files-open="filesVisible"
+          :agent-detail-open="detailTarget === 'agent' && agentPanelMember !== null"
           @open-changes="openDiffDetail()"
           @toggle-files="openFilesPanel()"
           @select-workspace="handleCreateSessionInWorkspace($event)"

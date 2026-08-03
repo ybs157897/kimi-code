@@ -21,6 +21,30 @@ function message(
 }
 
 describe('messagesToTurns', () => {
+  it('keeps the expert-team mention on the user turn', () => {
+    const turns = messagesToTurns(
+      [
+        message('u1', 'user', [{ type: 'text', text: '审查这份方案' }], {
+          metadata: {
+            origin: {
+              kind: 'user',
+              expertTeam: { pluginId: 'review-team', displayName: '评审专家团' },
+            },
+          },
+        }),
+      ],
+      [],
+      undefined,
+      false,
+    );
+
+    expect(turns[0]).toMatchObject({
+      role: 'user',
+      text: '审查这份方案',
+      expertTeam: { pluginId: 'review-team', displayName: '评审专家团' },
+    });
+  });
+
   it('merges an assistant turn and folds tool results into it', () => {
     const turns = messagesToTurns(
       [

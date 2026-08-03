@@ -100,7 +100,7 @@ export class AgentRPCService implements IAgentRPCService {
       role: 'user',
       content: [...payload.input],
       toolCalls: [],
-      origin: { kind: 'user' },
+      origin: payload.origin ?? { kind: 'user' },
     } });
     if (handle.state === 'pending') return undefined;
     const turn = await handle.launched;

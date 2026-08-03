@@ -574,7 +574,16 @@ export class ProductFacade {
     // Best-effort: a failure here must not block the prompt itself.
     await this.applyPromptControls(agent, input);
 
-    const launched = await agent.prompt({ input: parts });
+    const launched = await agent.prompt({
+      input: parts,
+      origin: {
+        kind: 'user',
+        expertTeam: input.expert_team === undefined ? undefined : {
+          pluginId: input.expert_team.plugin_id,
+          displayName: input.expert_team.display_name,
+        },
+      },
+    });
     const promptId = ulid('pr_');
     const userMessageId = ulid('msg_');
     this.promptRoutes.set(promptId, { sessionId, agentId, turnId: launched?.turn_id });

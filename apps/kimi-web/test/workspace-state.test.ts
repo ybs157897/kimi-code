@@ -941,6 +941,8 @@ describe('useWorkspaceState — draft expert team', () => {
     apiMock.addWorkspace.mockResolvedValue(registered);
     apiMock.createSession.mockResolvedValue(newSession);
     apiMock.activateExpertTeam.mockResolvedValue(activatedStatus);
+    apiMock.deactivateExpertTeam.mockReset();
+    apiMock.deactivateExpertTeam.mockResolvedValue(undefined);
     apiMock.listExpertTeams.mockResolvedValue([
       {
         pluginId: 'code-review-team',
@@ -952,6 +954,48 @@ describe('useWorkspaceState — draft expert team', () => {
         quickPrompts: [],
       },
     ]);
+  });
+
+  it('attaches the expert team to one prompt and clears it before the next prompt', async () => {
+    apiMock.submitPrompt.mockReset();
+    apiMock.submitPrompt
+      .mockResolvedValueOnce({ promptId: 'prompt_team' })
+      .mockResolvedValueOnce({ promptId: 'prompt_plain' });
+    const state = createState();
+    state.expertTeamStatusBySession.sess_1 = activatedStatus;
+    const ws = useWorkspaceState(
+      state,
+      {
+        ...createDeps(),
+        activity: computed(() => 'idle'),
+      },
+    );
+
+    await ws.sendPrompt('先由专家评审');
+    expect(apiMock.submitPrompt).toHaveBeenNthCalledWith(
+      1,
+      'sess_1',
+      expect.objectContaining({
+        expertTeam: { pluginId: 'code-review-team', displayName: 'Code Review' },
+      }),
+    );
+
+    // A terminal snapshot can arrive after prompt acceptance but before the
+    // main turn starts. It must not consume the one-shot team early.
+    await ws.finishPromptLocal('sess_1');
+    expect(apiMock.deactivateExpertTeam).not.toHaveBeenCalled();
+    expect(state.expertTeamStatusBySession.sess_1).toEqual(activatedStatus);
+
+    await ws.finishPromptLocal('sess_1', { mainTurnEnded: true });
+    expect(apiMock.deactivateExpertTeam).toHaveBeenCalledWith('sess_1');
+    expect(state.expertTeamStatusBySession.sess_1).toBeNull();
+
+    await ws.sendPrompt('下一轮普通处理');
+    expect(apiMock.submitPrompt).toHaveBeenNthCalledWith(
+      2,
+      'sess_1',
+      expect.objectContaining({ expertTeam: undefined }),
+    );
   });
 
   it('stages activate/deactivate on the draft when no session is active', async () => {

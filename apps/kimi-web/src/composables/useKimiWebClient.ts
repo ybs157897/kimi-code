@@ -842,7 +842,7 @@ function processEvent(appEvent: AppEvent, meta: KimiEventMeta): void {
     // remaining signal that this client witnessed a live turn — pass it down
     // so finishPromptLocal may drain queued prompts behind a turn the user
     // actually watched (including one started by another client).
-    onMainTurnEnd(
+    void onMainTurnEnd(
       appEvent.sessionId,
       reason === 'cancelled' || reason === 'failed' || reason === 'blocked' ? 'aborted' : 'idle',
       wasMainTurnActive,
@@ -856,6 +856,9 @@ function processEvent(appEvent: AppEvent, meta: KimiEventMeta): void {
     meta.seq > prevSeq
   ) {
     clearWorkingFlags(appEvent.sessionId);
+    if (appEvent.mainTurnActive === false) {
+      void workspaceState.finishExpertTeamTurnLocal(appEvent.sessionId);
+    }
   }
 
   // A prompt that never produced a turn gets no turn.ended and no session
@@ -873,7 +876,9 @@ function processEvent(appEvent: AppEvent, meta: KimiEventMeta): void {
     meta.seq > prevSeq &&
     rawState.promptIdBySession[appEvent.sessionId] === appEvent.promptId
   ) {
-    workspaceState.finishPromptLocal(appEvent.sessionId);
+    void workspaceState.finishPromptLocal(appEvent.sessionId, {
+      promptTerminatedBeforeTurn: true,
+    });
   }
 
   // The agent asked a question and is waiting for an answer — surface it so
@@ -2370,7 +2375,11 @@ function clearWorkingFlags(sid: string): void {
   }
 }
 
-function onMainTurnEnd(sid: string, status: 'idle' | 'aborted', turnWasActive: boolean): void {
+async function onMainTurnEnd(
+  sid: string,
+  status: 'idle' | 'aborted',
+  turnWasActive: boolean,
+): Promise<void> {
   // Capture before finishPromptLocal drops it — it keys the completion
   // notification's dedup tag so each finished turn alerts once.
   const finishedPromptId = rawState.promptIdBySession[sid];
@@ -2378,7 +2387,7 @@ function onMainTurnEnd(sid: string, status: 'idle' | 'aborted', turnWasActive: b
   // queued message. The notification/sound/unread side effects below stay
   // WS-event-only — the snapshot path (handleSessionSnapshot) must not cry
   // wolf when opening a historical session.
-  workspaceState.finishPromptLocal(sid, { turnWasActive });
+  await workspaceState.finishPromptLocal(sid, { turnWasActive, mainTurnEnded: true });
 
   // For the session on screen, refresh git status (edits the agent just made)
   // and runtime status (model/context usage may have changed this turn).

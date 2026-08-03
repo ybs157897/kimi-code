@@ -122,6 +122,10 @@ export const skillSourceSchema = z.enum(['project', 'user', 'extra', 'builtin'])
 
 export const userPromptOriginSchema = z.object({
   kind: z.literal('user'),
+  expertTeam: z.object({
+    pluginId: z.string(),
+    displayName: z.string(),
+  }).optional(),
 }) satisfies z.ZodType<UserPromptOrigin>;
 
 export const skillActivationOriginSchema = z.object({

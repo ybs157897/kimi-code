@@ -63,6 +63,7 @@ import type {
   PromptSubmitResult,
   QuestionResponse,
 } from '../types';
+import { DaemonApiError } from '../errors';
 import {
   toAppApprovalRequest,
   toAppConfig,
@@ -172,7 +173,13 @@ export class WailsKimiWebApi implements KimiWebApi {
     // opted into allowCodes (e.g. dismissQuestion's 40909 success path).
     const allowCodes = opts?.allowCodes ?? [];
     if (envelope.code !== 0 && !allowCodes.includes(envelope.code)) {
-      throw new Error(`desktop transport: ${method} failed (${envelope.code}): ${envelope.msg}`);
+      throw new DaemonApiError({
+        code: envelope.code,
+        msg: `desktop transport: ${method} failed (${envelope.code}): ${envelope.msg}`,
+        requestId: envelope.request_id,
+        details: envelope.details,
+        timestamp: Date.now(),
+      });
     }
     return envelope.data as T;
   }
